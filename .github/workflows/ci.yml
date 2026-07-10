@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.3.12
+
+jobs:
+  test:
+    name: verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Typecheck, lint, tests
+        run: bun run verify
+      - name: Dead code and unused dependencies
+        run: bun run knip
+      - name: Coverage (thresholds from bunfig.toml)
+        run: bun test --coverage
+
+  tui-smoke:
+    name: TUI smoke + e2e (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install expect (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y expect
+      - run: bun install --frozen-lockfile
+      - name: PTY render smoke
+        run: bun run smoke:tui
+      - name: PTY scripted conversation e2e
+        run: bun run e2e:tui
+
+  release-smoke:
+    name: compiled binary (ubuntu)
+    # macOS excluded on purpose: Bun 1.3.12 emits unsigned arm64 binaries the
+    # kernel SIGKILLs — tracked in docs/DESIGN.md watchlist.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build:release
+      - name: Binary answers --help
+        run: |
+          out="$(ANTHROPIC_API_KEY=fake ./dist/minerva --help)"
+          echo "$out"
+          echo "$out" | grep -q "Usage: minerva"
+
+  live-smoke:
+    name: live model smoke (main only, needs secret)
+    # Never runs on PRs: no secret exposure to fork-able contexts, no token
+    # spend per pull request. Skips quietly when the secret is not configured.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: One real prompt against the default provider
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bun run scripts/live-smoke.ts
