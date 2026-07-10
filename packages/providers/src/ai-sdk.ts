@@ -26,11 +26,15 @@ export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8";
 export interface AnthropicProviderOptions {
   model?: string;
   apiKey?: string;
+  baseURL?: string;
 }
 
 export function createAnthropicProvider(options: AnthropicProviderOptions = {}): ModelProvider {
   const modelId = options.model ?? DEFAULT_ANTHROPIC_MODEL;
-  const anthropic = createAnthropic(options.apiKey ? { apiKey: options.apiKey } : {});
+  const anthropic = createAnthropic({
+    ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+    ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+  });
   return createAiSdkProvider(anthropic(modelId), `anthropic/${modelId}`);
 }
 
