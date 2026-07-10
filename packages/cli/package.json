@@ -19,6 +19,8 @@
     "react": "^19"
   },
   "devDependencies": {
-    "@types/react": "^19"
+    "@types/react": "^19",
+    "ink-testing-library": "4.0.0",
+    "react-devtools-core": "^7.0.1"
   }
 }

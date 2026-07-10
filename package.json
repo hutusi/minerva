@@ -12,11 +12,15 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "verify": "bun run typecheck && bun run lint && bun test",
-    "build:release": "bun build --compile --minify --external react-devtools-core packages/cli/src/index.tsx --outfile dist/minerva"
+    "knip": "knip",
+    "build:release": "bun build --compile --minify packages/cli/src/index.tsx --outfile dist/minerva",
+    "smoke:tui": "expect scripts/smoke-tui.exp",
+    "e2e:tui": "expect scripts/e2e-tui.exp"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
     "@types/bun": "^1.3.4",
-    "typescript": "^5.9.3"
+    "knip": "^6.26.0",
+    "typescript": "^7.0.2"
   }
 }

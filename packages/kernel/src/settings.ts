@@ -23,13 +23,13 @@ export interface McpServerConfig {
 
 export interface MinervaSettings {
   permissions?: Partial<PermissionRules>;
-  defaultMode?: string;
+  defaultMode?: string | undefined;
   mcpServers?: Record<string, McpServerConfig>;
 }
 
 export interface ResolvedSettings {
   rules: PermissionRules;
-  defaultMode?: string;
+  defaultMode?: string | undefined;
   mcpServers: Record<string, McpServerConfig>;
 }
 

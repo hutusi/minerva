@@ -29,7 +29,7 @@ export interface LoopContext {
   tools: KernelTool[];
   system: string;
   runtime: Runtime;
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 }
 
 export async function runPrompt(
@@ -295,9 +295,9 @@ interface PermissionDecision {
    * transport failures or frontend defaults. */
   source: "policy" | "user" | "frontend" | "error";
   /** The permission rule that decided or was created, when there is one. */
-  rule?: string;
+  rule?: string | undefined;
   /** Denial text for the model, when the default message won't do. */
-  reason?: string;
+  reason?: string | undefined;
 }
 
 function deniedMessage(source: PermissionDecision["source"]): string {

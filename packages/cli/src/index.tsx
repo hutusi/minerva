@@ -11,60 +11,20 @@ import {
 import { render } from "ink";
 import { runAcpHost } from "./acp";
 import { App } from "./app";
-import { PermissionBridge } from "./permission-bridge";
+import { parseCliArgs, usage } from "./args";
+import { createPermissionBridge } from "./permission-bridge";
 
-const USAGE = `minerva — model-agnostic code agent
-
-Usage: minerva [command] [options]
-
-Commands:
-  (default)            Interactive terminal UI
-  acp                  Host the kernel on stdio (ACP framing) for editors
-
-Options:
-  -c, --continue       Resume the most recent session for this directory
-  -r, --resume <id>    Resume a specific session
-  -m, --model <ref>    Model as [provider/]model, e.g. openai/gpt-5.2 or
-                       claude-opus-4-8 (default: ${DEFAULT_ANTHROPIC_MODEL}, env: MINERVA_MODEL)
-  -h, --help           Show this help
-
-Environment:
-  ANTHROPIC_API_KEY    Key for anthropic/* models
-  OPENAI_API_KEY       Key for openai/* models
-  MINERVA_DATA_DIR     Session/config root (default: ~/.minerva)`;
-
-let model = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
-let resume: string | null = null;
-let command: "tui" | "acp" = "tui";
-const argv = process.argv.slice(2);
-for (let i = 0; i < argv.length; i++) {
-  const arg = argv[i];
-  if (arg === "acp" && command === "tui") {
-    command = "acp";
-  } else if (arg === "--continue" || arg === "-c") {
-    resume = "latest";
-  } else if (arg === "--resume" || arg === "-r") {
-    const value = argv[++i];
-    if (!value || value.startsWith("-")) {
-      console.error("--resume requires a session id");
-      process.exit(1);
-    }
-    resume = value;
-  } else if (arg === "--model" || arg === "-m") {
-    const value = argv[++i];
-    if (!value || value.startsWith("-")) {
-      console.error("--model requires a model id");
-      process.exit(1);
-    }
-    model = value;
-  } else if (arg === "--help" || arg === "-h") {
-    console.log(USAGE);
-    process.exit(0);
-  } else {
-    console.error(`unknown option: ${arg}\n\n${USAGE}`);
-    process.exit(1);
-  }
+const defaultModel = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
+const parsed = parseCliArgs(process.argv.slice(2), defaultModel);
+if (parsed.kind === "help") {
+  console.log(usage(defaultModel));
+  process.exit(0);
 }
+if (parsed.kind === "error") {
+  console.error(`${parsed.message}\n\n${usage(defaultModel)}`);
+  process.exit(1);
+}
+const { command, model, resume } = parsed.args;
 
 let providerName: ReturnType<typeof parseModelRef>["provider"];
 try {
@@ -98,7 +58,7 @@ const cwd = process.cwd();
 const [clientTransport, kernelTransport] = createInProcTransportPair();
 createKernel(kernelTransport, kernelOptions);
 
-const bridge = new PermissionBridge();
+const bridge = createPermissionBridge();
 const client = new MinervaClient(clientTransport, {
   onPermissionRequest: bridge.onPermissionRequest,
 });

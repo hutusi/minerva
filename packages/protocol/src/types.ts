@@ -130,7 +130,7 @@ export interface SessionSummary {
   cwd: string;
   createdAt: string;
   /** First user message, truncated — enough for a picker UI. */
-  preview?: string;
+  preview?: string | undefined;
 }
 
 export interface SessionsListResult {

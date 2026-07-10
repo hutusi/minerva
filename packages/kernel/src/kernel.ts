@@ -33,7 +33,7 @@ export interface KernelOptions {
   provider: ModelProvider;
   runtime?: Runtime;
   /** Root for session logs and config; defaults to ~/.minerva. */
-  dataDir?: string;
+  dataDir?: string | undefined;
   tools?: KernelTool[];
   systemPrompt?: (cwd: string) => string;
 }

@@ -6,9 +6,9 @@ export interface ToolContext {
   cwd: string;
   runtime: Runtime;
   /** Aborts when the prompt is cancelled; long-running tools should honor it. */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
   /** Provided by the agent loop: persist + broadcast the session todo list. */
-  updateTodos?(entries: PlanEntry[]): void;
+  updateTodos?: ((entries: PlanEntry[]) => void) | undefined;
 }
 
 export interface ToolOutput {

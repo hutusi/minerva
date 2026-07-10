@@ -269,7 +269,7 @@ function PlanView({ entries }: { entries: Extract<ViewItem, { kind: "plan" }>["e
       {withUniqueKeys(entries).map(({ entry, key }) => (
         <Text
           key={key}
-          color={entry.status === "in_progress" ? "yellow" : undefined}
+          {...(entry.status === "in_progress" ? { color: "yellow" } : {})}
           dimColor={entry.status === "completed"}
         >
           {entry.status === "completed" ? "☑" : entry.status === "in_progress" ? "◐" : "☐"}{" "}

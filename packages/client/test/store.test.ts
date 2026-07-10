@@ -62,6 +62,32 @@ describe("SessionStore reducer", () => {
     ]);
   });
 
+  test("plan updates replace the single plan item in place; info items append", () => {
+    const store = new SessionStore();
+    store.addInfo("welcome");
+    store.apply({
+      sessionUpdate: "plan",
+      entries: [{ content: "a", status: "pending", priority: "medium" }],
+    });
+    store.apply({
+      sessionUpdate: "plan",
+      entries: [{ content: "a", status: "completed", priority: "medium" }],
+    });
+    const plans = store.snapshot.items.filter((item) => item.kind === "plan");
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ entries: [{ content: "a", status: "completed" }] });
+    expect(store.snapshot.items[0]).toEqual({ kind: "info", text: "welcome" });
+  });
+
+  test("current_mode_update and agent_thought_chunk are handled", () => {
+    const store = new SessionStore();
+    store.apply({ sessionUpdate: "current_mode_update", currentModeId: "auto" });
+    expect(store.snapshot.currentModeId).toBe("auto");
+    // Thoughts are not surfaced in slice scope — must not throw or render.
+    store.apply({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } });
+    expect(store.snapshot.items).toHaveLength(0);
+  });
+
   test("notifies subscribers on every change and snapshots are immutable", () => {
     const store = new SessionStore();
     let notified = 0;

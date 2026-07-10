@@ -33,11 +33,11 @@ export async function connectMcpServers(
       await client.connect(
         new StdioClientTransport({
           command: config.command,
-          args: config.args,
+          ...(config.args ? { args: config.args } : {}),
           // Merge with the SDK's safe defaults: passing env alone REPLACES
           // the environment, and a config that sets one variable would
           // otherwise strip PATH/HOME and break the server's spawn.
-          env: config.env ? { ...getDefaultEnvironment(), ...config.env } : undefined,
+          ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
         }),
       );
       clients.push(client);
@@ -65,7 +65,7 @@ export async function connectMcpServers(
 
 interface McpToolInfo {
   name: string;
-  description?: string;
+  description?: string | undefined;
   inputSchema: Record<string, unknown>;
 }
 
