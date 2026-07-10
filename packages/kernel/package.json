@@ -1,0 +1,18 @@
+{
+  "name": "@minerva/kernel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@minerva/protocol": "workspace:*",
+    "@minerva/providers": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "tinyglobby": "^0.2.17"
+  },
+  "devDependencies": {
+    "zod": "^4.4.3"
+  }
+}
