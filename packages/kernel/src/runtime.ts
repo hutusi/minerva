@@ -6,7 +6,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 
 export interface ExecResult {
@@ -23,9 +23,14 @@ export interface ExecOptions {
   signal?: AbortSignal | undefined;
 }
 
+export interface WriteTextFileOptions {
+  /** Unix permission bits to enforce on the file (e.g. 0o600 for secrets). */
+  mode?: number | undefined;
+}
+
 export interface Runtime {
   readTextFile(path: string): Promise<string>;
-  writeTextFile(path: string, content: string): Promise<void>;
+  writeTextFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
   appendTextFile(path: string, content: string): Promise<void>;
   mkdirp(path: string): Promise<void>;
   exec(command: string, options: ExecOptions): Promise<ExecResult>;
@@ -45,7 +50,13 @@ const PIPE_GRACE_MS = 1_000;
 
 export const defaultRuntime: Runtime = {
   readTextFile: (path) => readFile(path, "utf8"),
-  writeTextFile: (path, content) => writeFile(path, content, "utf8"),
+  writeTextFile: async (path, content, options) => {
+    const mode = options?.mode;
+    await writeFile(path, content, { encoding: "utf8", ...(mode !== undefined ? { mode } : {}) });
+    // writeFile's mode only applies when it creates the file; chmod covers
+    // pre-existing files that must be tightened (e.g. stored API keys).
+    if (mode !== undefined) await chmod(path, mode);
+  },
   appendTextFile: (path, content) => appendFile(path, content, "utf8"),
   mkdirp: async (path) => {
     await mkdir(path, { recursive: true });

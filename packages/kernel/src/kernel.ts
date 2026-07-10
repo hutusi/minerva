@@ -26,7 +26,7 @@ import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
 import { defaultRuntime, type Runtime } from "./runtime";
 import { parseEventLog, projectDir, Session } from "./session";
-import { loadSettings } from "./settings";
+import { defaultDataDir, loadSettings } from "./settings";
 import { builtinTools, type KernelTool } from "./tools";
 
 export interface KernelOptions {
@@ -56,7 +56,7 @@ export class MinervaKernel {
   constructor(transport: Transport, options: KernelOptions) {
     this.#provider = options.provider;
     this.#runtime = options.runtime ?? defaultRuntime;
-    this.#dataDir = options.dataDir ?? join(this.#runtime.homedir(), ".minerva");
+    this.#dataDir = options.dataDir ?? defaultDataDir(this.#runtime);
     this.#tools = options.tools ?? builtinTools();
     this.#systemPrompt = options.systemPrompt ?? defaultSystemPrompt;
 
