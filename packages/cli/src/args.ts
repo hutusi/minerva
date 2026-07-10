@@ -3,7 +3,7 @@
  * top-level script code with process.exit calls can't be exercised by tests.
  */
 
-export interface CliArgs {
+interface CliArgs {
   command: "tui" | "acp";
   model: string;
   resume: string | null;

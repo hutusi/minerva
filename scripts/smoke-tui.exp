@@ -1,0 +1,28 @@
+#!/usr/bin/expect -f
+# TUI render smoke: the real entrypoint starts under a PTY, shows the banner
+# and input prompt, and /exit terminates cleanly. No network: session
+# creation is local; a placeholder key satisfies the startup check.
+set timeout 20
+set repo [file dirname [file dirname [file normalize [info script]]]]
+if {![info exists env(ANTHROPIC_API_KEY)]} {
+    set env(ANTHROPIC_API_KEY) "sk-ant-placeholder-smoke"
+}
+set env(MINERVA_DATA_DIR) [exec mktemp -d]
+
+spawn bun run [file join $repo packages cli src index.tsx]
+expect {
+    -re "Minerva ·" {}
+    timeout { puts "\nSMOKE: FAIL no banner"; exit 1 }
+}
+expect {
+    ">" {}
+    timeout { puts "\nSMOKE: FAIL no input prompt"; exit 1 }
+}
+sleep 0.5
+send -- "/exit"
+sleep 0.5
+send -- "\r"
+expect {
+    eof { puts "\nSMOKE: OK"; exit 0 }
+    timeout { puts "\nSMOKE: FAIL did not exit"; exit 1 }
+}

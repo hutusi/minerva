@@ -13,7 +13,9 @@
     "lint:fix": "biome check --write .",
     "verify": "bun run typecheck && bun run lint && bun test",
     "knip": "knip",
-    "build:release": "bun build --compile --minify --external react-devtools-core packages/cli/src/index.tsx --outfile dist/minerva"
+    "build:release": "bun build --compile --minify --external react-devtools-core packages/cli/src/index.tsx --outfile dist/minerva",
+    "smoke:tui": "expect scripts/smoke-tui.exp",
+    "e2e:tui": "expect scripts/e2e-tui.exp"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",

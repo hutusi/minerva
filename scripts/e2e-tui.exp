@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+# TUI e2e under a real PTY: a full scripted conversation through the actual
+# Ink UI — prompt in, streamed text, permission approval, completed tool
+# output, clean exit. The model is scripted (MINERVA_TEST_TURNS); everything
+# else is the real stack.
+set timeout 30
+set repo [file dirname [file dirname [file normalize [info script]]]]
+set env(MINERVA_DATA_DIR) [exec mktemp -d]
+set env(MINERVA_TEST_TURNS) {[[{"type":"text-delta","text":"Checking that for you."},{"type":"tool-call","toolCallId":"c1","toolName":"bash","input":{"command":"echo e2e-tui-ok"}},{"type":"finish","finishReason":"tool-calls","usage":{}}],[{"type":"text-delta","text":"Everything checks out."},{"type":"finish","finishReason":"stop","usage":{}}]]}
+
+spawn bun run [file join $repo packages cli test fixtures tui-scripted.tsx]
+
+proc must {pattern what} {
+    expect {
+        -re $pattern {}
+        timeout { puts "\nE2E: FAIL waiting for $what"; exit 1 }
+    }
+}
+
+must "Minerva ·" "banner"
+must ">" "input prompt"
+sleep 0.5
+send -- "run the check"
+sleep 0.3
+send -- "\r"
+must "Checking that for you." "streamed assistant text"
+must "Permission required" "permission prompt"
+must "echo e2e-tui-ok" "command shown in prompt"
+sleep 0.3
+send -- "y"
+must "e2e-tui-ok" "tool output"
+must {\[completed\]} "tool completed status"
+must "Everything checks out." "final assistant text"
+sleep 0.5
+send -- "/exit"
+sleep 0.3
+send -- "\r"
+expect {
+    eof { puts "\nE2E: OK"; exit 0 }
+    timeout { puts "\nE2E: FAIL did not exit"; exit 1 }
+}
