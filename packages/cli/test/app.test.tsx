@@ -8,7 +8,7 @@ import { createInProcTransportPair } from "@minerva/protocol";
 import { createScriptedProvider, type TurnEvent } from "@minerva/providers";
 import { render } from "ink-testing-library";
 import { App } from "../src/app";
-import { PermissionBridge } from "../src/permission-bridge";
+import { createPermissionBridge } from "../src/permission-bridge";
 
 const FINISH_STOP: TurnEvent = { type: "finish", finishReason: "stop", usage: {} };
 const FINISH_TOOLS: TurnEvent = { type: "finish", finishReason: "tool-calls", usage: {} };
@@ -19,7 +19,7 @@ function renderTui(turns: TurnEvent[][]) {
   const dataDir = mkdtempSync(join(tmpdir(), "minerva-ui-data-"));
   const [clientTransport, kernelTransport] = createInProcTransportPair();
   createKernel(kernelTransport, { dataDir, provider: createScriptedProvider(turns) });
-  const bridge = new PermissionBridge();
+  const bridge = createPermissionBridge();
   const client = new MinervaClient(clientTransport, {
     onPermissionRequest: bridge.onPermissionRequest,
   });

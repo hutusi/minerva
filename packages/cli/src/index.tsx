@@ -12,7 +12,7 @@ import { render } from "ink";
 import { runAcpHost } from "./acp";
 import { App } from "./app";
 import { parseCliArgs, usage } from "./args";
-import { PermissionBridge } from "./permission-bridge";
+import { createPermissionBridge } from "./permission-bridge";
 
 const defaultModel = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
 const parsed = parseCliArgs(process.argv.slice(2), defaultModel);
@@ -58,7 +58,7 @@ const cwd = process.cwd();
 const [clientTransport, kernelTransport] = createInProcTransportPair();
 createKernel(kernelTransport, kernelOptions);
 
-const bridge = new PermissionBridge();
+const bridge = createPermissionBridge();
 const client = new MinervaClient(clientTransport, {
   onPermissionRequest: bridge.onPermissionRequest,
 });

@@ -4,4 +4,4 @@
 # sit below the worst-covered file. Ratchet up as gaps close, never lower.
 [test]
 coverageSkipTestFiles = true
-coverageThreshold = { lines = 0.60, functions = 0.60 }
+coverageThreshold = { lines = 0.80, functions = 0.80 }

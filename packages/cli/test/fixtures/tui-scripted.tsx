@@ -9,7 +9,7 @@ import { createInProcTransportPair } from "@minerva/protocol";
 import { createScriptedProvider, type TurnEvent } from "@minerva/providers";
 import { render } from "ink";
 import { App } from "../../src/app";
-import { PermissionBridge } from "../../src/permission-bridge";
+import { createPermissionBridge } from "../../src/permission-bridge";
 
 const turns = JSON.parse(process.env.MINERVA_TEST_TURNS ?? "[]") as TurnEvent[][];
 const [clientTransport, kernelTransport] = createInProcTransportPair();
@@ -18,7 +18,7 @@ createKernel(kernelTransport, {
   ...(process.env.MINERVA_DATA_DIR ? { dataDir: process.env.MINERVA_DATA_DIR } : {}),
 });
 
-const bridge = new PermissionBridge();
+const bridge = createPermissionBridge();
 const client = new MinervaClient(clientTransport, {
   onPermissionRequest: bridge.onPermissionRequest,
 });

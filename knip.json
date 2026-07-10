@@ -5,22 +5,14 @@
     "packages/providers": {},
     "packages/client": {},
     "packages/kernel": {
-      "entry": [
-        "test/fixtures/*.ts"
-      ]
+      "entry": ["test/fixtures/*.ts"]
     },
     "packages/cli": {
-      "entry": [
-        "test/fixtures/*.{ts,tsx}"
-      ]
+      "entry": ["test/fixtures/*.{ts,tsx}"]
     },
     ".": {
-      "entry": [
-        "scripts/*.ts"
-      ]
+      "entry": ["scripts/*.ts"]
     }
   },
-  "ignoreBinaries": [
-    "expect"
-  ]
+  "ignoreBinaries": ["expect"]
 }
