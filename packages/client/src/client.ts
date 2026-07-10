@@ -1,6 +1,8 @@
 import {
   AGENT_METHODS,
   CLIENT_METHODS,
+  type ConfigSetModelParams,
+  type ConfigSetModelResult,
   Connection,
   type InitializeResult,
   MINERVA_METHODS,
@@ -114,6 +116,18 @@ export class MinervaClient {
 
   async setMode(sessionId: string, modeId: string): Promise<void> {
     await this.#connection.request(AGENT_METHODS.sessionSetMode, { sessionId, modeId });
+  }
+
+  /**
+   * Persist model/provider config and swap the kernel's live provider;
+   * returns the new provider id (e.g. "bailian/qwen-plus").
+   */
+  async setModel(params: ConfigSetModelParams): Promise<string> {
+    const result = await this.#connection.request<ConfigSetModelResult>(
+      MINERVA_METHODS.configSetModel,
+      params,
+    );
+    return result.providerId;
   }
 
   /** Summarize and reset the model context; returns the summary. */

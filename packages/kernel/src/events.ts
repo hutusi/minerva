@@ -18,6 +18,9 @@ export type SessionEvent =
     }
   | { type: "session.resumed"; provider: string; at: string }
   | { type: "session.mode_changed"; modeId: string; at: string }
+  // Audit trail for a live model switch (minerva/config/set_model). Replay
+  // skips unknown/informational events, so logs carrying it stay resumable.
+  | { type: "session.model_changed"; provider: string; at: string }
   | { type: "user.message"; text: string; at: string }
   | {
       type: "assistant.message";
