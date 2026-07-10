@@ -14,7 +14,7 @@
     "@minerva/kernel": "workspace:*",
     "@minerva/protocol": "workspace:*",
     "@minerva/providers": "workspace:*",
-    "ink": "^6",
+    "ink": "^7",
     "ink-text-input": "^6",
     "react": "^19"
   },
