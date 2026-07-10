@@ -5,7 +5,9 @@
 
 interface CliArgs {
   command: "tui" | "acp";
-  model: string;
+  /** Model ref from -m/--model; null when the flag was not given, so the
+   *  entrypoint can fall back to MINERVA_MODEL and then settings. */
+  model: string | null;
   resume: string | null;
 }
 
@@ -26,18 +28,22 @@ Commands:
 Options:
   -c, --continue       Resume the most recent session for this directory
   -r, --resume <id>    Resume a specific session
-  -m, --model <ref>    Model as [provider/]model, e.g. openai/gpt-5.2 or
+  -m, --model <ref>    Model as [provider/]model, e.g. bailian/qwen-plus or
                        claude-opus-4-8 (default: ${defaultModel}, env: MINERVA_MODEL)
   -h, --help           Show this help
 
 Environment:
   ANTHROPIC_API_KEY    Key for anthropic/* models
   OPENAI_API_KEY       Key for openai/* models
-  MINERVA_DATA_DIR     Session/config root (default: ~/.minerva)`;
+  DASHSCOPE_API_KEY    Key for bailian/* models (Alibaba Bailian)
+  MINERVA_DATA_DIR     Session/config root (default: ~/.minerva)
+
+Model, provider, and API-key configuration can also live in settings
+(~/.minerva/settings.json) — run the TUI and use /config to set it up.`;
 }
 
-export function parseCliArgs(argv: string[], defaultModel: string): ParsedCli {
-  let model = defaultModel;
+export function parseCliArgs(argv: string[]): ParsedCli {
+  let model: string | null = null;
   let resume: string | null = null;
   let command: CliArgs["command"] = "tui";
 
