@@ -64,7 +64,7 @@ describe("MinervaClient against a real kernel", () => {
     ]);
   });
 
-  test("default permission handler denies", async () => {
+  test("default permission handler cancels the turn (ACP cancelled outcome)", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));
     const [clientTransport, kernelTransport] = createInProcTransportPair();
@@ -80,19 +80,58 @@ describe("MinervaClient against a real kernel", () => {
           },
           { type: "finish", finishReason: "tool-calls", usage: {} },
         ],
-        [
-          { type: "text-delta", text: "Okay, not running it." },
-          { type: "finish", finishReason: "stop", usage: {} },
-        ],
       ]),
     });
 
     const client = new MinervaClient(clientTransport);
     await client.initialize();
     const { sessionId, store } = await client.newSession(cwd);
-    await client.prompt(sessionId, "run echo");
+    const stopReason = await client.prompt(sessionId, "run echo");
 
+    expect(stopReason).toBe("cancelled");
     const tool = store.snapshot.items.find((item) => item.kind === "tool");
     expect(tool).toMatchObject({ status: "failed" });
+  });
+
+  test("overlapping prompt is rejected without disturbing the store", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([
+        [
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "bash",
+            input: { command: "sleep 0.2" },
+          },
+          { type: "finish", finishReason: "tool-calls", usage: {} },
+        ],
+        [
+          { type: "text-delta", text: "done" },
+          { type: "finish", finishReason: "stop", usage: {} },
+        ],
+      ]),
+    });
+
+    const client = new MinervaClient(clientTransport, {
+      onPermissionRequest: async () => ({
+        outcome: { outcome: "selected", optionId: "allow" },
+      }),
+    });
+    await client.initialize();
+    const { sessionId, store } = await client.newSession(cwd);
+
+    const first = client.prompt(sessionId, "slow one");
+    await Bun.sleep(20);
+    expect(client.prompt(sessionId, "second")).rejects.toThrow("already running");
+    expect(store.snapshot.busy).toBe(true);
+    expect(
+      store.snapshot.items.filter((item) => item.kind === "user").map((item) => item.text),
+    ).toEqual(["slow one"]);
+    await first;
+    expect(store.snapshot.busy).toBe(false);
   });
 });

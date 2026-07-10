@@ -31,11 +31,12 @@ interface Harness {
   permissionRequests: RequestPermissionParams[];
   sessionId: string;
   logEvents: () => SessionEvent[];
+  sessionMessages: () => unknown[];
 }
 
 async function setup(options: {
   turns: TurnEvent[][];
-  permission?: "allow" | "reject";
+  permission?: "allow" | "reject" | "cancel";
 }): Promise<Harness> {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-proj-"));
   const dataDir = mkdtempSync(join(tmpdir(), "minerva-data-"));
@@ -55,6 +56,9 @@ async function setup(options: {
   });
   client.handleRequest(CLIENT_METHODS.sessionRequestPermission, (params) => {
     permissionRequests.push(params as RequestPermissionParams);
+    if (options.permission === "cancel") {
+      return { outcome: { outcome: "cancelled" } };
+    }
     return {
       outcome: { outcome: "selected", optionId: options.permission ?? "allow" },
     };
@@ -81,6 +85,11 @@ async function setup(options: {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as SessionEvent);
+    },
+    sessionMessages: () => {
+      const session = kernel.getSession(sessionId);
+      if (!session) throw new Error("session not found");
+      return session.messages as unknown[];
     },
   };
 }
@@ -196,6 +205,45 @@ describe("kernel over in-proc transport", () => {
       (u) => u.update.sessionUpdate === "tool_call_update" && u.update.status === "completed",
     );
     expect(JSON.stringify(completed)).toContain("hi from disk");
+  });
+
+  test("cancelled permission outcome ends the turn with no dangling tool_use", async () => {
+    const harness = await setup({
+      permission: "cancel",
+      turns: [
+        [
+          { type: "text-delta", text: "Editing now." },
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "edit_file",
+            input: { path: "hello.txt", old_string: "hi", new_string: "bye" },
+          },
+          FINISH_TOOLS,
+        ],
+      ],
+    });
+
+    const result = await prompt(harness, "edit the file");
+    expect(result.stopReason).toBe("cancelled");
+
+    // ACP cancelled outcome is not a user denial and must be audited as such.
+    const decision = harness.logEvents().find((event) => event.type === "permission.decision");
+    expect(decision).toMatchObject({ decision: "denied", source: "frontend" });
+
+    // Every tool_use in the pushed assistant message has a matching result,
+    // so the next prompt in this session sends a well-formed history.
+    const messages = harness.sessionMessages() as Array<{
+      role: string;
+      toolCalls?: unknown[];
+      results?: Array<{ toolCallId: string }>;
+    }>;
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect(messages[2]?.results?.map((r) => r.toolCallId)).toEqual(["c1"]);
+
+    // The streamed assistant text survived cancellation into the event log.
+    const assistant = harness.logEvents().find((event) => event.type === "assistant.message");
+    expect(assistant).toMatchObject({ text: "Editing now." });
   });
 
   test("concurrent prompt on the same session is rejected", async () => {

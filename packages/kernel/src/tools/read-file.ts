@@ -1,13 +1,13 @@
-import { resolve } from "node:path";
 import type { KernelTool } from "./types";
-import { asRecord, requireString } from "./types";
+import { asRecord, requireString, resolveWithinWorkspace } from "./types";
 
 const MAX_CHARS = 50_000;
 
 export const readFileTool: KernelTool = {
   name: "read_file",
   description:
-    "Read a text file. The path may be absolute or relative to the working directory. " +
+    "Read a text file inside the working directory. The path may be absolute or " +
+    "relative to the working directory, but must stay within it. " +
     "Output is truncated after 50k characters.",
   inputSchema: {
     type: "object",
@@ -22,7 +22,9 @@ export const readFileTool: KernelTool = {
     return `Read ${requireString(asRecord(input), "path")}`;
   },
   async execute(input, context) {
-    const path = resolve(context.cwd, requireString(asRecord(input), "path"));
+    // read_file is auto-allowed by policy (readOnly), so it must not be able
+    // to reach outside the workspace — no permission prompt would fire.
+    const path = resolveWithinWorkspace(context.cwd, requireString(asRecord(input), "path"));
     const content = await context.runtime.readTextFile(path);
     if (content.length > MAX_CHARS) {
       return {

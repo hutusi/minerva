@@ -27,21 +27,29 @@ export const bashTool: KernelTool = {
   async execute(input, context) {
     const record = asRecord(input);
     const command = requireString(record, "command");
-    const timeoutMs = Math.min(
-      typeof record.timeout_ms === "number" ? record.timeout_ms : DEFAULT_TIMEOUT_MS,
-      MAX_TIMEOUT_MS,
-    );
+    // 0, negative, and NaN would arm an instant kill timer — fall back to
+    // the default instead of trusting the model's arithmetic.
+    const requested = record.timeout_ms;
+    const timeoutMs =
+      typeof requested === "number" && Number.isFinite(requested) && requested > 0
+        ? Math.min(requested, MAX_TIMEOUT_MS)
+        : DEFAULT_TIMEOUT_MS;
 
-    const result = await context.runtime.exec(command, { cwd: context.cwd, timeoutMs });
+    const result = await context.runtime.exec(command, {
+      cwd: context.cwd,
+      timeoutMs,
+      signal: context.signal,
+    });
 
     const parts: string[] = [];
     if (result.stdout) parts.push(truncate(result.stdout));
     if (result.stderr) parts.push(`[stderr]\n${truncate(result.stderr)}`);
-    if (result.timedOut) parts.push(`[command timed out after ${timeoutMs}ms]`);
+    if (result.aborted) parts.push("[command cancelled by user]");
+    else if (result.timedOut) parts.push(`[command timed out after ${timeoutMs}ms]`);
     if (result.exitCode !== 0) parts.push(`[exit code: ${result.exitCode}]`);
     return {
       output: parts.join("\n") || "(no output)",
-      isError: result.exitCode !== 0 || result.timedOut,
+      isError: result.exitCode !== 0 || result.timedOut || result.aborted,
     };
   },
 };

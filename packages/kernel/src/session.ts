@@ -47,18 +47,32 @@ export class Session {
     return session;
   }
 
+  #logError: unknown = null;
+
   /**
-   * Append to the JSONL log. Writes are chained so events land in order
-   * even though callers don't await them; `flush()` awaits the chain.
+   * Append to the JSONL log. Writes are chained so events land in order even
+   * though callers don't await them. A failed write must not poison the
+   * chain (later events still get their own attempt), but it must not be
+   * silent either: flush() throws the first failure once, so the prompt that
+   * hit it fails loudly while later prompts recover.
    */
   append(event: SessionEvent): void {
-    this.#logChain = this.#logChain.then(() =>
-      this.#runtime.appendTextFile(this.#logPath, `${JSON.stringify(event)}\n`),
-    );
+    this.#logChain = this.#logChain
+      .then(() => this.#runtime.appendTextFile(this.#logPath, `${JSON.stringify(event)}\n`))
+      .catch((error) => {
+        this.#logError ??= error;
+      });
   }
 
-  flush(): Promise<void> {
-    return this.#logChain;
+  async flush(): Promise<void> {
+    await this.#logChain;
+    if (this.#logError !== null) {
+      const error = this.#logError;
+      this.#logError = null;
+      throw error instanceof Error
+        ? new Error(`session event log write failed: ${error.message}`)
+        : new Error(`session event log write failed: ${String(error)}`);
+    }
   }
 
   get logPath(): string {

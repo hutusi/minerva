@@ -25,11 +25,16 @@ export type SessionEvent =
       toolCallId: string;
       toolName: string;
       decision: "allowed" | "denied";
-      /** "policy" = decided by kernel rules; "user" = decided via permission request. */
-      source: "policy" | "user";
+      /**
+       * "policy" = kernel rules; "user" = explicit user choice via permission
+       * request; "frontend" = the frontend answered without a user choice
+       * (cancelled outcome); "error" = the request failed, denied by default.
+       */
+      source: "policy" | "user" | "frontend" | "error";
       at: string;
     }
-  | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage; at: string };
+  | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage; at: string }
+  | { type: "turn.failed"; error: string; at: string };
 
 export function now(): string {
   return new Date().toISOString();

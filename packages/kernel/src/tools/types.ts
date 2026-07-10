@@ -1,9 +1,12 @@
+import { isAbsolute, relative, resolve } from "node:path";
 import type { ToolKind } from "@minerva/protocol";
 import type { Runtime } from "../runtime";
 
 export interface ToolContext {
   cwd: string;
   runtime: Runtime;
+  /** Aborts when the prompt is cancelled; long-running tools should honor it. */
+  signal?: AbortSignal;
 }
 
 export interface ToolOutput {
@@ -39,4 +42,19 @@ export function requireString(record: Record<string, unknown>, key: string): str
     throw new Error(`missing required string parameter: ${key}`);
   }
   return value;
+}
+
+/**
+ * Resolve a model-supplied path and confine it to the workspace. Tool inputs
+ * are untrusted model output: without this check a policy-allowed read-only
+ * tool could read arbitrary files (~/.ssh/id_rsa) with no permission prompt.
+ * Symlink escapes remain possible in slice 1; the rule engine tightens this.
+ */
+export function resolveWithinWorkspace(cwd: string, inputPath: string): string {
+  const resolved = resolve(cwd, inputPath);
+  const rel = relative(cwd, resolved);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(`path is outside the workspace: ${resolved}`);
+  }
+  return resolved;
 }

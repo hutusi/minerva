@@ -107,14 +107,29 @@ export class Connection {
     this.#notificationHandlers.set(method, handler);
   }
 
-  request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  request<T = unknown>(method: string, params?: unknown, signal?: AbortSignal): Promise<T> {
     if (this.#closed) {
       return Promise.reject(new RpcError(JSON_RPC_ERROR_CODES.INTERNAL_ERROR, "connection closed"));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(new RpcError(JSON_RPC_ERROR_CODES.INTERNAL_ERROR, "request aborted"));
     }
     const id = this.#nextId++;
     const promise = new Promise<T>((resolve, reject) => {
       this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
     });
+    if (signal) {
+      // JSON-RPC has no wire-level cancel; abort settles the caller locally
+      // and a late response for this id is dropped by #dispatchResponse.
+      const onAbort = () => {
+        const pending = this.#pending.get(id);
+        if (!pending) return;
+        this.#pending.delete(id);
+        pending.reject(new RpcError(JSON_RPC_ERROR_CODES.INTERNAL_ERROR, "request aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.finally(() => signal.removeEventListener("abort", onAbort)).catch(() => {});
+    }
     this.#transport.send({ jsonrpc: "2.0", id, method, params });
     return promise;
   }

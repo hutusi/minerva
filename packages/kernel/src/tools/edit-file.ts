@@ -26,7 +26,12 @@ export const editFileTool: KernelTool = {
     const record = asRecord(input);
     const path = resolve(context.cwd, requireString(record, "path"));
     const oldString = requireString(record, "old_string");
-    const newString = typeof record.new_string === "string" ? record.new_string : "";
+    // Unlike requireString, the empty string is a legal new_string (deletion)
+    // — but a missing/non-string value must fail, not silently delete.
+    const newString = record.new_string;
+    if (typeof newString !== "string") {
+      throw new Error("missing required string parameter: new_string");
+    }
 
     const content = await context.runtime.readTextFile(path);
     const occurrences = content.split(oldString).length - 1;
@@ -39,7 +44,12 @@ export const editFileTool: KernelTool = {
         isError: true,
       };
     }
-    await context.runtime.writeTextFile(path, content.replace(oldString, newString));
+    // Replacer function: a plain string argument would interpret $-patterns
+    // ($$, $&, $') in new_string and silently corrupt the file.
+    await context.runtime.writeTextFile(
+      path,
+      content.replace(oldString, () => newString),
+    );
     return { output: `Edited ${path}` };
   },
 };

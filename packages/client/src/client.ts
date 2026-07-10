@@ -33,6 +33,7 @@ export interface MinervaClientOptions {
 export class MinervaClient {
   #connection: Connection;
   #stores = new Map<string, SessionStore>();
+  #activePrompts = new Set<string>();
   #onPermissionRequest: PermissionHandler;
 
   constructor(transport: Transport, options: MinervaClientOptions = {}) {
@@ -66,6 +67,14 @@ export class MinervaClient {
   }
 
   async prompt(sessionId: string, text: string): Promise<StopReason> {
+    // Reject overlapping prompts before touching the store: the kernel would
+    // reject them anyway, but by then the rejected call's echo and its
+    // finally-setBusy(false) would have clobbered the in-flight prompt's
+    // view state.
+    if (this.#activePrompts.has(sessionId)) {
+      throw new Error("a prompt is already running in this session");
+    }
+    this.#activePrompts.add(sessionId);
     const store = this.#stores.get(sessionId);
     store?.addUserMessage(text);
     store?.setBusy(true);
@@ -76,6 +85,7 @@ export class MinervaClient {
       );
       return result.stopReason;
     } finally {
+      this.#activePrompts.delete(sessionId);
       store?.setBusy(false);
     }
   }

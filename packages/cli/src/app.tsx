@@ -168,12 +168,15 @@ function firstLines(text: string, count: number): string {
 }
 
 function PermissionPrompt({ pending }: { pending: PendingPermission }) {
-  useInput((input) => {
+  useInput((input, key) => {
     const answer = input.toLowerCase();
     if (answer === "y") {
       pending.resolve({ outcome: { outcome: "selected", optionId: "allow" } });
     } else if (answer === "n") {
       pending.resolve({ outcome: { outcome: "selected", optionId: "reject" } });
+    } else if (key.escape) {
+      // ACP cancelled outcome: abandon the whole turn, not just this call.
+      pending.resolve({ outcome: { outcome: "cancelled" } });
     }
   });
   return (
@@ -182,7 +185,7 @@ function PermissionPrompt({ pending }: { pending: PendingPermission }) {
         Permission required
       </Text>
       <Text>{pending.request.toolCall.title}</Text>
-      <Text dimColor>allow? (y/n)</Text>
+      <Text dimColor>allow? (y/n, esc cancels the turn)</Text>
     </Box>
   );
 }

@@ -27,14 +27,37 @@ export interface LoopContext {
   tools: KernelTool[];
   system: string;
   runtime: Runtime;
+  signal?: AbortSignal;
 }
 
 export async function runPrompt(
   context: LoopContext,
   promptText: string,
 ): Promise<{ stopReason: StopReason }> {
-  const { session, provider, tools, system } = context;
+  const { session } = context;
   const signal = session.beginPrompt();
+  try {
+    return await runLoop({ ...context, signal }, promptText);
+  } catch (error) {
+    // Errored turns must still leave a terminal event, or replay/audit can't
+    // tell a crashed turn from one still in flight.
+    session.append({
+      type: "turn.failed",
+      error: error instanceof Error ? error.message : String(error),
+      at: now(),
+    });
+    throw error;
+  } finally {
+    session.endPrompt();
+    await session.flush();
+  }
+}
+
+async function runLoop(
+  context: LoopContext,
+  promptText: string,
+): Promise<{ stopReason: StopReason }> {
+  const { session, provider, tools, system, signal } = context;
   const toolDefinitions = tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -42,75 +65,94 @@ export async function runPrompt(
   }));
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 
-  try {
-    session.append({ type: "user.message", text: promptText, at: now() });
-    session.messages.push({ role: "user", content: promptText });
+  session.append({ type: "user.message", text: promptText, at: now() });
+  session.messages.push({ role: "user", content: promptText });
 
-    for (let turn = 0; turn < MAX_MODEL_TURNS; turn++) {
-      let text = "";
-      const toolCalls: ProviderToolCall[] = [];
-      let finishReason: TurnFinishReason = "other";
-      let usage: TurnUsage | undefined;
-      let streamError: unknown;
+  for (let turn = 0; turn < MAX_MODEL_TURNS; turn++) {
+    let text = "";
+    const toolCalls: ProviderToolCall[] = [];
+    let finishReason: TurnFinishReason = "other";
+    let usage: TurnUsage | undefined;
+    let streamError: unknown;
 
-      try {
-        const stream = provider.streamTurn({
-          system,
-          messages: session.messages,
-          tools: toolDefinitions,
-          abortSignal: signal,
-        });
-        for await (const event of stream) {
-          switch (event.type) {
-            case "text-delta":
-              text += event.text;
-              sendUpdate(context, {
-                sessionUpdate: "agent_message_chunk",
-                content: { type: "text", text: event.text },
-              });
-              break;
-            case "tool-call":
-              toolCalls.push(event);
-              break;
-            case "finish":
-              finishReason = event.finishReason;
-              usage = event.usage;
-              break;
-            case "error":
-              streamError = event.error;
-              break;
-          }
-        }
-      } catch (error) {
-        if (session.cancelled) return finish(session, "cancelled");
-        throw error;
-      }
-      if (session.cancelled) return finish(session, "cancelled", usage);
-      if (streamError !== undefined) {
-        throw streamError instanceof Error ? streamError : new Error(String(streamError));
-      }
-
+    // Everything streamed to the UI must also be recorded, even when the
+    // turn is cancelled mid-stream — the event log has to be able to
+    // re-render what the user actually saw.
+    const recordAssistantMessage = () => {
       if (text) session.append({ type: "assistant.message", text, at: now() });
       if (text || toolCalls.length > 0) {
         session.messages.push({ role: "assistant", text, toolCalls });
       }
+    };
+    // A pushed assistant message with tool calls must always be followed by
+    // matching tool results, or the provider rejects the whole history on
+    // the next prompt.
+    const cancelToolBatch = () => {
+      if (toolCalls.length === 0) return;
+      session.messages.push({
+        role: "tool",
+        results: toolCalls.map((call) => cancelToolCall(context, call)),
+      });
+    };
 
-      if (toolCalls.length === 0) {
-        return finish(session, finishReason === "length" ? "max_tokens" : "end_turn", usage);
+    try {
+      const stream = provider.streamTurn({
+        system,
+        messages: session.messages,
+        tools: toolDefinitions,
+        abortSignal: signal,
+      });
+      for await (const event of stream) {
+        switch (event.type) {
+          case "text-delta":
+            text += event.text;
+            sendUpdate(context, {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: event.text },
+            });
+            break;
+          case "tool-call":
+            toolCalls.push(event);
+            break;
+          case "finish":
+            finishReason = event.finishReason;
+            usage = event.usage;
+            break;
+          case "error":
+            streamError = event.error;
+            break;
+        }
       }
-
-      const results: ProviderToolResult[] = [];
-      for (const call of toolCalls) {
-        if (session.cancelled) return finish(session, "cancelled", usage);
-        results.push(await executeToolCall(context, call, toolsByName.get(call.toolName)));
-      }
-      session.messages.push({ role: "tool", results });
+    } catch (error) {
+      if (!session.cancelled) throw error;
     }
-    return finish(session, "max_turn_requests");
-  } finally {
-    session.endPrompt();
-    await session.flush();
+    if (session.cancelled) {
+      recordAssistantMessage();
+      cancelToolBatch();
+      return finish(session, "cancelled", usage);
+    }
+    if (streamError !== undefined) {
+      throw streamError instanceof Error ? streamError : new Error(String(streamError));
+    }
+
+    recordAssistantMessage();
+
+    if (toolCalls.length === 0) {
+      return finish(session, finishReason === "length" ? "max_tokens" : "end_turn", usage);
+    }
+
+    const results: ProviderToolResult[] = [];
+    for (const call of toolCalls) {
+      results.push(
+        session.cancelled
+          ? cancelToolCall(context, call)
+          : await executeToolCall(context, call, toolsByName.get(call.toolName)),
+      );
+    }
+    session.messages.push({ role: "tool", results });
+    if (session.cancelled) return finish(session, "cancelled", usage);
   }
+  return finish(session, "max_turn_requests");
 }
 
 async function executeToolCall(
@@ -119,22 +161,7 @@ async function executeToolCall(
   tool: KernelTool | undefined,
 ): Promise<ProviderToolResult> {
   const { session } = context;
-  session.append({
-    type: "tool.call",
-    toolCallId: call.toolCallId,
-    toolName: call.toolName,
-    input: call.input,
-    at: now(),
-  });
-  const kind = tool?.kind ?? "other";
-  sendUpdate(context, {
-    sessionUpdate: "tool_call",
-    toolCallId: call.toolCallId,
-    title: titleFor(tool, call),
-    kind,
-    status: "pending",
-    rawInput: call.input,
-  });
+  startToolCall(context, call, tool);
 
   if (!tool) {
     return completeToolCall(context, call, {
@@ -154,7 +181,18 @@ async function executeToolCall(
   });
   if (!decision.allowed) {
     return completeToolCall(context, call, {
-      output: "The user denied permission for this tool call.",
+      output:
+        decision.source === "user"
+          ? "The user denied permission for this tool call."
+          : "Permission could not be granted for this tool call.",
+      isError: true,
+    });
+  }
+  // The permission round-trip can take arbitrarily long; a cancel that
+  // arrived while the prompt was showing must win over a late approval.
+  if (session.cancelled) {
+    return completeToolCall(context, call, {
+      output: "Tool call cancelled by user.",
       isError: true,
     });
   }
@@ -171,6 +209,7 @@ async function executeToolCall(
     const result = await tool.execute(call.input, {
       cwd: session.cwd,
       runtime: context.runtime,
+      signal: context.signal,
     });
     output = result.output;
     isError = result.isError ?? false;
@@ -179,6 +218,41 @@ async function executeToolCall(
     isError = true;
   }
   return completeToolCall(context, call, { output, isError });
+}
+
+/** Resolve a tool call as cancelled without executing it. */
+function cancelToolCall(context: LoopContext, call: ProviderToolCall): ProviderToolResult {
+  startToolCall(
+    context,
+    call,
+    context.tools.find((tool) => tool.name === call.toolName),
+  );
+  return completeToolCall(context, call, {
+    output: "Tool call cancelled by user.",
+    isError: true,
+  });
+}
+
+function startToolCall(
+  context: LoopContext,
+  call: ProviderToolCall,
+  tool: KernelTool | undefined,
+): void {
+  context.session.append({
+    type: "tool.call",
+    toolCallId: call.toolCallId,
+    toolName: call.toolName,
+    input: call.input,
+    at: now(),
+  });
+  sendUpdate(context, {
+    sessionUpdate: "tool_call",
+    toolCallId: call.toolCallId,
+    title: titleFor(tool, call),
+    kind: tool?.kind ?? "other",
+    status: "pending",
+    rawInput: call.input,
+  });
 }
 
 function completeToolCall(
@@ -210,7 +284,9 @@ function completeToolCall(
 
 interface PermissionDecision {
   allowed: boolean;
-  source: "policy" | "user";
+  /** Who actually decided — the audit log must not blame the user for
+   * transport failures or frontend defaults. */
+  source: "policy" | "user" | "frontend" | "error";
 }
 
 /**
@@ -241,12 +317,18 @@ async function checkPermission(
           { optionId: "reject", name: "Reject", kind: "reject_once" },
         ],
       },
+      context.signal,
     );
-    const allowed = result.outcome.outcome === "selected" && result.outcome.optionId === "allow";
-    return { allowed, source: "user" };
+    if (result.outcome.outcome === "cancelled") {
+      // ACP: the frontend is cancelling the turn, not answering the question.
+      context.session.cancel();
+      return { allowed: false, source: "frontend" };
+    }
+    return { allowed: result.outcome.optionId === "allow", source: "user" };
   } catch {
-    // A frontend that can't answer permission requests gets deny-by-default.
-    return { allowed: false, source: "user" };
+    // Transport failure or aborted prompt: deny by default, and don't
+    // attribute the denial to a user who was never asked.
+    return { allowed: false, source: "error" };
   }
 }
 
