@@ -112,6 +112,11 @@ export class MinervaKernel {
    * warnings on stderr — a broken server config must not brick sessions.
    */
   async #connectMcp(sessionId: string, cwd: string): Promise<void> {
+    // Re-loading a session replaces its connection; close the old one or its
+    // server processes leak for the kernel's lifetime.
+    await this.#mcp.get(sessionId)?.close();
+    this.#mcp.delete(sessionId);
+
     const settings = await loadSettings(this.#runtime, this.#dataDir, cwd);
     if (Object.keys(settings.mcpServers).length === 0) return;
     const connection = await connectMcpServers(settings.mcpServers);

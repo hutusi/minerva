@@ -118,6 +118,12 @@ export class MinervaClient {
 
   /** Summarize and reset the model context; returns the summary. */
   async compact(sessionId: string): Promise<string> {
+    // Same guard as prompt(): a rejected overlapping call must not clear the
+    // in-flight prompt's busy state on its way out.
+    if (this.#activePrompts.has(sessionId)) {
+      throw new Error("a prompt is already running in this session");
+    }
+    this.#activePrompts.add(sessionId);
     const store = this.#stores.get(sessionId);
     store?.setBusy(true);
     try {
@@ -127,6 +133,7 @@ export class MinervaClient {
       );
       return result.summary;
     } finally {
+      this.#activePrompts.delete(sessionId);
       store?.setBusy(false);
     }
   }

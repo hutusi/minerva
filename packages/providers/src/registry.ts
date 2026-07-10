@@ -19,7 +19,14 @@ export interface ModelRef {
 
 export function parseModelRef(ref: string): ModelRef {
   const slash = ref.indexOf("/");
-  if (slash === -1) return { provider: "anthropic", model: ref };
+  if (slash === -1) {
+    // "--model openai" would otherwise become an Anthropic model literally
+    // named "openai" and fail confusingly at request time.
+    if (ref === "anthropic" || ref === "openai") {
+      throw new Error(`"${ref}" is a provider, not a model — use ${ref}/<model-id>`);
+    }
+    return { provider: "anthropic", model: ref };
+  }
   const provider = ref.slice(0, slash);
   const model = ref.slice(slash + 1);
   if (provider !== "anthropic" && provider !== "openai") {

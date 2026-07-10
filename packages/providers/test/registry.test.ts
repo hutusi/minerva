@@ -22,6 +22,11 @@ describe("model references", () => {
     expect(() => parseModelRef("openai/")).toThrow("missing a model id");
   });
 
+  test("a bare provider name is rejected with a hint", () => {
+    expect(() => parseModelRef("openai")).toThrow("openai/<model-id>");
+    expect(() => parseModelRef("anthropic")).toThrow("anthropic/<model-id>");
+  });
+
   test("createProviderFromRef builds ids with the provider prefix", () => {
     expect(createProviderFromRef("openai/gpt-5.2", { apiKey: "sk-test" }).id).toBe(
       "openai/gpt-5.2",

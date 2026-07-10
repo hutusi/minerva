@@ -62,6 +62,40 @@ describe("/compact", () => {
     expect(texts).toEqual(["Refactored the parser.", "Continuing from the summary."]);
   });
 
+  test("compact during an active prompt is rejected without touching busy state", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-compact3-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-compact3-data-"));
+    // Needs its own client: the shared boot() has no permission handler, and
+    // this test's slow bash call must actually be approved and run.
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([
+        [
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "bash",
+            input: { command: "sleep 0.2" },
+          },
+          { type: "finish", finishReason: "tool-calls", usage: {} },
+        ],
+        [{ type: "text-delta", text: "done" }, FINISH_STOP],
+      ]),
+    });
+    const client = new MinervaClient(clientTransport, {
+      onPermissionRequest: async () => ({ outcome: { outcome: "selected", optionId: "allow" } }),
+    });
+    await client.initialize();
+    const { sessionId, store } = await client.newSession(cwd);
+
+    const running = client.prompt(sessionId, "slow one");
+    await Bun.sleep(20);
+    await expect(client.compact(sessionId)).rejects.toThrow("already running");
+    expect(store.snapshot.busy).toBe(true);
+    await running;
+  });
+
   test("compacting an empty session is rejected", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-compact2-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-compact2-data-"));

@@ -1,5 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { McpServerConfig } from "./settings";
 import type { KernelTool } from "./tools";
 import { asRecord } from "./tools";
@@ -31,7 +34,10 @@ export async function connectMcpServers(
         new StdioClientTransport({
           command: config.command,
           args: config.args,
-          env: config.env,
+          // Merge with the SDK's safe defaults: passing env alone REPLACES
+          // the environment, and a config that sets one variable would
+          // otherwise strip PATH/HOME and break the server's spawn.
+          env: config.env ? { ...getDefaultEnvironment(), ...config.env } : undefined,
         }),
       );
       clients.push(client);
