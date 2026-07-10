@@ -7,9 +7,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3",
-    "@ai-sdk/openai": "^3",
-    "ai": "^6",
+    "@ai-sdk/anthropic": "^4",
+    "@ai-sdk/openai": "^4",
+    "ai": "^7",
     "zod": "^4"
   }
 }

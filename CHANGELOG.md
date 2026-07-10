@@ -14,6 +14,12 @@ All notable changes to Minerva are documented here. The format follows
 - `CONTRIBUTING.md`, `docs/PROTOCOL.md`, this changelog.
 
 ### Changed
+- Upgraded Ink to v7 (`@minerva/cli`). Requires Node ≥22 and React ≥19.2, both
+  already satisfied; no source changes were needed.
+- Migrated to AI SDK 7 (`ai` v7, `@ai-sdk/anthropic`/`@ai-sdk/openai` v4) in
+  `@minerva/providers`. Moved the adapter off the v6-compat shims: `streamText`
+  result `fullStream` → `stream` and the `system` option → `instructions`; the
+  test mock tracks the new provider spec (`MockLanguageModelV4`).
 - Stricter static analysis: `exactOptionalPropertyTypes`, `noImplicitOverride`,
   Biome `noExplicitAny` at error level, knip in the gate.
 - `PermissionBridge` is a factory function instead of a class.
