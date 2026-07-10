@@ -90,4 +90,4 @@ jobs:
       - name: One real prompt against the default provider
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: bun run scripts/live-smoke.ts
+        run: bun run packages/cli/scripts/live-smoke.ts

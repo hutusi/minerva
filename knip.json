@@ -8,10 +8,7 @@
       "entry": ["test/fixtures/*.ts"]
     },
     "packages/cli": {
-      "entry": ["test/fixtures/*.{ts,tsx}"]
-    },
-    ".": {
-      "entry": ["scripts/*.ts"]
+      "entry": ["test/fixtures/*.{ts,tsx}", "scripts/*.ts"]
     }
   },
   "ignoreBinaries": ["expect"]
