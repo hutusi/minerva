@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "verify": "bun run typecheck && bun run lint && bun test"
+    "verify": "bun run typecheck && bun run lint && bun test",
+    "build:release": "bun build --compile --minify --external react-devtools-core packages/cli/src/index.tsx --outfile dist/minerva"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",

@@ -51,21 +51,24 @@ Config: `~/.minerva/settings.json` (global) + `.minerva/settings.json`
 
 ## v0.1 internal slices (checkpoints, not releases)
 
-1. **Hello loop** — kernel library + in-proc transport + minimal Ink REPL;
+1. ✅ **Hello loop** — kernel library + in-proc transport + minimal Ink REPL;
    Anthropic via AI SDK; Read/Edit/Bash; ask-every-time approvals; JSONL event
    logging on from the first turn. Proves every architectural seam end-to-end.
-2. **Permissions & persistence** — rule engine + modes; "always allow"
+2. ✅ **Permissions & persistence** — rule engine + modes; "always allow"
    persistence; session resume (replay); remaining built-ins; audit log.
-3. **Protocol hardening** — stdio transport + `minerva acp` host command; ACP
-   conformance checked by connecting Zed as an external frontend; second
-   provider (OpenAI) + model switching; `minerva/*` extension methods.
-4. **Ecosystem & polish** — MCP client; manual `/compact`; slash commands,
-   config UX, error/retry behavior; `bun build --compile` release binaries.
+3. ✅ **Protocol hardening** — stdio transport (ACP newline-delimited JSON) +
+   `minerva acp` host command; wire contract covered by a spawned-process
+   conformance harness; second provider (OpenAI) via provider/model refs;
+   `minerva/*` extension methods (sessions/list, session/compact).
+4. ✅ **Ecosystem & polish** — MCP client (stdio servers from settings, tools
+   permission-gated as `mcp__server__tool`); manual `/compact`; slash-command
+   palette; `build:release` script (see watchlist for the macOS signing issue).
 
-**v0.1 exit criteria:** daily-drivable CLI for real work; Zed connects over ACP
-and completes a session; two providers switchable mid-project; `kill -9` the
-CLI → `minerva resume` restores the session; every side effect traceable in the
-audit log.
+**v0.1 exit criteria:** daily-drivable CLI for real work *(pending live-model
+smoke — needs an API key)*; Zed connects over ACP and completes a session
+*(harness-verified; live Zed pending)*; two providers switchable mid-project ✅;
+`kill -9` the CLI → resume restores the session ✅ (tested, including torn log
+lines); every side effect traceable in the audit log ✅.
 
 **M2 (post-v0.1):** Tauri 2 GUI — kernel as bundled sidecar, React UI consuming
 `@minerva/client` view-models; session browser reads the JSONL index.
@@ -96,6 +99,10 @@ untouched until v0.1 lands via one final, non-squashed PR.
   kernel-owned.
 - **Windows**: compiled-binary paths, shell differences — test in slice 4, not
   after.
+- **macOS arm64 compiled binaries**: Bun 1.3.12's `--compile` output is
+  unsigned on this setup; the kernel SIGKILLs unsigned arm64 binaries and
+  `codesign` rejects the file format for re-signing. Revisit on a newer Bun
+  before cutting release artifacts.
 
 ## Verification strategy
 

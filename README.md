@@ -4,15 +4,130 @@ A cross-platform, model-agnostic code agent — a headless kernel with multiple
 frontends (CLI now, GUI later).
 
 - **Architecture**: protocol everywhere ([ACP](https://agentclientprotocol.com)
-  core + `minerva/*` extensions), one kernel, swappable transports.
+  core + `minerva/*` extensions), one kernel, swappable transports (in-process,
+  stdio; WebSocket planned).
 - **Stack**: TypeScript, Bun, Vercel AI SDK, Ink (CLI), Tauri 2 (GUI, planned).
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the design record.
+See [docs/DESIGN.md](docs/DESIGN.md) for the design record and current status.
+
+## Quick start
+
+```sh
+bun install
+export ANTHROPIC_API_KEY="sk-ant-..."
+bun run --cwd packages/cli dev
+```
+
+## Usage
+
+```
+minerva [command] [options]
+
+Commands:
+  (default)            Interactive terminal UI
+  acp                  Host the kernel on stdio (ACP framing) for editors
+
+Options:
+  -c, --continue       Resume the most recent session for this directory
+  -r, --resume <id>    Resume a specific session
+  -m, --model <ref>    Model as [provider/]model, e.g. openai/gpt-5.2 or
+                       claude-opus-4-8 (bare ids default to Anthropic)
+  -h, --help           Show help
+```
+
+Inside the TUI:
+
+| Command | Effect |
+|---|---|
+| `/help` | List commands |
+| `/mode [id]` | Show or set the session mode (`plan` \| `default` \| `acceptEdits` \| `auto`) |
+| `/compact` | Summarize the conversation and reset the model context |
+| `/sessions` | List recent sessions for this directory |
+| `/new` | Start a fresh session |
+| `/exit` | Quit |
+
+`esc` cancels the running turn — including while a permission prompt is open.
+Permission prompts accept `y` (allow once), `a` (allow always — persisted as a
+project rule), `n` (reject), `esc` (cancel the turn).
+
+## Providers
+
+Model references are `provider/model`; the matching key must be exported:
+
+| Provider | Example ref | Key |
+|---|---|---|
+| Anthropic (default) | `claude-opus-4-8` or `anthropic/claude-opus-4-8` | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai/gpt-5.2` | `OPENAI_API_KEY` |
+
+## Configuration
+
+Settings merge from `~/.minerva/settings.json` (global; override the root with
+`MINERVA_DATA_DIR`) and `<project>/.minerva/settings.json` (project). Example:
+
+```json
+{
+  "defaultMode": "default",
+  "permissions": {
+    "allow": ["bash(git status)", "bash(bun test*)"],
+    "deny": ["read_file(secrets/*)", "bash(rm -rf *)"],
+    "ask": ["bash(git push*)"]
+  },
+  "mcpServers": {
+    "calc": { "command": "bun", "args": ["run", "./tools/mcp-calc.ts"] }
+  }
+}
+```
+
+Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
+characters, `?` one character, and `\*` a literal asterisk. Precedence:
+**deny** → **ask** → read-only auto-allow → **plan mode deny** → **allow** →
+mode default. Rules match the bash command string or the file path; MCP tools
+are named `mcp__<server>__<tool>` and are never auto-allowed.
+
+Every session is an append-only JSONL event log under
+`~/.minerva/projects/<project>/` — the audit trail and the source of truth for
+`--resume`.
+
+## Editors (ACP)
+
+`minerva acp` hosts the kernel on stdio with ACP framing. For Zed, add an
+agent server along these lines:
+
+```json
+{
+  "agent_servers": {
+    "Minerva": {
+      "command": "bun",
+      "args": ["run", "/path/to/minerva/packages/cli/src/index.tsx", "acp"]
+    }
+  }
+}
+```
+
+The stdio wire contract is covered by an automated harness
+(`packages/cli/test/acp.test.ts`); live Zed interop has not been validated yet.
 
 ## Development
 
 ```sh
-bun install
-bun run verify   # typecheck + lint + tests
-bun run --cwd packages/cli dev
+bun run verify        # typecheck + lint + all tests
+bun test packages/kernel
 ```
+
+The repo is a Bun workspace: `packages/protocol` (JSON-RPC + ACP types +
+transports), `packages/kernel` (agent loop, sessions, tools, permissions,
+MCP), `packages/providers` (model adapters), `packages/client` (shared
+frontend core), `packages/cli` (Ink UI + acp host), `apps/gui` (planned).
+
+## Release build
+
+```sh
+bun run build:release   # dist/minerva, single-file executable
+```
+
+Cross-compile with `--target` (e.g. `bun-linux-x64`, `bun-windows-x64`).
+
+> **Known issue (macOS arm64):** with Bun 1.3.12 the compiled binary comes out
+> unsigned; the kernel kills unsigned arm64 binaries (SIGKILL on launch) and
+> `codesign` rejects the file format for re-signing. Until this is resolved
+> (try a newer Bun), run the CLI via `bun run packages/cli/src/index.tsx`.
