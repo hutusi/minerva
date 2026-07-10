@@ -22,29 +22,37 @@ const timeout = setTimeout(() => {
   process.exit(1);
 }, 120_000);
 
-const cwd = mkdtempSync(join(tmpdir(), "minerva-live-proj-"));
-const dataDir = mkdtempSync(join(tmpdir(), "minerva-live-data-"));
+// Bun exits on an unhandled top-level rejection anyway; the explicit catch is
+// for a clearly labeled failure message rather than a raw stack.
+try {
+  const cwd = mkdtempSync(join(tmpdir(), "minerva-live-proj-"));
+  const dataDir = mkdtempSync(join(tmpdir(), "minerva-live-data-"));
 
-const [clientTransport, kernelTransport] = createInProcTransportPair();
-createKernel(kernelTransport, { provider: createAnthropicProvider({}), dataDir });
-const client = new MinervaClient(clientTransport);
+  const [clientTransport, kernelTransport] = createInProcTransportPair();
+  createKernel(kernelTransport, { provider: createAnthropicProvider({}), dataDir });
+  const client = new MinervaClient(clientTransport);
 
-await client.initialize();
-const { sessionId, store } = await client.newSession(cwd);
-const stopReason = await client.prompt(
-  sessionId,
-  "Reply with exactly the two characters: OK — no tools, nothing else.",
-);
+  await client.initialize();
+  const { sessionId, store } = await client.newSession(cwd);
+  const stopReason = await client.prompt(
+    sessionId,
+    "Reply with exactly the two characters: OK — no tools, nothing else.",
+  );
 
-const reply = store.snapshot.items
-  .filter((item) => item.kind === "assistant")
-  .map((item) => item.text)
-  .join("");
+  const reply = store.snapshot.items
+    .filter((item) => item.kind === "assistant")
+    .map((item) => item.text)
+    .join("");
 
-clearTimeout(timeout);
-if (stopReason !== "end_turn" || !reply.includes("OK")) {
-  console.error(`live-smoke: FAILED — stopReason=${stopReason} reply=${JSON.stringify(reply)}`);
+  clearTimeout(timeout);
+  if (stopReason !== "end_turn" || !reply.includes("OK")) {
+    console.error(`live-smoke: FAILED — stopReason=${stopReason} reply=${JSON.stringify(reply)}`);
+    process.exit(1);
+  }
+  console.log(`live-smoke: OK (stopReason=${stopReason})`);
+  process.exit(0);
+} catch (error) {
+  clearTimeout(timeout);
+  console.error(`live-smoke: ERROR — ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
-console.log(`live-smoke: OK (stopReason=${stopReason})`);
-process.exit(0);

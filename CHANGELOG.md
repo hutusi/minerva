@@ -7,7 +7,7 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- CI (GitHub Actions): verify matrix on ubuntu/macos, per-file coverage
+- CI (GitHub Actions): verify matrix on ubuntu/macOS, per-file coverage
   thresholds, knip, PTY smoke + e2e for the TUI, compiled-binary smoke, and a
   secret-gated live-model smoke on main pushes; Dependabot.
 - Ink UI test suite (ink-testing-library) and PTY e2e scripts in `scripts/`.

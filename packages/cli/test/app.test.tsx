@@ -1,11 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
-import { createKernel } from "@minerva/kernel";
+import { createKernel, type MinervaKernel } from "@minerva/kernel";
 import { createInProcTransportPair } from "@minerva/protocol";
 import { createScriptedProvider, type TurnEvent } from "@minerva/providers";
+// ink-testing-library is pinned exactly: 4.0.0 predates ink 6 / React 19 and
+// no compatible major exists yet — these tests are the compatibility proof,
+// so an unreviewed 4.x bump must not slip in via install.
 import { render } from "ink-testing-library";
 import { App } from "../src/app";
 import { createPermissionBridge } from "../src/permission-bridge";
@@ -13,12 +16,17 @@ import { createPermissionBridge } from "../src/permission-bridge";
 const FINISH_STOP: TurnEvent = { type: "finish", finishReason: "stop", usage: {} };
 const FINISH_TOOLS: TurnEvent = { type: "finish", finishReason: "tool-calls", usage: {} };
 
+const kernels: MinervaKernel[] = [];
+afterEach(() => {
+  for (const kernel of kernels.splice(0)) kernel.close();
+});
+
 /** Full-stack TUI harness: real App + client + kernel, scripted provider. */
 function renderTui(turns: TurnEvent[][]) {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-ui-proj-"));
   const dataDir = mkdtempSync(join(tmpdir(), "minerva-ui-data-"));
   const [clientTransport, kernelTransport] = createInProcTransportPair();
-  createKernel(kernelTransport, { dataDir, provider: createScriptedProvider(turns) });
+  kernels.push(createKernel(kernelTransport, { dataDir, provider: createScriptedProvider(turns) }));
   const bridge = createPermissionBridge();
   const client = new MinervaClient(clientTransport, {
     onPermissionRequest: bridge.onPermissionRequest,
