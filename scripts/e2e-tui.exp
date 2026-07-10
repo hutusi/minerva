@@ -3,6 +3,9 @@
 # Ink UI — prompt in, streamed text, permission approval, completed tool
 # output, clean exit. The model is scripted (MINERVA_TEST_TURNS); everything
 # else is the real stack.
+# Linux PTYs start with 0x0 geometry and Ink wraps at the reported width —
+# one character per line, so no multi-character pattern can ever match.
+set stty_init "rows 40 columns 120"
 set timeout 30
 set repo [file dirname [file dirname [file normalize [info script]]]]
 set env(MINERVA_DATA_DIR) [exec mktemp -d]

@@ -2,6 +2,9 @@
 # TUI render smoke: the real entrypoint starts under a PTY, shows the banner
 # and input prompt, and /exit terminates cleanly. No network: session
 # creation is local; a placeholder key satisfies the startup check.
+# Linux PTYs start with 0x0 geometry and Ink wraps at the reported width —
+# one character per line, so no multi-character pattern can ever match.
+set stty_init "rows 40 columns 120"
 set timeout 20
 set repo [file dirname [file dirname [file normalize [info script]]]]
 if {![info exists env(ANTHROPIC_API_KEY)]} {
