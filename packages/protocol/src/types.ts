@@ -14,9 +14,20 @@ export const PROTOCOL_VERSION = 1;
 export const AGENT_METHODS = {
   initialize: "initialize",
   sessionNew: "session/new",
+  sessionLoad: "session/load",
   sessionPrompt: "session/prompt",
+  sessionSetMode: "session/set_mode",
   /** Notification. */
   sessionCancel: "session/cancel",
+} as const;
+
+/**
+ * minerva/* extension methods — the namespaced surface beyond ACP core
+ * (design decision #3). Kept separate so the ACP mapping stays clean.
+ */
+export const MINERVA_METHODS = {
+  /** Frontend → kernel: list persisted sessions for a project. */
+  sessionsList: "minerva/sessions/list",
 } as const;
 
 /** Kernel → frontend. */
@@ -50,6 +61,26 @@ export interface InitializeResult {
   };
 }
 
+// --- session modes -----------------------------------------------------
+
+export interface SessionMode {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface SessionModeState {
+  currentModeId: string;
+  availableModes: SessionMode[];
+}
+
+export interface SessionSetModeParams {
+  sessionId: string;
+  modeId: string;
+}
+
+export type SessionSetModeResult = null;
+
 // --- session/new -------------------------------------------------------
 
 export interface SessionNewParams {
@@ -58,6 +89,40 @@ export interface SessionNewParams {
 
 export interface SessionNewResult {
   sessionId: string;
+  modes?: SessionModeState;
+}
+
+// --- session/load ------------------------------------------------------
+
+/**
+ * Resume a persisted session. The agent replays the conversation to the
+ * client as session/update notifications before responding.
+ */
+export interface SessionLoadParams {
+  sessionId: string;
+  cwd: string;
+}
+
+export interface SessionLoadResult {
+  modes?: SessionModeState;
+}
+
+// --- minerva/sessions/list ---------------------------------------------
+
+export interface SessionsListParams {
+  cwd: string;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  cwd: string;
+  createdAt: string;
+  /** First user message, truncated — enough for a picker UI. */
+  preview?: string;
+}
+
+export interface SessionsListResult {
+  sessions: SessionSummary[];
 }
 
 // --- session/prompt ----------------------------------------------------
@@ -114,12 +179,22 @@ export interface ToolCallUpdate {
   rawOutput?: unknown;
 }
 
+export type PlanEntryStatus = "pending" | "in_progress" | "completed";
+
+export interface PlanEntry {
+  content: string;
+  priority: "high" | "medium" | "low";
+  status: PlanEntryStatus;
+}
+
 export type SessionUpdate =
   | { sessionUpdate: "user_message_chunk"; content: ContentBlock }
   | { sessionUpdate: "agent_message_chunk"; content: ContentBlock }
   | { sessionUpdate: "agent_thought_chunk"; content: ContentBlock }
   | ToolCallStart
-  | ToolCallUpdate;
+  | ToolCallUpdate
+  | { sessionUpdate: "plan"; entries: PlanEntry[] }
+  | { sessionUpdate: "current_mode_update"; currentModeId: string };
 
 export interface SessionUpdateParams {
   sessionId: string;
