@@ -80,6 +80,11 @@ export class MinervaClient {
     sessionId: string,
     cwd: string,
   ): Promise<{ sessionId: string; store: SessionStore }> {
+    // Overwriting a live registration would detach that session's store from
+    // the update stream (and the failure path would delete it outright).
+    if (this.#stores.has(sessionId)) {
+      throw new Error(`session ${sessionId} is already open in this client`);
+    }
     const store = new SessionStore();
     this.#stores.set(sessionId, store);
     try {

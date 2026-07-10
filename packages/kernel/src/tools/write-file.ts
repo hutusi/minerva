@@ -1,12 +1,13 @@
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import type { KernelTool } from "./types";
-import { asRecord, requireString } from "./types";
+import { asRecord, requireString, resolveWithinWorkspace } from "./types";
 
 export const writeFileTool: KernelTool = {
   name: "write_file",
   description:
-    "Create or overwrite a text file with the given content. Parent directories " +
-    "are created as needed. Prefer edit_file for changing existing files.",
+    "Create or overwrite a text file inside the working directory. Parent " +
+    "directories are created as needed. Prefer edit_file for changing existing " +
+    "files; use bash for files outside the workspace.",
   inputSchema: {
     type: "object",
     properties: {
@@ -22,7 +23,9 @@ export const writeFileTool: KernelTool = {
   },
   async execute(input, context) {
     const record = asRecord(input);
-    const path = resolve(context.cwd, requireString(record, "path"));
+    // acceptEdits mode auto-allows edit-kind tools, so confinement to the
+    // workspace is the backstop against writes landing anywhere on disk.
+    const path = resolveWithinWorkspace(context.cwd, requireString(record, "path"));
     const content = record.content;
     if (typeof content !== "string") {
       throw new Error("missing required string parameter: content");

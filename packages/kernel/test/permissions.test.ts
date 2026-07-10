@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   bashTool,
   editFileTool,
+  escapeRuleValue,
   formatRule,
   PermissionEngine,
   permissionValue,
@@ -75,5 +76,24 @@ describe("engine verdicts", () => {
     expect(e.evaluate(bashTool, { command: "bun test" }, "default").action).toBe("ask");
     e.addAllowRule("bash(bun test)");
     expect(e.evaluate(bashTool, { command: "bun test" }, "default").action).toBe("allow");
+  });
+
+  test("plan mode outranks allow rules for mutating tools", () => {
+    const e = engine({ allow: ["bash(git *)"] });
+    expect(e.evaluate(bashTool, { command: "git push" }, "plan").action).toBe("deny");
+    expect(e.evaluate(bashTool, { command: "git push" }, "default").action).toBe("allow");
+  });
+
+  test("ask rules apply to read-only tools too", () => {
+    const e = engine({ ask: ["read_file(*.env)"] });
+    expect(e.evaluate(readFileTool, { path: "prod.env" }, "default").action).toBe("ask");
+    expect(e.evaluate(readFileTool, { path: "src/a.ts" }, "default").action).toBe("allow");
+  });
+
+  test("escaped wildcards in persisted rules match literally", () => {
+    const rule = formatRule("bash", escapeRuleValue("git add *"));
+    expect(rule).toBe("bash(git add \\*)");
+    expect(ruleMatches(rule, "bash", "git add *")).toBe(true);
+    expect(ruleMatches(rule, "bash", "git add --force everything")).toBe(false);
   });
 });

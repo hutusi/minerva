@@ -1,6 +1,6 @@
 import { glob } from "tinyglobby";
 import type { KernelTool } from "./types";
-import { asRecord, requireString, resolveWithinWorkspace } from "./types";
+import { asRecord, ensureConfinedPattern, requireString, resolveWithinWorkspace } from "./types";
 
 const MAX_FILES = 500;
 const MAX_MATCHES = 100;
@@ -44,7 +44,10 @@ export const grepTool: KernelTool = {
       context.cwd,
       typeof record.path === "string" ? record.path : ".",
     );
-    const files = await glob(typeof record.include === "string" ? record.include : "**/*", {
+    const include = ensureConfinedPattern(
+      typeof record.include === "string" ? record.include : "**/*",
+    );
+    const files = await glob(include, {
       cwd: base,
       ignore: DEFAULT_IGNORE,
       onlyFiles: true,

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PlanEntry } from "@minerva/protocol";
-import { defaultRuntime, globTool, grepTool, todoTool, writeFileTool } from "../src";
+import { defaultRuntime, editFileTool, globTool, grepTool, todoTool, writeFileTool } from "../src";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "minerva-t2-"));
@@ -28,9 +28,19 @@ describe("write_file", () => {
 
   test("non-string content is rejected", async () => {
     const cwd = tempProject();
-    expect(
+    await expect(
       writeFileTool.execute({ path: "a.txt", content: { nested: true } }, ctx(cwd)),
     ).rejects.toThrow("content");
+  });
+
+  test("writes and edits are confined to the workspace", async () => {
+    const cwd = tempProject();
+    await expect(
+      writeFileTool.execute({ path: "/tmp/outside.txt", content: "x" }, ctx(cwd)),
+    ).rejects.toThrow("outside the workspace");
+    await expect(
+      editFileTool.execute({ path: "../outside.txt", old_string: "a", new_string: "b" }, ctx(cwd)),
+    ).rejects.toThrow("outside the workspace");
   });
 });
 
@@ -48,8 +58,21 @@ describe("glob", () => {
   });
 
   test("search base is confined to the workspace", async () => {
-    expect(globTool.execute({ pattern: "*", path: "/" }, ctx(tempProject()))).rejects.toThrow(
+    await expect(globTool.execute({ pattern: "*", path: "/" }, ctx(tempProject()))).rejects.toThrow(
       "outside the workspace",
+    );
+  });
+
+  test("escaping patterns are rejected for glob and grep", async () => {
+    const cwd = tempProject();
+    await expect(globTool.execute({ pattern: "../**" }, ctx(cwd))).rejects.toThrow(
+      "inside the workspace",
+    );
+    await expect(globTool.execute({ pattern: "/etc/*" }, ctx(cwd))).rejects.toThrow(
+      "inside the workspace",
+    );
+    await expect(grepTool.execute({ pattern: "x", include: "../../*" }, ctx(cwd))).rejects.toThrow(
+      "inside the workspace",
     );
   });
 });
@@ -97,7 +120,7 @@ describe("todo_write", () => {
   });
 
   test("bad status is rejected", async () => {
-    expect(
+    await expect(
       todoTool.execute(
         { todos: [{ content: "x", status: "done" }] },
         ctx(tempProject(), () => {}),

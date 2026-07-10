@@ -4,7 +4,7 @@ import type { PlanEntry } from "@minerva/protocol";
 import type { ProviderMessage } from "@minerva/providers";
 import { now, type SessionEvent } from "./events";
 import { DEFAULT_MODE, isSessionModeId, PermissionEngine, type SessionModeId } from "./permissions";
-import { replayEvents } from "./replay";
+import { type ReplayResult, replayEvents } from "./replay";
 import type { Runtime } from "./runtime";
 import { loadSettings } from "./settings";
 import type { KernelTool } from "./tools";
@@ -75,14 +75,16 @@ export class Session {
 
   /**
    * Resume a persisted session: replay the event log to rebuild the model
-   * context, and hand the caller the events so it can re-render the UI.
+   * context, handing back the replay so the caller can re-render the UI
+   * without a second pass over the log.
    */
   static async load(
     sessionId: string,
     options: SessionOptions,
     tools: KernelTool[],
-  ): Promise<{ session: Session; events: SessionEvent[] }> {
-    const logPath = join(projectDir(options.dataDir, options.cwd), `${sessionId}.jsonl`);
+  ): Promise<{ session: Session; replay: ReplayResult }> {
+    const dir = projectDir(options.dataDir, options.cwd);
+    const logPath = join(dir, `${sessionId}.jsonl`);
     let raw: string;
     try {
       raw = await options.runtime.readTextFile(logPath);
@@ -90,6 +92,12 @@ export class Session {
       throw new Error(`no persisted session ${sessionId} for ${options.cwd}`);
     }
     const events = parseEventLog(raw);
+    // Project slugs collapse punctuation (/a/b.c and /a/b-c share a dir), so
+    // the log's recorded cwd — not the file location — is authoritative.
+    const created = events.find((event) => event.type === "session.created");
+    if (created && created.cwd !== options.cwd) {
+      throw new Error(`session ${sessionId} belongs to ${created.cwd}, not ${options.cwd}`);
+    }
     const replay = replayEvents(events, tools);
 
     const settings = await loadSettings(options.runtime, options.dataDir, options.cwd);
@@ -102,8 +110,14 @@ export class Session {
     const session = new Session(sessionId, options, new PermissionEngine(settings.rules), mode);
     session.messages.push(...replay.messages);
     session.todos = replay.todos;
+    // Re-append to the index so "latest session" means most recently used,
+    // not most recently created; the list handler dedupes by id.
+    await options.runtime.appendTextFile(
+      join(dir, "index.jsonl"),
+      `${JSON.stringify({ sessionId, cwd: options.cwd, createdAt: now() })}\n`,
+    );
     session.append({ type: "session.resumed", provider: options.providerId, at: now() });
-    return { session, events };
+    return { session, replay };
   }
 
   /**

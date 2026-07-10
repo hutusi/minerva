@@ -29,13 +29,19 @@ for (let i = 0; i < argv.length; i++) {
   if (arg === "--continue" || arg === "-c") {
     resume = "latest";
   } else if (arg === "--resume" || arg === "-r") {
-    resume = argv[++i] ?? null;
-    if (!resume) {
+    const value = argv[++i];
+    if (!value || value.startsWith("-")) {
       console.error("--resume requires a session id");
       process.exit(1);
     }
+    resume = value;
   } else if (arg === "--model" || arg === "-m") {
-    model = argv[++i] ?? model;
+    const value = argv[++i];
+    if (!value || value.startsWith("-")) {
+      console.error("--model requires a model id");
+      process.exit(1);
+    }
+    model = value;
   } else if (arg === "--help" || arg === "-h") {
     console.log(USAGE);
     process.exit(0);

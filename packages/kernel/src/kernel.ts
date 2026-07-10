@@ -21,7 +21,6 @@ import type { ModelProvider } from "@minerva/providers";
 import { runPrompt } from "./agent-loop";
 import { now } from "./events";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
-import { replayEvents } from "./replay";
 import { defaultRuntime, type Runtime } from "./runtime";
 import { parseEventLog, projectDir, Session } from "./session";
 import { builtinTools, type KernelTool } from "./tools";
@@ -107,12 +106,17 @@ export class MinervaKernel {
         "session/load requires sessionId and cwd",
       );
     }
-    if (this.#sessions.get(sessionId)?.promptActive) {
+    const existing = this.#sessions.get(sessionId);
+    if (existing?.promptActive) {
       throw new RpcError(
         JSON_RPC_ERROR_CODES.INVALID_REQUEST,
         "cannot load a session while a prompt is running in it",
       );
     }
+    // The live session's log writes are fire-and-forget; settle them before
+    // rebuilding from the file or the reload silently drops recent events.
+    await existing?.flush().catch(() => {});
+
     let loaded: Awaited<ReturnType<typeof Session.load>>;
     try {
       loaded = await Session.load(
@@ -129,7 +133,7 @@ export class MinervaKernel {
     this.#sessions.set(sessionId, loaded.session);
     // ACP: replay the conversation as session/update notifications before
     // answering, so the frontend can rebuild its transcript.
-    for (const update of replayEvents(loaded.events, this.#tools).updates) {
+    for (const update of loaded.replay.updates) {
       this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });
     }
     return { modes: modeState(loaded.session) };
@@ -146,6 +150,9 @@ export class MinervaKernel {
     }
     session.mode = modeId;
     session.append({ type: "session.mode_changed", modeId, at: now() });
+    // Settle the write before acknowledging: a mode change that vanishes on
+    // restart (kill right after switching to plan) is a policy surprise.
+    await session.flush();
     this.#connection.notify(CLIENT_METHODS.sessionUpdate, {
       sessionId: session.id,
       update: { sessionUpdate: "current_mode_update", currentModeId: modeId },
@@ -177,8 +184,12 @@ export class MinervaKernel {
       })
       .filter((entry) => entry.cwd === cwd);
 
-    // Newest first, previews only for the recent window to bound file reads.
-    const recent = entries.reverse().slice(0, 20);
+    // The index is append-per-use (create and resume both write), so the
+    // last entry per session id reflects most-recent use. Return the 20
+    // most recently used — a hard cap, matching the picker UIs it feeds.
+    const bySessionId = new Map<string, SessionSummary>();
+    for (const entry of entries) bySessionId.set(entry.sessionId, entry);
+    const recent = [...bySessionId.values()].reverse().slice(0, 20);
     const sessions = await Promise.all(
       recent.map(async (entry) => ({
         ...entry,
@@ -193,7 +204,9 @@ export class MinervaKernel {
       const raw = await this.#runtime.readTextFile(join(dir, `${sessionId}.jsonl`));
       for (const event of parseEventLog(raw)) {
         if (event.type === "user.message") {
-          return event.text.length > 80 ? `${event.text.slice(0, 80)}…` : event.text;
+          // Slice by code point so an emoji at the boundary isn't torn.
+          const chars = [...event.text];
+          return chars.length > 80 ? `${chars.slice(0, 80).join("")}…` : event.text;
         }
       }
     } catch {

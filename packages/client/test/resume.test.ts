@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKernel, type MinervaKernel, projectDir } from "@minerva/kernel";
@@ -135,6 +135,26 @@ describe("session resume across kernel restarts", () => {
     expect(stopReason).toBe("end_turn");
   });
 
+  test("a session cannot be loaded from a slug-colliding foreign cwd", async () => {
+    const base = mkdtempSync(join(tmpdir(), "minerva-slug-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-slug-data-"));
+    // proj.a and proj-a collapse to the same project slug.
+    const cwdA = join(base, "proj.a");
+    const cwdB = join(base, "proj-a");
+    mkdirSync(cwdA);
+    mkdirSync(cwdB);
+
+    const first = boot(dataDir, []);
+    await first.client.initialize();
+    const { sessionId } = await first.client.newSession(cwdA);
+    await Bun.sleep(20); // let the async session.created write land
+    first.client.close();
+
+    const second = boot(dataDir, []);
+    await second.client.initialize();
+    await expect(second.client.loadSession(sessionId, cwdB)).rejects.toThrow("belongs to");
+  });
+
   test("setMode round-trips into the store", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-mode-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-mode-data-"));
@@ -145,6 +165,6 @@ describe("session resume across kernel restarts", () => {
     await client.setMode(sessionId, "plan");
     await Bun.sleep(0);
     expect(store.snapshot.currentModeId).toBe("plan");
-    expect(client.setMode(sessionId, "yolo")).rejects.toThrow("unknown mode");
+    await expect(client.setMode(sessionId, "yolo")).rejects.toThrow("unknown mode");
   });
 });

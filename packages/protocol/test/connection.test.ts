@@ -47,7 +47,7 @@ describe("Connection over in-proc transport", () => {
       throw new Error("kaputt");
     });
 
-    expect(client.request("boom")).rejects.toThrow("kaputt");
+    await expect(client.request("boom")).rejects.toThrow("kaputt");
   });
 
   test("custom RpcError code survives the wire", async () => {
@@ -83,7 +83,7 @@ describe("Connection over in-proc transport", () => {
 
     const pending = client.request("hang");
     client.close();
-    expect(pending).rejects.toThrow("connection closed");
+    await expect(pending).rejects.toThrow("connection closed");
   });
 
   test("concurrent requests correlate by id", async () => {

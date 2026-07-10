@@ -34,7 +34,7 @@ describe("edit_file input handling", () => {
     const cwd = tempProject();
     const file = join(cwd, "a.txt");
     writeFileSync(file, "keep me");
-    expect(
+    await expect(
       editFileTool.execute({ path: "a.txt", old_string: "keep me", new_string: 42 }, ctx(cwd)),
     ).rejects.toThrow("new_string");
     expect(readFileSync(file, "utf8")).toBe("keep me");
@@ -56,10 +56,10 @@ describe("edit_file input handling", () => {
 describe("read_file workspace confinement", () => {
   test("paths escaping the workspace are rejected", async () => {
     const cwd = tempProject();
-    expect(readFileTool.execute({ path: "/etc/passwd" }, ctx(cwd))).rejects.toThrow(
+    await expect(readFileTool.execute({ path: "/etc/passwd" }, ctx(cwd))).rejects.toThrow(
       "outside the workspace",
     );
-    expect(readFileTool.execute({ path: "../../etc/passwd" }, ctx(cwd))).rejects.toThrow(
+    await expect(readFileTool.execute({ path: "../../etc/passwd" }, ctx(cwd))).rejects.toThrow(
       "outside the workspace",
     );
   });
@@ -134,7 +134,7 @@ describe("session event log resilience", () => {
     session.append({ type: "user.message", text: "lost", at: "t1" });
     session.append({ type: "user.message", text: "recorded", at: "t2" });
 
-    expect(session.flush()).rejects.toThrow("disk full");
+    await expect(session.flush()).rejects.toThrow("disk full");
     // The chain survived: the later event landed and future flushes succeed.
     await session.flush();
     const lines = readFileSync(session.logPath, "utf8").trim().split("\n");

@@ -126,7 +126,7 @@ describe("MinervaClient against a real kernel", () => {
 
     const first = client.prompt(sessionId, "slow one");
     await Bun.sleep(20);
-    expect(client.prompt(sessionId, "second")).rejects.toThrow("already running");
+    await expect(client.prompt(sessionId, "second")).rejects.toThrow("already running");
     expect(store.snapshot.busy).toBe(true);
     expect(
       store.snapshot.items.filter((item) => item.kind === "user").map((item) => item.text),

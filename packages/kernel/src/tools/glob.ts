@@ -1,6 +1,6 @@
 import { glob } from "tinyglobby";
 import type { KernelTool } from "./types";
-import { asRecord, requireString, resolveWithinWorkspace } from "./types";
+import { asRecord, ensureConfinedPattern, requireString, resolveWithinWorkspace } from "./types";
 
 const MAX_RESULTS = 200;
 const DEFAULT_IGNORE = ["**/node_modules/**", "**/.git/**"];
@@ -26,8 +26,8 @@ export const globTool: KernelTool = {
   },
   async execute(input, context) {
     const record = asRecord(input);
-    const pattern = requireString(record, "pattern");
     // readOnly ⇒ policy-allowed with no prompt ⇒ must stay inside the workspace.
+    const pattern = ensureConfinedPattern(requireString(record, "pattern"));
     const base = resolveWithinWorkspace(
       context.cwd,
       typeof record.path === "string" ? record.path : ".",

@@ -60,3 +60,15 @@ export function resolveWithinWorkspace(cwd: string, inputPath: string): string {
   }
   return resolved;
 }
+
+/**
+ * Glob patterns are matched by the glob engine, not resolved as paths, so
+ * resolveWithinWorkspace can't see an escape like `../**` or `/etc/*` —
+ * reject those shapes outright.
+ */
+export function ensureConfinedPattern(pattern: string): string {
+  if (isAbsolute(pattern) || pattern.split(/[\\/]/).includes("..")) {
+    throw new Error(`glob pattern must stay inside the workspace: ${pattern}`);
+  }
+  return pattern;
+}

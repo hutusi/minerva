@@ -1,13 +1,12 @@
-import { resolve } from "node:path";
 import type { KernelTool } from "./types";
-import { asRecord, requireString } from "./types";
+import { asRecord, requireString, resolveWithinWorkspace } from "./types";
 
 export const editFileTool: KernelTool = {
   name: "edit_file",
   description:
-    "Edit a text file by exact string replacement. old_string must match exactly one " +
-    "location in the file, including whitespace; include enough surrounding context to " +
-    "make it unique.",
+    "Edit a text file inside the working directory by exact string replacement. " +
+    "old_string must match exactly one location in the file, including whitespace; " +
+    "include enough surrounding context to make it unique.",
   inputSchema: {
     type: "object",
     properties: {
@@ -24,7 +23,9 @@ export const editFileTool: KernelTool = {
   },
   async execute(input, context) {
     const record = asRecord(input);
-    const path = resolve(context.cwd, requireString(record, "path"));
+    // acceptEdits mode auto-allows edit-kind tools, so confinement to the
+    // workspace is the backstop against edits landing anywhere on disk.
+    const path = resolveWithinWorkspace(context.cwd, requireString(record, "path"));
     const oldString = requireString(record, "old_string");
     // Unlike requireString, the empty string is a legal new_string (deletion)
     // — but a missing/non-string value must fail, not silently delete.

@@ -13,7 +13,7 @@ import type {
   TurnUsage,
 } from "@minerva/providers";
 import { now } from "./events";
-import { formatRule, permissionValue } from "./permissions";
+import { escapeRuleValue, formatRule, permissionValue } from "./permissions";
 import type { Runtime } from "./runtime";
 import type { Session } from "./session";
 import { persistAllowRule } from "./settings";
@@ -351,7 +351,8 @@ async function checkPermission(
       return { allowed: false, source: "frontend" };
     }
     if (result.outcome.optionId === "allow_always") {
-      const rule = formatRule(tool.name, permissionValue(call.input));
+      // Escape wildcards: the user approved this exact call, not a pattern.
+      const rule = formatRule(tool.name, escapeRuleValue(permissionValue(call.input)));
       session.permissions.addAllowRule(rule);
       try {
         await persistAllowRule(context.runtime, session.cwd, rule);

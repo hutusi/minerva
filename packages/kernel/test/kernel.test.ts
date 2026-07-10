@@ -357,7 +357,7 @@ describe("kernel over in-proc transport", () => {
 
     const first = prompt(harness, "slow one");
     await Bun.sleep(20);
-    expect(prompt(harness, "second")).rejects.toThrow("already running");
+    await expect(prompt(harness, "second")).rejects.toThrow("already running");
     await first;
   });
 });

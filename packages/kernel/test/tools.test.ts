@@ -21,7 +21,7 @@ describe("read_file", () => {
 
   test("missing file surfaces as a thrown error for the loop to catch", async () => {
     const cwd = tempProject();
-    expect(readFileTool.execute({ path: "nope.txt" }, ctx(cwd))).rejects.toThrow();
+    await expect(readFileTool.execute({ path: "nope.txt" }, ctx(cwd))).rejects.toThrow();
   });
 });
 
