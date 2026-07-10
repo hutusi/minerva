@@ -7,6 +7,12 @@ set timeout 30
 set repo [file dirname [file dirname [file normalize [info script]]]]
 set env(MINERVA_DATA_DIR) [exec mktemp -d]
 set env(LANG) "C.UTF-8"
+# Ink suppresses interactive rendering when it detects a CI environment
+# (ci-info: CI, GITHUB_ACTIONS, ...) and only draws on unmount — under our
+# PTY that means zero frames. This script IS the terminal; hide CI from it.
+foreach v {CI GITHUB_ACTIONS CONTINUOUS_INTEGRATION BUILD_NUMBER} {
+    if {[info exists env($v)]} { unset env($v) }
+}
 set env(MINERVA_TEST_TURNS) {[[{"type":"text-delta","text":"Checking that for you."},{"type":"tool-call","toolCallId":"c1","toolName":"bash","input":{"command":"echo e2e-tui-ok"}},{"type":"finish","finishReason":"tool-calls","usage":{}}],[{"type":"text-delta","text":"Everything checks out."},{"type":"finish","finishReason":"stop","usage":{}}]]}
 
 spawn bun run [file join $repo packages cli test fixtures tui-scripted.tsx]
