@@ -1,5 +1,7 @@
 # Minerva
 
+[![CI](https://github.com/hutusi/minerva/actions/workflows/ci.yml/badge.svg)](https://github.com/hutusi/minerva/actions/workflows/ci.yml)
+
 A cross-platform, model-agnostic code agent — a headless kernel with multiple
 frontends (CLI now, GUI later).
 
@@ -8,7 +10,8 @@ frontends (CLI now, GUI later).
   stdio; WebSocket planned).
 - **Stack**: TypeScript, Bun, Vercel AI SDK, Ink (CLI), Tauri 2 (GUI, planned).
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the design record and current status.
+Docs: [design record](docs/DESIGN.md) · [wire protocol](docs/PROTOCOL.md) ·
+[contributing](CONTRIBUTING.md) · [changelog](CHANGELOG.md)
 
 ## Quick start
 
