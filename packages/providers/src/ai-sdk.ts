@@ -43,11 +43,11 @@ export function createAiSdkProvider(model: LanguageModel, id: string): ModelProv
         model,
         messages: request.messages.map(toModelMessage),
         tools: toToolSet(request.tools),
-        ...(request.system !== undefined ? { system: request.system } : {}),
+        ...(request.system !== undefined ? { instructions: request.system } : {}),
         ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
       });
 
-      for await (const part of result.fullStream) {
+      for await (const part of result.stream) {
         const event = toTurnEvent(part);
         if (event) yield event;
       }
@@ -101,7 +101,7 @@ function toModelMessage(message: ProviderMessage): ModelMessage {
 }
 
 type StreamPart =
-  Awaited<ReturnType<typeof streamText>>["fullStream"] extends AsyncIterable<infer P> ? P : never;
+  Awaited<ReturnType<typeof streamText>>["stream"] extends AsyncIterable<infer P> ? P : never;
 
 function toTurnEvent(part: StreamPart): TurnEvent | null {
   switch (part.type) {

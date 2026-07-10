@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { simulateReadableStream } from "ai";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV4 } from "ai/test";
 import { createAiSdkProvider, type TurnEvent } from "../src";
 
 const USAGE = {
@@ -16,7 +16,7 @@ async function collect(events: AsyncIterable<TurnEvent>): Promise<TurnEvent[]> {
 
 describe("AI SDK provider adapter", () => {
   test("streams text deltas and a finish event", async () => {
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       doStream: async () => ({
         stream: simulateReadableStream({
           chunks: [
@@ -43,7 +43,7 @@ describe("AI SDK provider adapter", () => {
   });
 
   test("surfaces tool calls with parsed input", async () => {
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       doStream: async () => ({
         stream: simulateReadableStream({
           chunks: [
@@ -92,7 +92,7 @@ describe("AI SDK provider adapter", () => {
 
   test("converts assistant tool calls and tool results into the prompt", async () => {
     let seenPrompt: unknown;
-    const model = new MockLanguageModelV3({
+    const model = new MockLanguageModelV4({
       doStream: async (options) => {
         seenPrompt = options.prompt;
         return {
