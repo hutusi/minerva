@@ -1,0 +1,7 @@
+# Test configuration. Coverage is opt-in (bun test --coverage) so the fast
+# verify loop stays fast; CI runs the coverage pass with these thresholds.
+# Bun enforces coverageThreshold PER FILE, not on the total — the value must
+# sit below the worst-covered file. Ratchet up as gaps close, never lower.
+[test]
+coverageSkipTestFiles = true
+coverageThreshold = { lines = 0.60, functions = 0.60 }
