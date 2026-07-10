@@ -21,6 +21,7 @@ import { render } from "ink";
 import { runAcpHost } from "./acp";
 import { App } from "./app";
 import { parseCliArgs, usage } from "./args";
+import type { ProviderChoice } from "./config-panel";
 import { createPermissionBridge } from "./permission-bridge";
 
 const usageDefault = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
@@ -73,13 +74,6 @@ const apiKey = resolveApiKey(providerName, registry, {
   env: process.env,
   storedKeys: storedKeys(settings),
 });
-if (!apiKey) {
-  const keyVar = apiKeyEnvVar(providerName, registry);
-  console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
-  console.error(`  export ${keyVar}="..."`);
-  console.error("or run `minerva` and use /config to store a key in settings.");
-  process.exit(1);
-}
 
 /**
  * Host-injected factory for minerva/config/set_model. Re-reads settings so
@@ -97,16 +91,40 @@ const resolveProvider = async (modelRef: string): Promise<ModelProvider> => {
 };
 
 const kernelOptions = {
-  provider: createProviderFromRef(model, { providers: registry, apiKey }),
+  provider: createProviderFromRef(model, {
+    providers: registry,
+    ...(apiKey ? { apiKey } : {}),
+  }),
   resolveProvider,
   dataDir,
 };
 
 if (command === "acp") {
-  // stdout carries the protocol; the kernel must never render UI here.
+  // stdout carries the protocol — no UI, so a missing key stays a hard exit.
+  if (!apiKey) {
+    const keyVar = apiKeyEnvVar(providerName, registry);
+    console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
+    console.error(`  export ${keyVar}="..."`);
+    console.error("or run `minerva` and use /config to store a key in settings.");
+    process.exit(1);
+  }
   await runAcpHost(kernelOptions);
   process.exit(0);
 }
+
+// Rows for the /config panel: every registry provider plus where (if
+// anywhere) a usable key was found for it.
+const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, def]) => ({
+  name,
+  defaultModel: def.defaultModel,
+  keyVar: def.apiKeyEnv,
+  keySource: process.env[def.apiKeyEnv]
+    ? ("env" as const)
+    : settings.providers[name]?.apiKey
+      ? ("settings" as const)
+      : ("none" as const),
+  baseUrl: def.baseURL,
+}));
 
 // The CLI embeds the kernel, but only across the protocol's in-proc
 // transport — the same messages a Tauri sidecar or remote kernel would see.
@@ -118,7 +136,17 @@ const client = new MinervaClient(clientTransport, {
   onPermissionRequest: bridge.onPermissionRequest,
 });
 
-const app = render(<App client={client} bridge={bridge} model={model} cwd={cwd} resume={resume} />);
+const app = render(
+  <App
+    client={client}
+    bridge={bridge}
+    model={model}
+    cwd={cwd}
+    resume={resume}
+    providers={providerChoices}
+    needsConfig={!apiKey}
+  />,
+);
 await app.waitUntilExit();
 // Ink unmounts but stdin's raw-mode listener keeps the runtime alive.
 process.exit(0);

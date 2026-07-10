@@ -2,6 +2,7 @@ import type { MinervaClient, SessionStore, ViewItem } from "@minerva/client";
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
 import type { PendingPermission, PermissionBridge } from "./permission-bridge";
 
 interface AppProps {
@@ -11,12 +12,18 @@ interface AppProps {
   cwd: string;
   /** null = new session; "latest" = most recent for cwd; else a session id. */
   resume: string | null;
+  /** Rows for the /config panel's provider selector. */
+  providers: ProviderChoice[];
+  /** No usable API key at startup — open the config panel instead of exiting. */
+  needsConfig: boolean;
 }
 
-export function App({ client, bridge, model, cwd, resume }: AppProps) {
+export function App({ client, bridge, model, cwd, resume, providers, needsConfig }: AppProps) {
   const [session, setSession] = useState<{ id: string; store: SessionStore } | null>(null);
   const [pending, setPending] = useState<PendingPermission | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Header model ref; updated live when /config swaps the provider.
+  const [modelRef, setModelRef] = useState(model);
 
   useEffect(() => {
     bridge.handler = (request) =>
@@ -63,7 +70,7 @@ export function App({ client, bridge, model, cwd, resume }: AppProps) {
   return (
     <Box flexDirection="column">
       <Text dimColor>
-        Minerva · {model} · {cwd} · /help for commands, esc to cancel
+        Minerva · {modelRef} · {cwd} · /help for commands, esc to cancel
       </Text>
       <Chat
         client={client}
@@ -71,6 +78,10 @@ export function App({ client, bridge, model, cwd, resume }: AppProps) {
         pending={pending}
         cwd={cwd}
         onNewSession={startNewSession}
+        providers={providers}
+        model={modelRef}
+        onModelChanged={setModelRef}
+        initialConfigOpen={needsConfig}
       />
     </Box>
   );
@@ -78,6 +89,7 @@ export function App({ client, bridge, model, cwd, resume }: AppProps) {
 
 const HELP_TEXT = [
   "/help              show this help",
+  "/config            choose provider, API key, and model",
   "/mode [id]         show or set the session mode (plan | default | acceptEdits | auto)",
   "/compact           summarize the conversation and reset the model context",
   "/sessions          list recent sessions for this directory",
@@ -91,12 +103,20 @@ function Chat({
   pending,
   cwd,
   onNewSession,
+  providers,
+  model,
+  onModelChanged,
+  initialConfigOpen,
 }: {
   client: MinervaClient;
   session: { id: string; store: SessionStore };
   pending: PendingPermission | null;
   cwd: string;
   onNewSession: () => void;
+  providers: ProviderChoice[];
+  model: string;
+  onModelChanged: (providerId: string) => void;
+  initialConfigOpen: boolean;
 }) {
   const subscribe = useCallback(
     (listener: () => void) => session.store.subscribe(listener),
@@ -104,6 +124,7 @@ function Chat({
   );
   const viewModel = useSyncExternalStore(subscribe, () => session.store.snapshot);
   const [draft, setDraft] = useState("");
+  const [configOpen, setConfigOpen] = useState(initialConfigOpen);
   const { exit } = useApp();
 
   useInput((_input, key) => {
@@ -124,6 +145,9 @@ function Chat({
         break;
       case "help":
         info(HELP_TEXT);
+        break;
+      case "config":
+        setConfigOpen(true);
         break;
       case "mode":
         if (!argument) {
@@ -175,6 +199,24 @@ function Chat({
     client.prompt(session.id, text).catch(reportError);
   };
 
+  const applyConfig = async (result: ConfigResult) => {
+    const providerId = await client.setModel({
+      modelRef: result.modelRef,
+      ...(result.provider ? { provider: result.provider } : {}),
+      ...(result.apiKey ? { apiKey: result.apiKey } : {}),
+    });
+    onModelChanged(providerId);
+    setConfigOpen(false);
+    info(`model set to ${providerId} (saved to global settings)`);
+  };
+
+  const cancelConfig = () => {
+    setConfigOpen(false);
+    if (initialConfigOpen) {
+      info("no API key configured — prompts will fail until you run /config");
+    }
+  };
+
   return (
     <Box flexDirection="column">
       {viewModel.items.map((item, index) => (
@@ -182,6 +224,14 @@ function Chat({
       ))}
       {pending ? (
         <PermissionPrompt pending={pending} />
+      ) : configOpen ? (
+        <ConfigPanel
+          providers={providers}
+          currentModel={model}
+          firstRun={initialConfigOpen}
+          onSubmit={applyConfig}
+          onCancel={cancelConfig}
+        />
       ) : viewModel.busy ? (
         <Text color="yellow">✳ working… (esc to cancel)</Text>
       ) : (
