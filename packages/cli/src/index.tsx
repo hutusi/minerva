@@ -4,6 +4,7 @@ import { createKernel } from "@minerva/kernel";
 import { createInProcTransportPair } from "@minerva/protocol";
 import { createAnthropicProvider, DEFAULT_ANTHROPIC_MODEL } from "@minerva/providers";
 import { render } from "ink";
+import { runAcpHost } from "./acp";
 import { App } from "./app";
 import { PermissionBridge } from "./permission-bridge";
 
@@ -15,18 +16,30 @@ if (!process.env.ANTHROPIC_API_KEY) {
 
 const USAGE = `minerva — model-agnostic code agent
 
-Usage: minerva [options]
+Usage: minerva [command] [options]
+
+Commands:
+  (default)            Interactive terminal UI
+  acp                  Host the kernel on stdio (ACP framing) for editors
+
+Options:
   -c, --continue       Resume the most recent session for this directory
   -r, --resume <id>    Resume a specific session
   -m, --model <id>     Model to use (default: ${DEFAULT_ANTHROPIC_MODEL}, env: MINERVA_MODEL)
-  -h, --help           Show this help`;
+  -h, --help           Show this help
+
+Environment:
+  MINERVA_DATA_DIR     Session/config root (default: ~/.minerva)`;
 
 let model = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
 let resume: string | null = null;
+let command: "tui" | "acp" = "tui";
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
-  if (arg === "--continue" || arg === "-c") {
+  if (arg === "acp" && command === "tui") {
+    command = "acp";
+  } else if (arg === "--continue" || arg === "-c") {
     resume = "latest";
   } else if (arg === "--resume" || arg === "-r") {
     const value = argv[++i];
@@ -51,12 +64,23 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 
+const kernelOptions = {
+  provider: createAnthropicProvider({ model }),
+  dataDir: process.env.MINERVA_DATA_DIR,
+};
+
+if (command === "acp") {
+  // stdout carries the protocol; the kernel must never render UI here.
+  await runAcpHost(kernelOptions);
+  process.exit(0);
+}
+
 const cwd = process.cwd();
 
 // The CLI embeds the kernel, but only across the protocol's in-proc
 // transport — the same messages a Tauri sidecar or remote kernel would see.
 const [clientTransport, kernelTransport] = createInProcTransportPair();
-createKernel(kernelTransport, { provider: createAnthropicProvider({ model }) });
+createKernel(kernelTransport, kernelOptions);
 
 const bridge = new PermissionBridge();
 const client = new MinervaClient(clientTransport, {
