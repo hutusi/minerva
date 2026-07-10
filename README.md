@@ -17,9 +17,13 @@ Docs: [design record](docs/DESIGN.md) · [wire protocol](docs/PROTOCOL.md) ·
 
 ```sh
 bun install
-export ANTHROPIC_API_KEY="sk-ant-..."
 bun run --cwd packages/cli dev
 ```
+
+On first run with no API key configured, the TUI opens an interactive setup
+panel: pick a provider, paste a key, confirm a model. Keys can also come from
+the environment (`export ANTHROPIC_API_KEY="sk-ant-..."`), which always takes
+precedence over stored ones.
 
 ## Usage
 
@@ -43,6 +47,7 @@ Inside the TUI:
 | Command | Effect |
 |---|---|
 | `/help` | List commands |
+| `/config` | Choose provider, API key, and model — applies to the next prompt, no restart |
 | `/mode [id]` | Show or set the session mode (`plan` \| `default` \| `acceptEdits` \| `auto`) |
 | `/compact` | Summarize the conversation and reset the model context |
 | `/sessions` | List recent sessions for this directory |
@@ -55,12 +60,19 @@ project rule), `n` (reject), `esc` (cancel the turn).
 
 ## Providers
 
-Model references are `provider/model`; the matching key must be exported:
+Model references are `provider/model`. Keys resolve as **env var → key stored
+in global settings** (set either via `/config`):
 
 | Provider | Example ref | Key |
 |---|---|---|
 | Anthropic (default) | `claude-opus-4-8` or `anthropic/claude-opus-4-8` | `ANTHROPIC_API_KEY` |
 | OpenAI | `openai/gpt-5.2` | `OPENAI_API_KEY` |
+| Alibaba Bailian (DashScope) | `bailian/qwen-plus` | `DASHSCOPE_API_KEY` |
+
+Bailian uses the China endpoint by default; for the international one,
+override its `baseUrl` in settings (see below). Any other OpenAI-compatible
+endpoint (DeepSeek, Ollama, a proxy…) can be added as a custom provider —
+via `/config` → `custom…`, or directly in settings.
 
 ## Configuration
 
@@ -69,6 +81,17 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
 
 ```json
 {
+  "model": "bailian/qwen-plus",
+  "providers": {
+    "bailian": {
+      "apiKey": "sk-...",
+      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    },
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/v1",
+      "defaultModel": "deepseek-chat"
+    }
+  },
   "defaultMode": "default",
   "permissions": {
     "allow": ["bash(git status)", "bash(bun test*)"],
@@ -80,6 +103,13 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
   }
 }
 ```
+
+`model` picks the default model ref (`--model` and `MINERVA_MODEL` override
+it). `providers` overrides a built-in (e.g. Bailian's endpoint) or defines a
+new OpenAI-compatible one — a new name needs `baseUrl`, and its key env var
+defaults to `<NAME>_API_KEY`. **API keys are honored from the global file
+only** (never the shareable project file), and any file that may hold keys is
+written with mode `0600`.
 
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:
