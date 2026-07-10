@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve } from "node:path";
-import type { ToolKind } from "@minerva/protocol";
+import type { PlanEntry, ToolKind } from "@minerva/protocol";
 import type { Runtime } from "../runtime";
 
 export interface ToolContext {
@@ -7,6 +7,8 @@ export interface ToolContext {
   runtime: Runtime;
   /** Aborts when the prompt is cancelled; long-running tools should honor it. */
   signal?: AbortSignal;
+  /** Provided by the agent loop: persist + broadcast the session todo list. */
+  updateTodos?(entries: PlanEntry[]): void;
 }
 
 export interface ToolOutput {

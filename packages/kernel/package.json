@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@minerva/protocol": "workspace:*",
-    "@minerva/providers": "workspace:*"
+    "@minerva/providers": "workspace:*",
+    "tinyglobby": "^0.2.17"
   }
 }
