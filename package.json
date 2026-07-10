@@ -2,7 +2,10 @@
   "name": "minerva",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
