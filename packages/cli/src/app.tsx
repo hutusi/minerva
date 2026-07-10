@@ -9,9 +9,11 @@ interface AppProps {
   bridge: PermissionBridge;
   model: string;
   cwd: string;
+  /** null = new session; "latest" = most recent for cwd; else a session id. */
+  resume: string | null;
 }
 
-export function App({ client, bridge, model, cwd }: AppProps) {
+export function App({ client, bridge, model, cwd, resume }: AppProps) {
   const [session, setSession] = useState<{ id: string; store: SessionStore } | null>(null);
   const [pending, setPending] = useState<PendingPermission | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,15 +29,24 @@ export function App({ client, bridge, model, cwd }: AppProps) {
           },
         });
       });
-    client
-      .initialize()
-      .then(() => client.newSession(cwd))
+    const establish = async () => {
+      await client.initialize();
+      if (resume === "latest") {
+        const sessions = await client.listSessions(cwd);
+        const latest = sessions[0];
+        if (!latest) throw new Error(`no previous sessions for ${cwd}`);
+        return client.loadSession(latest.sessionId, cwd);
+      }
+      if (resume) return client.loadSession(resume, cwd);
+      return client.newSession(cwd);
+    };
+    establish()
       .then(({ sessionId, store }) => setSession({ id: sessionId, store }))
-      .catch((cause) => setError(String(cause)));
+      .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     return () => {
       bridge.handler = null;
     };
-  }, [client, bridge, cwd]);
+  }, [client, bridge, cwd, resume]);
 
   if (error) {
     return <Text color="red">Failed to start session: {error}</Text>;
@@ -82,8 +93,21 @@ function Chat({
       exit();
       return;
     }
+    if (text === "/mode" || text.startsWith("/mode ")) {
+      const modeId = text.slice("/mode".length).trim();
+      if (!modeId) {
+        session.store.addInfo(
+          `mode: ${viewModel.currentModeId ?? "default"} — /mode plan | default | acceptEdits | auto`,
+        );
+        return;
+      }
+      client.setMode(session.id, modeId).catch((cause) => {
+        session.store.addInfo(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
+      });
+      return;
+    }
     client.prompt(session.id, text).catch((cause) => {
-      session.store.addInfo(`error: ${String(cause)}`);
+      session.store.addInfo(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
     });
   };
 
@@ -98,6 +122,9 @@ function Chat({
         <Text color="yellow">✳ working… (esc to cancel)</Text>
       ) : (
         <Box>
+          {viewModel.currentModeId && viewModel.currentModeId !== "default" ? (
+            <Text color="magenta">[{viewModel.currentModeId}] </Text>
+          ) : null}
           <Text color="cyan">{"> "}</Text>
           <TextInput value={draft} onChange={setDraft} onSubmit={submit} />
         </Box>
@@ -107,7 +134,9 @@ function Chat({
 }
 
 function itemKey(item: ViewItem, index: number): string {
-  return item.kind === "tool" ? `tool-${item.toolCallId}` : `${item.kind}-${index}`;
+  if (item.kind === "tool") return `tool-${item.toolCallId}`;
+  if (item.kind === "plan") return "plan";
+  return `${item.kind}-${index}`;
 }
 
 function ItemView({ item }: { item: ViewItem }) {
@@ -127,6 +156,8 @@ function ItemView({ item }: { item: ViewItem }) {
       );
     case "tool":
       return <ToolView item={item} />;
+    case "plan":
+      return <PlanView entries={item.entries} />;
     case "info":
       return (
         <Box marginTop={1}>
@@ -167,11 +198,43 @@ function firstLines(text: string, count: number): string {
   return `${lines.slice(0, count).join("\n")}\n… (${lines.length - count} more lines)`;
 }
 
+function PlanView({ entries }: { entries: Extract<ViewItem, { kind: "plan" }>["entries"] }) {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text bold>Todos</Text>
+      {withUniqueKeys(entries).map(({ entry, key }) => (
+        <Text
+          key={key}
+          color={entry.status === "in_progress" ? "yellow" : undefined}
+          dimColor={entry.status === "completed"}
+        >
+          {entry.status === "completed" ? "☑" : entry.status === "in_progress" ? "◐" : "☐"}{" "}
+          {entry.content}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
+/** Stable-ish keys from content, disambiguating duplicate entries. */
+function withUniqueKeys<T extends { content: string }>(
+  entries: T[],
+): Array<{ entry: T; key: string }> {
+  const seen = new Map<string, number>();
+  return entries.map((entry) => {
+    const count = seen.get(entry.content) ?? 0;
+    seen.set(entry.content, count + 1);
+    return { entry, key: count === 0 ? entry.content : `${entry.content}#${count}` };
+  });
+}
+
 function PermissionPrompt({ pending }: { pending: PendingPermission }) {
   useInput((input, key) => {
     const answer = input.toLowerCase();
     if (answer === "y") {
       pending.resolve({ outcome: { outcome: "selected", optionId: "allow" } });
+    } else if (answer === "a") {
+      pending.resolve({ outcome: { outcome: "selected", optionId: "allow_always" } });
     } else if (answer === "n") {
       pending.resolve({ outcome: { outcome: "selected", optionId: "reject" } });
     } else if (key.escape) {
@@ -185,7 +248,7 @@ function PermissionPrompt({ pending }: { pending: PendingPermission }) {
         Permission required
       </Text>
       <Text>{pending.request.toolCall.title}</Text>
-      <Text dimColor>allow? (y/n, esc cancels the turn)</Text>
+      <Text dimColor>y allow · a always allow · n reject · esc cancel turn</Text>
     </Box>
   );
 }

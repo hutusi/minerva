@@ -1,4 +1,10 @@
-import type { SessionUpdate, ToolCallContent, ToolCallStatus, ToolKind } from "@minerva/protocol";
+import type {
+  PlanEntry,
+  SessionUpdate,
+  ToolCallContent,
+  ToolCallStatus,
+  ToolKind,
+} from "@minerva/protocol";
 
 /**
  * Session view-model (design decision #8): protocol updates in, renderable
@@ -17,11 +23,13 @@ export type ViewItem =
       status: ToolCallStatus;
       output?: string;
     }
+  | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "info"; text: string };
 
 export interface SessionViewModel {
   items: ViewItem[];
   busy: boolean;
+  currentModeId?: string;
 }
 
 const EMPTY: SessionViewModel = { items: [], busy: false };
@@ -81,7 +89,29 @@ export class SessionStore {
           output: extractText(update.content) ?? item.output,
         }));
         break;
+      case "plan":
+        this.#upsertPlan(update.entries);
+        break;
+      case "current_mode_update":
+        this.setMode(update.currentModeId);
+        break;
     }
+  }
+
+  setMode(modeId: string): void {
+    this.#set({ ...this.#viewModel, currentModeId: modeId });
+  }
+
+  /** One live plan per session: the latest update replaces it in place. */
+  #upsertPlan(entries: PlanEntry[]): void {
+    const existing = this.#viewModel.items.findIndex((item) => item.kind === "plan");
+    if (existing === -1) {
+      this.#push({ kind: "plan", entries });
+      return;
+    }
+    const items = [...this.#viewModel.items];
+    items[existing] = { kind: "plan", entries };
+    this.#set({ ...this.#viewModel, items });
   }
 
   #appendAssistantText(text: string): void {

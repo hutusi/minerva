@@ -3,11 +3,15 @@ import {
   CLIENT_METHODS,
   Connection,
   type InitializeResult,
+  MINERVA_METHODS,
   PROTOCOL_VERSION,
   type RequestPermissionParams,
   type RequestPermissionResult,
+  type SessionLoadResult,
   type SessionNewResult,
   type SessionPromptResult,
+  type SessionSummary,
+  type SessionsListResult,
   type SessionUpdateParams,
   type StopReason,
   type Transport,
@@ -57,13 +61,53 @@ export class MinervaClient {
   }
 
   async newSession(cwd: string): Promise<{ sessionId: string; store: SessionStore }> {
-    const { sessionId } = await this.#connection.request<SessionNewResult>(
+    const { sessionId, modes } = await this.#connection.request<SessionNewResult>(
       AGENT_METHODS.sessionNew,
       { cwd },
     );
     const store = new SessionStore();
+    if (modes) store.setMode(modes.currentModeId);
     this.#stores.set(sessionId, store);
     return { sessionId, store };
+  }
+
+  /**
+   * Resume a persisted session. The store must be registered before the
+   * request goes out: the kernel replays the transcript as session/update
+   * notifications ahead of its response.
+   */
+  async loadSession(
+    sessionId: string,
+    cwd: string,
+  ): Promise<{ sessionId: string; store: SessionStore }> {
+    const store = new SessionStore();
+    this.#stores.set(sessionId, store);
+    try {
+      const { modes } = await this.#connection.request<SessionLoadResult>(
+        AGENT_METHODS.sessionLoad,
+        { sessionId, cwd },
+      );
+      if (modes) store.setMode(modes.currentModeId);
+      // The replayed transcript is settled history — close any item the
+      // replay left in the streaming state.
+      store.setBusy(false);
+      return { sessionId, store };
+    } catch (error) {
+      this.#stores.delete(sessionId);
+      throw error;
+    }
+  }
+
+  async listSessions(cwd: string): Promise<SessionSummary[]> {
+    const result = await this.#connection.request<SessionsListResult>(
+      MINERVA_METHODS.sessionsList,
+      { cwd },
+    );
+    return result.sessions;
+  }
+
+  async setMode(sessionId: string, modeId: string): Promise<void> {
+    await this.#connection.request(AGENT_METHODS.sessionSetMode, { sessionId, modeId });
   }
 
   async prompt(sessionId: string, text: string): Promise<StopReason> {

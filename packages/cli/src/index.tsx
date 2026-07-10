@@ -13,7 +13,38 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-const model = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
+const USAGE = `minerva — model-agnostic code agent
+
+Usage: minerva [options]
+  -c, --continue       Resume the most recent session for this directory
+  -r, --resume <id>    Resume a specific session
+  -m, --model <id>     Model to use (default: ${DEFAULT_ANTHROPIC_MODEL}, env: MINERVA_MODEL)
+  -h, --help           Show this help`;
+
+let model = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
+let resume: string | null = null;
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i];
+  if (arg === "--continue" || arg === "-c") {
+    resume = "latest";
+  } else if (arg === "--resume" || arg === "-r") {
+    resume = argv[++i] ?? null;
+    if (!resume) {
+      console.error("--resume requires a session id");
+      process.exit(1);
+    }
+  } else if (arg === "--model" || arg === "-m") {
+    model = argv[++i] ?? model;
+  } else if (arg === "--help" || arg === "-h") {
+    console.log(USAGE);
+    process.exit(0);
+  } else {
+    console.error(`unknown option: ${arg}\n\n${USAGE}`);
+    process.exit(1);
+  }
+}
+
 const cwd = process.cwd();
 
 // The CLI embeds the kernel, but only across the protocol's in-proc
@@ -26,7 +57,7 @@ const client = new MinervaClient(clientTransport, {
   onPermissionRequest: bridge.onPermissionRequest,
 });
 
-const app = render(<App client={client} bridge={bridge} model={model} cwd={cwd} />);
+const app = render(<App client={client} bridge={bridge} model={model} cwd={cwd} resume={resume} />);
 await app.waitUntilExit();
 // Ink unmounts but stdin's raw-mode listener keeps the runtime alive.
 process.exit(0);
