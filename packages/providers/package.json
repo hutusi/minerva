@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3",
+    "@ai-sdk/openai": "^3",
     "ai": "^6",
     "zod": "^4"
   }

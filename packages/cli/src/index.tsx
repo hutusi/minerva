@@ -2,17 +2,16 @@
 import { MinervaClient } from "@minerva/client";
 import { createKernel } from "@minerva/kernel";
 import { createInProcTransportPair } from "@minerva/protocol";
-import { createAnthropicProvider, DEFAULT_ANTHROPIC_MODEL } from "@minerva/providers";
+import {
+  apiKeyEnvVar,
+  createProviderFromRef,
+  DEFAULT_ANTHROPIC_MODEL,
+  parseModelRef,
+} from "@minerva/providers";
 import { render } from "ink";
 import { runAcpHost } from "./acp";
 import { App } from "./app";
 import { PermissionBridge } from "./permission-bridge";
-
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error("ANTHROPIC_API_KEY is not set. Export it and try again:");
-  console.error('  export ANTHROPIC_API_KEY="sk-ant-..."');
-  process.exit(1);
-}
 
 const USAGE = `minerva — model-agnostic code agent
 
@@ -25,10 +24,13 @@ Commands:
 Options:
   -c, --continue       Resume the most recent session for this directory
   -r, --resume <id>    Resume a specific session
-  -m, --model <id>     Model to use (default: ${DEFAULT_ANTHROPIC_MODEL}, env: MINERVA_MODEL)
+  -m, --model <ref>    Model as [provider/]model, e.g. openai/gpt-5.2 or
+                       claude-opus-4-8 (default: ${DEFAULT_ANTHROPIC_MODEL}, env: MINERVA_MODEL)
   -h, --help           Show this help
 
 Environment:
+  ANTHROPIC_API_KEY    Key for anthropic/* models
+  OPENAI_API_KEY       Key for openai/* models
   MINERVA_DATA_DIR     Session/config root (default: ~/.minerva)`;
 
 let model = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
@@ -64,8 +66,22 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 
+let providerName: ReturnType<typeof parseModelRef>["provider"];
+try {
+  providerName = parseModelRef(model).provider;
+} catch (cause) {
+  console.error(cause instanceof Error ? cause.message : String(cause));
+  process.exit(1);
+}
+const keyVar = apiKeyEnvVar(providerName);
+if (!process.env[keyVar]) {
+  console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
+  console.error(`  export ${keyVar}="..."`);
+  process.exit(1);
+}
+
 const kernelOptions = {
-  provider: createAnthropicProvider({ model }),
+  provider: createProviderFromRef(model),
   dataDir: process.env.MINERVA_DATA_DIR,
 };
 
