@@ -20,7 +20,7 @@ export interface ExecResult {
 export interface ExecOptions {
   cwd: string;
   timeoutMs: number;
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 }
 
 export interface Runtime {

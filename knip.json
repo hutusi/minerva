@@ -1,0 +1,11 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    "packages/protocol": {},
+    "packages/providers": {},
+    "packages/client": {},
+    "packages/kernel": { "entry": ["test/fixtures/*.ts"] },
+    "packages/cli": { "entry": ["test/fixtures/*.{ts,tsx}"] },
+    ".": { "entry": ["scripts/*.ts"] }
+  }
+}

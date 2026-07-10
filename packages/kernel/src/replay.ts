@@ -11,7 +11,7 @@ export interface ReplayResult {
   updates: SessionUpdate[];
   todos: PlanEntry[];
   /** Last mode recorded in the log, if any. */
-  modeId?: string;
+  modeId?: string | undefined;
 }
 
 /**

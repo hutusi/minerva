@@ -21,7 +21,7 @@ export type ViewItem =
       title: string;
       toolKind: ToolKind;
       status: ToolCallStatus;
-      output?: string;
+      output?: string | undefined;
     }
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "info"; text: string };

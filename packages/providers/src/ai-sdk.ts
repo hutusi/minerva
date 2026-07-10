@@ -41,10 +41,10 @@ export function createAiSdkProvider(model: LanguageModel, id: string): ModelProv
     async *streamTurn(request) {
       const result = streamText({
         model,
-        system: request.system,
         messages: request.messages.map(toModelMessage),
         tools: toToolSet(request.tools),
-        abortSignal: request.abortSignal,
+        ...(request.system !== undefined ? { system: request.system } : {}),
+        ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
       });
 
       for await (const part of result.fullStream) {

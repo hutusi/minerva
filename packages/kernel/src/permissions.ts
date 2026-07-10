@@ -28,8 +28,8 @@ export function isSessionModeId(value: unknown): value is SessionModeId {
 }
 
 export type PermissionVerdict =
-  | { action: "allow"; rule?: string }
-  | { action: "deny"; rule?: string; reason: string }
+  | { action: "allow"; rule?: string | undefined }
+  | { action: "deny"; rule?: string | undefined; reason: string }
   | { action: "ask" };
 
 export class PermissionEngine {

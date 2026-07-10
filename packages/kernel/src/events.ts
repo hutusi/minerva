@@ -45,7 +45,7 @@ export type SessionEvent =
        */
       source: "policy" | "user" | "frontend" | "error";
       /** The permission rule that decided, when one matched. */
-      rule?: string;
+      rule?: string | undefined;
       at: string;
     }
   | { type: "todo.updated"; entries: PlanEntry[]; at: string }
@@ -58,7 +58,7 @@ export type SessionEvent =
       summary: string;
       at: string;
     }
-  | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage; at: string }
+  | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage | undefined; at: string }
   | { type: "turn.failed"; error: string; at: string };
 
 export function now(): string {

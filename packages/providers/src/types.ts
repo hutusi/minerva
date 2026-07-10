@@ -30,15 +30,15 @@ export type ProviderMessage =
   | { role: "tool"; results: ProviderToolResult[] };
 
 export interface TurnRequest {
-  system?: string;
+  system?: string | undefined;
   messages: ProviderMessage[];
   tools: ToolDefinition[];
-  abortSignal?: AbortSignal;
+  abortSignal?: AbortSignal | undefined;
 }
 
 export interface TurnUsage {
-  inputTokens?: number;
-  outputTokens?: number;
+  inputTokens?: number | undefined;
+  outputTokens?: number | undefined;
 }
 
 export type TurnFinishReason = "stop" | "tool-calls" | "length" | "other";
