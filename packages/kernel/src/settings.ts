@@ -14,14 +14,23 @@ export interface PermissionRules {
   ask: string[];
 }
 
+/** How to launch an MCP server (stdio transport). */
+export interface McpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
 export interface MinervaSettings {
   permissions?: Partial<PermissionRules>;
   defaultMode?: string;
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 export interface ResolvedSettings {
   rules: PermissionRules;
   defaultMode?: string;
+  mcpServers: Record<string, McpServerConfig>;
 }
 
 export function globalSettingsPath(dataDir: string): string {
@@ -46,6 +55,8 @@ export async function loadSettings(
       ask: [...(global.permissions?.ask ?? []), ...(project.permissions?.ask ?? [])],
     },
     defaultMode: project.defaultMode ?? global.defaultMode,
+    // Per-name override: a project redefining "github" replaces the global one.
+    mcpServers: { ...global.mcpServers, ...project.mcpServers },
   };
 }
 

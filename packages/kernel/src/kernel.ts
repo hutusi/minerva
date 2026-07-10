@@ -20,9 +20,11 @@ import {
 import type { ModelProvider } from "@minerva/providers";
 import { runPrompt } from "./agent-loop";
 import { now } from "./events";
+import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
 import { defaultRuntime, type Runtime } from "./runtime";
 import { parseEventLog, projectDir, Session } from "./session";
+import { loadSettings } from "./settings";
 import { builtinTools, type KernelTool } from "./tools";
 
 export interface KernelOptions {
@@ -42,6 +44,7 @@ export interface KernelOptions {
 export class MinervaKernel {
   #connection: Connection;
   #sessions = new Map<string, Session>();
+  #mcp = new Map<string, McpConnection>();
   #provider: ModelProvider;
   #runtime: Runtime;
   #dataDir: string;
@@ -95,7 +98,27 @@ export class MinervaKernel {
       runtime: this.#runtime,
     });
     this.#sessions.set(session.id, session);
+    await this.#connectMcp(session.id, cwd);
     return { sessionId: session.id, modes: modeState(session) };
+  }
+
+  /**
+   * Connect the session's configured MCP servers. Failures degrade to
+   * warnings on stderr — a broken server config must not brick sessions.
+   */
+  async #connectMcp(sessionId: string, cwd: string): Promise<void> {
+    const settings = await loadSettings(this.#runtime, this.#dataDir, cwd);
+    if (Object.keys(settings.mcpServers).length === 0) return;
+    const connection = await connectMcpServers(settings.mcpServers);
+    for (const warning of connection.warnings) {
+      process.stderr.write(`minerva: ${warning}\n`);
+    }
+    this.#mcp.set(sessionId, connection);
+  }
+
+  #toolsFor(sessionId: string): KernelTool[] {
+    const mcpTools = this.#mcp.get(sessionId)?.tools ?? [];
+    return mcpTools.length > 0 ? [...this.#tools, ...mcpTools] : this.#tools;
   }
 
   async #sessionLoad(params: unknown): Promise<SessionLoadResult> {
@@ -131,6 +154,7 @@ export class MinervaKernel {
       );
     }
     this.#sessions.set(sessionId, loaded.session);
+    await this.#connectMcp(sessionId, cwd);
     // ACP: replay the conversation as session/update notifications before
     // answering, so the frontend can rebuild its transcript.
     for (const update of loaded.replay.updates) {
@@ -243,7 +267,7 @@ export class MinervaKernel {
         session,
         connection: this.#connection,
         provider: this.#provider,
-        tools: this.#tools,
+        tools: this.#toolsFor(session.id),
         system: this.#systemPrompt(session.cwd),
         runtime: this.#runtime,
       },
@@ -257,6 +281,10 @@ export class MinervaKernel {
   }
 
   close(): void {
+    for (const connection of this.#mcp.values()) {
+      void connection.close();
+    }
+    this.#mcp.clear();
     this.#connection.close();
   }
 }
