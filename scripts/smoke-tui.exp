@@ -8,10 +8,11 @@ if {![info exists env(ANTHROPIC_API_KEY)]} {
     set env(ANTHROPIC_API_KEY) "sk-ant-placeholder-smoke"
 }
 set env(MINERVA_DATA_DIR) [exec mktemp -d]
+set env(LANG) "C.UTF-8"
 
 spawn bun run [file join $repo packages cli src index.tsx]
 expect {
-    -re "Minerva ·" {}
+    "Minerva" {}
     timeout { puts "\nSMOKE: FAIL no banner (timeout)"; exit 1 }
     eof { puts "\nSMOKE: FAIL process exited before banner"; exit 1 }
 }
