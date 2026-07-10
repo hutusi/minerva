@@ -49,6 +49,8 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y expect
       - run: bun install --frozen-lockfile
+      - name: Sanity — entrypoint runs headless in this job context
+        run: ANTHROPIC_API_KEY=fake bun run packages/cli/src/index.tsx --help | grep -q "Usage: minerva"
       - name: PTY render smoke
         run: bun run smoke:tui
       - name: PTY scripted conversation e2e

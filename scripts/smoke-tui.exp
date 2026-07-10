@@ -12,7 +12,8 @@ set env(MINERVA_DATA_DIR) [exec mktemp -d]
 spawn bun run [file join $repo packages cli src index.tsx]
 expect {
     -re "Minerva ·" {}
-    timeout { puts "\nSMOKE: FAIL no banner"; exit 1 }
+    timeout { puts "\nSMOKE: FAIL no banner (timeout)"; exit 1 }
+    eof { puts "\nSMOKE: FAIL process exited before banner"; exit 1 }
 }
 expect {
     ">" {}

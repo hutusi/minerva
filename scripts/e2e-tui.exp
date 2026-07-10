@@ -13,7 +13,8 @@ spawn bun run [file join $repo packages cli test fixtures tui-scripted.tsx]
 proc must {pattern what} {
     expect {
         -re $pattern {}
-        timeout { puts "\nE2E: FAIL waiting for $what"; exit 1 }
+        timeout { puts "\nE2E: FAIL waiting for $what (timeout)"; exit 1 }
+        eof { puts "\nE2E: FAIL process exited while waiting for $what"; exit 1 }
     }
 }
 
