@@ -10,6 +10,14 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/kernel": {
+      "name": "@minerva/kernel",
+      "version": "0.1.0",
+      "dependencies": {
+        "@minerva/protocol": "workspace:*",
+        "@minerva/providers": "workspace:*",
+      },
+    },
     "packages/protocol": {
       "name": "@minerva/protocol",
       "version": "0.1.0",
@@ -50,6 +58,8 @@
     "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.5.3", "", { "os": "win32", "cpu": "arm64" }, "sha512-cX5z+GYwRcqEok0AH3KSfQGgqYd0Nomfp6Fbe1uiTtELE38hdH2k842wQ9wLNaF/JJ7r4rjJQ4VR+ce+fRmQbw=="],
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.3", "", { "os": "win32", "cpu": "x64" }, "sha512-ExSaJWi4/u6+GXCszlSKpWSjKNbDseAYqqkCznsCsZ/4uidZ/BEqsCc5/3ctlq6dfIubdIIRSVLC/PG9xPl70Q=="],
+
+    "@minerva/kernel": ["@minerva/kernel@workspace:packages/kernel"],
 
     "@minerva/protocol": ["@minerva/protocol@workspace:packages/protocol"],
 

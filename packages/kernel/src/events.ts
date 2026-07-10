@@ -1,0 +1,36 @@
+import type { StopReason } from "@minerva/protocol";
+import type { TurnUsage } from "@minerva/providers";
+
+/**
+ * Session event-log entries (design decision #7). The append-only JSONL
+ * stream of these events is the source of truth for a session: replaying it
+ * must be enough to rebuild model context, re-render any UI, and audit every
+ * side effect. Every variant therefore carries the full fact, not a diff.
+ */
+
+export type SessionEvent =
+  | {
+      type: "session.created";
+      sessionId: string;
+      cwd: string;
+      provider: string;
+      at: string;
+    }
+  | { type: "user.message"; text: string; at: string }
+  | { type: "assistant.message"; text: string; at: string }
+  | { type: "tool.call"; toolCallId: string; toolName: string; input: unknown; at: string }
+  | { type: "tool.result"; toolCallId: string; output: string; isError: boolean; at: string }
+  | {
+      type: "permission.decision";
+      toolCallId: string;
+      toolName: string;
+      decision: "allowed" | "denied";
+      /** "policy" = decided by kernel rules; "user" = decided via permission request. */
+      source: "policy" | "user";
+      at: string;
+    }
+  | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage; at: string };
+
+export function now(): string {
+  return new Date().toISOString();
+}

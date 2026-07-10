@@ -1,0 +1,13 @@
+{
+  "name": "@minerva/kernel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@minerva/protocol": "workspace:*",
+    "@minerva/providers": "workspace:*"
+  }
+}
