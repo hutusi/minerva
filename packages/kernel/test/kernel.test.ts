@@ -30,13 +30,14 @@ interface Harness {
   updates: SessionUpdateParams[];
   permissionRequests: RequestPermissionParams[];
   sessionId: string;
+  cwd: string;
   logEvents: () => SessionEvent[];
   sessionMessages: () => unknown[];
 }
 
 async function setup(options: {
   turns: TurnEvent[][];
-  permission?: "allow" | "reject" | "cancel";
+  permission?: "allow" | "allow_always" | "reject" | "cancel";
 }): Promise<Harness> {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-proj-"));
   const dataDir = mkdtempSync(join(tmpdir(), "minerva-data-"));
@@ -78,6 +79,7 @@ async function setup(options: {
     updates,
     permissionRequests,
     sessionId,
+    cwd,
     logEvents: () => {
       const logPath = kernel.getSession(sessionId)?.logPath;
       if (!logPath) throw new Error("session log not found");
@@ -244,6 +246,97 @@ describe("kernel over in-proc transport", () => {
     // The streamed assistant text survived cancellation into the event log.
     const assistant = harness.logEvents().find((event) => event.type === "assistant.message");
     expect(assistant).toMatchObject({ text: "Editing now." });
+  });
+
+  test("allow_always persists a rule and later identical calls skip the prompt", async () => {
+    const call = (id: string): TurnEvent => ({
+      type: "tool-call",
+      toolCallId: id,
+      toolName: "bash",
+      input: { command: "echo x" },
+    });
+    const harness = await setup({
+      permission: "allow_always",
+      turns: [
+        [call("c1"), FINISH_TOOLS],
+        [call("c2"), FINISH_TOOLS],
+        [{ type: "text-delta", text: "done" }, FINISH_STOP],
+      ],
+    });
+
+    await prompt(harness, "run it twice");
+    expect(harness.permissionRequests).toHaveLength(1);
+
+    const decisions = harness.logEvents().filter((event) => event.type === "permission.decision");
+    expect(decisions[0]).toMatchObject({
+      decision: "allowed",
+      source: "user",
+      rule: "bash(echo x)",
+    });
+    expect(decisions[1]).toMatchObject({
+      decision: "allowed",
+      source: "policy",
+      rule: "bash(echo x)",
+    });
+
+    const settings = JSON.parse(
+      readFileSync(join(harness.cwd, ".minerva", "settings.json"), "utf8"),
+    );
+    expect(settings.permissions.allow).toEqual(["bash(echo x)"]);
+  });
+
+  test("plan mode denies mutating tools without asking; auto mode allows", async () => {
+    const harness = await setup({
+      turns: [
+        [
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "bash",
+            input: { command: "echo blocked" },
+          },
+          FINISH_TOOLS,
+        ],
+        [{ type: "text-delta", text: "ok, planning only" }, FINISH_STOP],
+        [
+          {
+            type: "tool-call",
+            toolCallId: "c2",
+            toolName: "bash",
+            input: { command: "echo allowed" },
+          },
+          FINISH_TOOLS,
+        ],
+        [{ type: "text-delta", text: "ran it" }, FINISH_STOP],
+      ],
+    });
+
+    await harness.client.request(AGENT_METHODS.sessionSetMode, {
+      sessionId: harness.sessionId,
+      modeId: "plan",
+    });
+    await prompt(harness, "try something");
+    expect(harness.permissionRequests).toHaveLength(0);
+    const denied = harness.logEvents().find((event) => event.type === "permission.decision");
+    expect(denied).toMatchObject({ decision: "denied", source: "policy" });
+    const failed = harness.updates.find(
+      (u) => u.update.sessionUpdate === "tool_call_update" && u.update.status === "failed",
+    );
+    expect(JSON.stringify(failed)).toContain("plan mode");
+
+    await harness.client.request(AGENT_METHODS.sessionSetMode, {
+      sessionId: harness.sessionId,
+      modeId: "auto",
+    });
+    await prompt(harness, "now really run it");
+    expect(harness.permissionRequests).toHaveLength(0);
+    const completed = harness.updates.filter(
+      (u) => u.update.sessionUpdate === "tool_call_update" && u.update.status === "completed",
+    );
+    expect(JSON.stringify(completed)).toContain("allowed");
+
+    const modeEvents = harness.logEvents().filter((event) => event.type === "session.mode_changed");
+    expect(modeEvents.map((event) => event.modeId)).toEqual(["plan", "auto"]);
   });
 
   test("concurrent prompt on the same session is rejected", async () => {

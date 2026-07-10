@@ -13,8 +13,10 @@ import type {
   TurnUsage,
 } from "@minerva/providers";
 import { now } from "./events";
+import { formatRule, permissionValue } from "./permissions";
 import type { Runtime } from "./runtime";
 import type { Session } from "./session";
+import { persistAllowRule } from "./settings";
 import type { KernelTool } from "./tools";
 
 /** Backstop against runaway loops; becomes configurable with modes in slice 2. */
@@ -79,8 +81,10 @@ async function runLoop(
     // turn is cancelled mid-stream — the event log has to be able to
     // re-render what the user actually saw.
     const recordAssistantMessage = () => {
-      if (text) session.append({ type: "assistant.message", text, at: now() });
       if (text || toolCalls.length > 0) {
+        // toolCalls ride on the event so replay can rebuild the provider
+        // message even for turns where the model emitted no text.
+        session.append({ type: "assistant.message", text, toolCalls, at: now() });
         session.messages.push({ role: "assistant", text, toolCalls });
       }
     };
@@ -177,14 +181,12 @@ async function executeToolCall(
     toolName: call.toolName,
     decision: decision.allowed ? "allowed" : "denied",
     source: decision.source,
+    rule: decision.rule,
     at: now(),
   });
   if (!decision.allowed) {
     return completeToolCall(context, call, {
-      output:
-        decision.source === "user"
-          ? "The user denied permission for this tool call."
-          : "Permission could not be granted for this tool call.",
+      output: decision.reason ?? deniedMessage(decision.source),
       isError: true,
     });
   }
@@ -210,6 +212,11 @@ async function executeToolCall(
       cwd: session.cwd,
       runtime: context.runtime,
       signal: context.signal,
+      updateTodos: (entries) => {
+        session.todos = entries;
+        session.append({ type: "todo.updated", entries, at: now() });
+        sendUpdate(context, { sessionUpdate: "plan", entries });
+      },
     });
     output = result.output;
     isError = result.isError ?? false;
@@ -287,25 +294,43 @@ interface PermissionDecision {
   /** Who actually decided — the audit log must not blame the user for
    * transport failures or frontend defaults. */
   source: "policy" | "user" | "frontend" | "error";
+  /** The permission rule that decided or was created, when there is one. */
+  rule?: string;
+  /** Denial text for the model, when the default message won't do. */
+  reason?: string;
+}
+
+function deniedMessage(source: PermissionDecision["source"]): string {
+  return source === "user"
+    ? "The user denied permission for this tool call."
+    : "Permission could not be granted for this tool call.";
 }
 
 /**
- * Slice-1 policy: read-only tools are allowed outright; everything else asks
- * the frontend via ACP session/request_permission. The rule engine and
- * session modes (design decision #5) replace the first branch in slice 2.
+ * Rule engine + session modes (design decision #5): the engine decides
+ * allow/deny/ask; only "ask" round-trips to the frontend via ACP
+ * session/request_permission. An allow_always answer becomes a persisted
+ * project rule.
  */
 async function checkPermission(
   context: LoopContext,
   call: ProviderToolCall,
   tool: KernelTool,
 ): Promise<PermissionDecision> {
-  if (tool.readOnly) return { allowed: true, source: "policy" };
+  const { session } = context;
+  const verdict = session.permissions.evaluate(tool, call.input, session.mode);
+  if (verdict.action === "allow") {
+    return { allowed: true, source: "policy", rule: verdict.rule };
+  }
+  if (verdict.action === "deny") {
+    return { allowed: false, source: "policy", rule: verdict.rule, reason: verdict.reason };
+  }
 
   try {
     const result = await context.connection.request<RequestPermissionResult>(
       CLIENT_METHODS.sessionRequestPermission,
       {
-        sessionId: context.session.id,
+        sessionId: session.id,
         toolCall: {
           toolCallId: call.toolCallId,
           title: titleFor(tool, call),
@@ -314,6 +339,7 @@ async function checkPermission(
         },
         options: [
           { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "allow_always", name: "Allow always", kind: "allow_always" },
           { optionId: "reject", name: "Reject", kind: "reject_once" },
         ],
       },
@@ -321,8 +347,19 @@ async function checkPermission(
     );
     if (result.outcome.outcome === "cancelled") {
       // ACP: the frontend is cancelling the turn, not answering the question.
-      context.session.cancel();
+      session.cancel();
       return { allowed: false, source: "frontend" };
+    }
+    if (result.outcome.optionId === "allow_always") {
+      const rule = formatRule(tool.name, permissionValue(call.input));
+      session.permissions.addAllowRule(rule);
+      try {
+        await persistAllowRule(context.runtime, session.cwd, rule);
+      } catch {
+        // The in-memory rule still covers this session; persistence failure
+        // must not fail an approved tool call.
+      }
+      return { allowed: true, source: "user", rule };
     }
     return { allowed: result.outcome.optionId === "allow", source: "user" };
   } catch {

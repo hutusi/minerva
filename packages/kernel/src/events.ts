@@ -1,5 +1,5 @@
-import type { StopReason } from "@minerva/protocol";
-import type { TurnUsage } from "@minerva/providers";
+import type { PlanEntry, StopReason } from "@minerva/protocol";
+import type { ProviderToolCall, TurnUsage } from "@minerva/providers";
 
 /**
  * Session event-log entries (design decision #7). The append-only JSONL
@@ -16,8 +16,20 @@ export type SessionEvent =
       provider: string;
       at: string;
     }
+  | { type: "session.resumed"; provider: string; at: string }
+  | { type: "session.mode_changed"; modeId: string; at: string }
   | { type: "user.message"; text: string; at: string }
-  | { type: "assistant.message"; text: string; at: string }
+  | {
+      type: "assistant.message";
+      text: string;
+      /**
+       * Tool calls issued in this assistant turn. Duplicates tool.call events
+       * on purpose: this event alone must reconstruct the provider message on
+       * replay, including calls the model made with no accompanying text.
+       */
+      toolCalls: ProviderToolCall[];
+      at: string;
+    }
   | { type: "tool.call"; toolCallId: string; toolName: string; input: unknown; at: string }
   | { type: "tool.result"; toolCallId: string; output: string; isError: boolean; at: string }
   | {
@@ -26,13 +38,17 @@ export type SessionEvent =
       toolName: string;
       decision: "allowed" | "denied";
       /**
-       * "policy" = kernel rules; "user" = explicit user choice via permission
-       * request; "frontend" = the frontend answered without a user choice
-       * (cancelled outcome); "error" = the request failed, denied by default.
+       * "policy" = kernel rules/modes; "user" = explicit user choice via
+       * permission request; "frontend" = the frontend answered without a user
+       * choice (cancelled outcome); "error" = the request failed, denied by
+       * default.
        */
       source: "policy" | "user" | "frontend" | "error";
+      /** The permission rule that decided, when one matched. */
+      rule?: string;
       at: string;
     }
+  | { type: "todo.updated"; entries: PlanEntry[]; at: string }
   | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage; at: string }
   | { type: "turn.failed"; error: string; at: string };
 

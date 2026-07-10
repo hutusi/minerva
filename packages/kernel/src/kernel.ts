@@ -1,19 +1,29 @@
 import { join } from "node:path";
 import {
   AGENT_METHODS,
+  CLIENT_METHODS,
   Connection,
   type InitializeResult,
   JSON_RPC_ERROR_CODES,
+  MINERVA_METHODS,
   PROTOCOL_VERSION,
   RpcError,
+  type SessionLoadResult,
+  type SessionModeState,
   type SessionNewResult,
   type SessionPromptResult,
+  type SessionSetModeResult,
+  type SessionSummary,
+  type SessionsListResult,
   type Transport,
 } from "@minerva/protocol";
 import type { ModelProvider } from "@minerva/providers";
 import { runPrompt } from "./agent-loop";
+import { now } from "./events";
+import { isSessionModeId, SESSION_MODES } from "./permissions";
+import { replayEvents } from "./replay";
 import { defaultRuntime, type Runtime } from "./runtime";
-import { Session } from "./session";
+import { parseEventLog, projectDir, Session } from "./session";
 import { builtinTools, type KernelTool } from "./tools";
 
 export interface KernelOptions {
@@ -49,8 +59,17 @@ export class MinervaKernel {
     this.#connection = new Connection(transport);
     this.#connection.handleRequest(AGENT_METHODS.initialize, () => this.#initialize());
     this.#connection.handleRequest(AGENT_METHODS.sessionNew, (params) => this.#sessionNew(params));
+    this.#connection.handleRequest(AGENT_METHODS.sessionLoad, (params) =>
+      this.#sessionLoad(params),
+    );
     this.#connection.handleRequest(AGENT_METHODS.sessionPrompt, (params) =>
       this.#sessionPrompt(params),
+    );
+    this.#connection.handleRequest(AGENT_METHODS.sessionSetMode, (params) =>
+      this.#sessionSetMode(params),
+    );
+    this.#connection.handleRequest(MINERVA_METHODS.sessionsList, (params) =>
+      this.#sessionsList(params),
     );
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
       const { sessionId } = params as { sessionId?: string };
@@ -61,7 +80,7 @@ export class MinervaKernel {
   #initialize(): InitializeResult {
     return {
       protocolVersion: PROTOCOL_VERSION,
-      agentCapabilities: { loadSession: false },
+      agentCapabilities: { loadSession: true },
     };
   }
 
@@ -77,7 +96,110 @@ export class MinervaKernel {
       runtime: this.#runtime,
     });
     this.#sessions.set(session.id, session);
-    return { sessionId: session.id };
+    return { sessionId: session.id, modes: modeState(session) };
+  }
+
+  async #sessionLoad(params: unknown): Promise<SessionLoadResult> {
+    const { sessionId, cwd } = (params ?? {}) as { sessionId?: string; cwd?: string };
+    if (typeof sessionId !== "string" || typeof cwd !== "string" || cwd.length === 0) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        "session/load requires sessionId and cwd",
+      );
+    }
+    if (this.#sessions.get(sessionId)?.promptActive) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        "cannot load a session while a prompt is running in it",
+      );
+    }
+    let loaded: Awaited<ReturnType<typeof Session.load>>;
+    try {
+      loaded = await Session.load(
+        sessionId,
+        { cwd, dataDir: this.#dataDir, providerId: this.#provider.id, runtime: this.#runtime },
+        this.#tools,
+      );
+    } catch (error) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    this.#sessions.set(sessionId, loaded.session);
+    // ACP: replay the conversation as session/update notifications before
+    // answering, so the frontend can rebuild its transcript.
+    for (const update of replayEvents(loaded.events, this.#tools).updates) {
+      this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });
+    }
+    return { modes: modeState(loaded.session) };
+  }
+
+  async #sessionSetMode(params: unknown): Promise<SessionSetModeResult> {
+    const { sessionId, modeId } = (params ?? {}) as { sessionId?: string; modeId?: string };
+    const session = sessionId ? this.#sessions.get(sessionId) : undefined;
+    if (!session) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, `unknown session: ${sessionId}`);
+    }
+    if (!isSessionModeId(modeId)) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, `unknown mode: ${modeId}`);
+    }
+    session.mode = modeId;
+    session.append({ type: "session.mode_changed", modeId, at: now() });
+    this.#connection.notify(CLIENT_METHODS.sessionUpdate, {
+      sessionId: session.id,
+      update: { sessionUpdate: "current_mode_update", currentModeId: modeId },
+    });
+    return null;
+  }
+
+  async #sessionsList(params: unknown): Promise<SessionsListResult> {
+    const { cwd } = (params ?? {}) as { cwd?: string };
+    if (typeof cwd !== "string" || cwd.length === 0) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "sessions/list requires cwd");
+    }
+    const dir = projectDir(this.#dataDir, cwd);
+    let raw: string;
+    try {
+      raw = await this.#runtime.readTextFile(join(dir, "index.jsonl"));
+    } catch {
+      return { sessions: [] };
+    }
+    const entries = raw
+      .split("\n")
+      .filter((line) => line.trim())
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as SessionSummary];
+        } catch {
+          return [];
+        }
+      })
+      .filter((entry) => entry.cwd === cwd);
+
+    // Newest first, previews only for the recent window to bound file reads.
+    const recent = entries.reverse().slice(0, 20);
+    const sessions = await Promise.all(
+      recent.map(async (entry) => ({
+        ...entry,
+        preview: await this.#sessionPreview(dir, entry.sessionId),
+      })),
+    );
+    return { sessions };
+  }
+
+  async #sessionPreview(dir: string, sessionId: string): Promise<string | undefined> {
+    try {
+      const raw = await this.#runtime.readTextFile(join(dir, `${sessionId}.jsonl`));
+      for (const event of parseEventLog(raw)) {
+        if (event.type === "user.message") {
+          return event.text.length > 80 ? `${event.text.slice(0, 80)}…` : event.text;
+        }
+      }
+    } catch {
+      // Index entry without a readable log — list it without a preview.
+    }
+    return undefined;
   }
 
   async #sessionPrompt(params: unknown): Promise<SessionPromptResult> {
@@ -128,6 +250,10 @@ export class MinervaKernel {
 
 export function createKernel(transport: Transport, options: KernelOptions): MinervaKernel {
   return new MinervaKernel(transport, options);
+}
+
+function modeState(session: Session): SessionModeState {
+  return { currentModeId: session.mode, availableModes: SESSION_MODES };
 }
 
 function defaultSystemPrompt(cwd: string): string {
