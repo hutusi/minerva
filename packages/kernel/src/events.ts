@@ -49,6 +49,15 @@ export type SessionEvent =
       at: string;
     }
   | { type: "todo.updated"; entries: PlanEntry[]; at: string }
+  | {
+      /**
+       * Model context was reset to a summary. Replay rebuilds the compacted
+       * context from this event; the UI transcript keeps the full history.
+       */
+      type: "session.compacted";
+      summary: string;
+      at: string;
+    }
   | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage; at: string }
   | { type: "turn.failed"; error: string; at: string };
 

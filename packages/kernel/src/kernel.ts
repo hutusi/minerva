@@ -8,6 +8,7 @@ import {
   MINERVA_METHODS,
   PROTOCOL_VERSION,
   RpcError,
+  type SessionCompactResult,
   type SessionLoadResult,
   type SessionModeState,
   type SessionNewResult,
@@ -19,6 +20,7 @@ import {
 } from "@minerva/protocol";
 import type { ModelProvider } from "@minerva/providers";
 import { runPrompt } from "./agent-loop";
+import { runCompact } from "./compact";
 import { now } from "./events";
 import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
@@ -72,6 +74,9 @@ export class MinervaKernel {
     );
     this.#connection.handleRequest(MINERVA_METHODS.sessionsList, (params) =>
       this.#sessionsList(params),
+    );
+    this.#connection.handleRequest(MINERVA_METHODS.sessionCompact, (params) =>
+      this.#sessionCompact(params),
     );
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
       const { sessionId } = params as { sessionId?: string };
@@ -273,6 +278,25 @@ export class MinervaKernel {
       },
       text,
     );
+  }
+
+  async #sessionCompact(params: unknown): Promise<SessionCompactResult> {
+    const { sessionId } = (params ?? {}) as { sessionId?: string };
+    const session = sessionId ? this.#sessions.get(sessionId) : undefined;
+    if (!session) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, `unknown session: ${sessionId}`);
+    }
+    if (session.promptActive) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        "cannot compact while a prompt is running",
+      );
+    }
+    if (session.messages.length === 0) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, "nothing to compact yet");
+    }
+    const summary = await runCompact(session, this.#provider);
+    return { summary };
   }
 
   /** For tests and diagnostics. */

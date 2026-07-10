@@ -1,5 +1,6 @@
 import type { PlanEntry, SessionUpdate } from "@minerva/protocol";
 import type { ProviderMessage, ProviderToolCall, ProviderToolResult } from "@minerva/providers";
+import { compactedContextMessage } from "./compact";
 import type { SessionEvent } from "./events";
 import type { KernelTool } from "./tools";
 
@@ -123,6 +124,14 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
 
       case "session.mode_changed":
         modeId = event.modeId;
+        break;
+
+      case "session.compacted":
+        // The model context restarts from the summary; the UI transcript
+        // (already emitted above) keeps the full history.
+        flushToolBatch();
+        messages.length = 0;
+        messages.push(compactedContextMessage(event.summary));
         break;
 
       case "turn.completed":

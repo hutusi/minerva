@@ -7,6 +7,7 @@ import {
   PROTOCOL_VERSION,
   type RequestPermissionParams,
   type RequestPermissionResult,
+  type SessionCompactResult,
   type SessionLoadResult,
   type SessionNewResult,
   type SessionPromptResult,
@@ -113,6 +114,21 @@ export class MinervaClient {
 
   async setMode(sessionId: string, modeId: string): Promise<void> {
     await this.#connection.request(AGENT_METHODS.sessionSetMode, { sessionId, modeId });
+  }
+
+  /** Summarize and reset the model context; returns the summary. */
+  async compact(sessionId: string): Promise<string> {
+    const store = this.#stores.get(sessionId);
+    store?.setBusy(true);
+    try {
+      const result = await this.#connection.request<SessionCompactResult>(
+        MINERVA_METHODS.sessionCompact,
+        { sessionId },
+      );
+      return result.summary;
+    } finally {
+      store?.setBusy(false);
+    }
   }
 
   async prompt(sessionId: string, text: string): Promise<StopReason> {

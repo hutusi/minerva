@@ -1,5 +1,7 @@
+export * from "./compact";
 export * from "./events";
 export * from "./kernel";
+export * from "./mcp";
 export * from "./permissions";
 export * from "./replay";
 export * from "./runtime";

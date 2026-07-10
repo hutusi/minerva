@@ -28,6 +28,8 @@ export const AGENT_METHODS = {
 export const MINERVA_METHODS = {
   /** Frontend → kernel: list persisted sessions for a project. */
   sessionsList: "minerva/sessions/list",
+  /** Frontend → kernel: summarize the conversation and reset model context. */
+  sessionCompact: "minerva/session/compact",
 } as const;
 
 /** Kernel → frontend. */
@@ -105,6 +107,16 @@ export interface SessionLoadParams {
 
 export interface SessionLoadResult {
   modes?: SessionModeState;
+}
+
+// --- minerva/session/compact -------------------------------------------
+
+export interface SessionCompactParams {
+  sessionId: string;
+}
+
+export interface SessionCompactResult {
+  summary: string;
 }
 
 // --- minerva/sessions/list ---------------------------------------------

@@ -54,24 +54,49 @@ export function App({ client, bridge, model, cwd, resume }: AppProps) {
   if (!session) {
     return <Text dimColor>Starting Minerva…</Text>;
   }
+  const startNewSession = () => {
+    client
+      .newSession(cwd)
+      .then(({ sessionId, store }) => setSession({ id: sessionId, store }))
+      .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+  };
   return (
     <Box flexDirection="column">
       <Text dimColor>
-        Minerva · {model} · {cwd} · /exit to quit, esc to cancel
+        Minerva · {model} · {cwd} · /help for commands, esc to cancel
       </Text>
-      <Chat client={client} session={session} pending={pending} />
+      <Chat
+        client={client}
+        session={session}
+        pending={pending}
+        cwd={cwd}
+        onNewSession={startNewSession}
+      />
     </Box>
   );
 }
+
+const HELP_TEXT = [
+  "/help              show this help",
+  "/mode [id]         show or set the session mode (plan | default | acceptEdits | auto)",
+  "/compact           summarize the conversation and reset the model context",
+  "/sessions          list recent sessions for this directory",
+  "/new               start a fresh session",
+  "/exit              quit",
+].join("\n");
 
 function Chat({
   client,
   session,
   pending,
+  cwd,
+  onNewSession,
 }: {
   client: MinervaClient;
   session: { id: string; store: SessionStore };
   pending: PendingPermission | null;
+  cwd: string;
+  onNewSession: () => void;
 }) {
   const subscribe = useCallback(
     (listener: () => void) => session.store.subscribe(listener),
@@ -85,30 +110,69 @@ function Chat({
     if (key.escape && viewModel.busy) client.cancel(session.id);
   });
 
+  const info = (text: string) => session.store.addInfo(text);
+  const reportError = (cause: unknown) =>
+    info(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
+
+  const runCommand = (input: string) => {
+    const [command = "", ...rest] = input.slice(1).split(/\s+/);
+    const argument = rest.join(" ");
+    switch (command) {
+      case "exit":
+      case "quit":
+        exit();
+        break;
+      case "help":
+        info(HELP_TEXT);
+        break;
+      case "mode":
+        if (!argument) {
+          info(
+            `mode: ${viewModel.currentModeId ?? "default"} — /mode plan | default | acceptEdits | auto`,
+          );
+          break;
+        }
+        client.setMode(session.id, argument).catch(reportError);
+        break;
+      case "compact":
+        client
+          .compact(session.id)
+          .then((summary) => info(`context compacted — summary:\n${firstLines(summary, 8)}`))
+          .catch(reportError);
+        break;
+      case "sessions":
+        client
+          .listSessions(cwd)
+          .then((sessions) => {
+            if (sessions.length === 0) {
+              info("no sessions for this directory yet");
+              return;
+            }
+            info(
+              sessions
+                .map((entry) => `${entry.sessionId}  ${entry.preview ?? "(no messages)"}`)
+                .join("\n"),
+            );
+          })
+          .catch(reportError);
+        break;
+      case "new":
+        onNewSession();
+        break;
+      default:
+        info(`unknown command: /${command} — try /help`);
+    }
+  };
+
   const submit = (value: string) => {
     const text = value.trim();
     if (!text) return;
     setDraft("");
-    if (text === "/exit" || text === "/quit") {
-      exit();
+    if (text.startsWith("/")) {
+      runCommand(text);
       return;
     }
-    if (text === "/mode" || text.startsWith("/mode ")) {
-      const modeId = text.slice("/mode".length).trim();
-      if (!modeId) {
-        session.store.addInfo(
-          `mode: ${viewModel.currentModeId ?? "default"} — /mode plan | default | acceptEdits | auto`,
-        );
-        return;
-      }
-      client.setMode(session.id, modeId).catch((cause) => {
-        session.store.addInfo(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
-      });
-      return;
-    }
-    client.prompt(session.id, text).catch((cause) => {
-      session.store.addInfo(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
-    });
+    client.prompt(session.id, text).catch(reportError);
   };
 
   return (
