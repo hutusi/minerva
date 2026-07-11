@@ -10,7 +10,7 @@ import { createScriptedProvider, type TurnEvent } from "@minerva/providers";
 // no compatible major exists yet — these tests are the compatibility proof,
 // so an unreviewed 4.x bump must not slip in via install.
 import { render } from "ink-testing-library";
-import { App } from "../src/app";
+import { App, clipLines, thoughtTail } from "../src/app";
 import type { ProviderChoice } from "../src/config-panel";
 import { createPermissionBridge } from "../src/permission-bridge";
 
@@ -20,6 +20,35 @@ const FINISH_TOOLS: TurnEvent = { type: "finish", finishReason: "tool-calls", us
 const kernels: MinervaKernel[] = [];
 afterEach(() => {
   for (const kernel of kernels.splice(0)) kernel.close();
+});
+
+describe("line clipping helpers", () => {
+  test("clipLines keeps the first lines with a remaining-count marker", () => {
+    const text = "a\nb\nc\nd\ne";
+    expect(clipLines(text, 2, "first")).toBe("a\nb\n… (3 more lines)");
+    expect(clipLines(text, 10, "first")).toBe(text);
+  });
+
+  test("clipLines keeps the last lines with a leading ellipsis", () => {
+    const text = "a\nb\nc\nd\ne";
+    expect(clipLines(text, 2, "last")).toBe("… d\ne");
+    expect(clipLines(text, 10, "last")).toBe(text);
+  });
+
+  test("thoughtTail caps a long unbroken paragraph by terminal width", () => {
+    const paragraph = "x".repeat(5000); // no newlines: under the line cap
+    const columns = 80;
+    const tail = thoughtTail(paragraph, columns);
+    const budget = 4 * (columns - 4);
+    // Bounded to the width budget plus the "… " prefix, keeping the tail end.
+    expect(tail.length).toBeLessThanOrEqual(budget + 2);
+    expect(tail.startsWith("… ")).toBe(true);
+    expect(paragraph.endsWith(tail.slice(2))).toBe(true);
+  });
+
+  test("thoughtTail leaves a short thought untouched", () => {
+    expect(thoughtTail("brief thought", 80)).toBe("brief thought");
+  });
 });
 
 /** Full-stack TUI harness: real App + client + kernel, scripted provider. */
