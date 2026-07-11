@@ -22,37 +22,46 @@ export interface McpConnection {
 
 export async function connectMcpServers(
   servers: Record<string, McpServerConfig>,
+  cwd: string,
 ): Promise<McpConnection> {
   const tools: KernelTool[] = [];
   const warnings: string[] = [];
   const clients: Client[] = [];
 
-  for (const [serverName, config] of Object.entries(servers)) {
-    try {
-      const client = new Client({ name: "minerva", version: "0.1.0" });
-      await client.connect(
-        new StdioClientTransport({
-          command: config.command,
-          ...(config.args ? { args: config.args } : {}),
-          // Merge with the SDK's safe defaults: passing env alone REPLACES
-          // the environment, and a config that sets one variable would
-          // otherwise strip PATH/HOME and break the server's spawn.
-          ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
-        }),
-      );
-      clients.push(client);
-      const listed = await client.listTools();
-      for (const tool of listed.tools) {
-        tools.push(wrapMcpTool(client, serverName, tool));
+  // Connect independent servers concurrently; one slow/broken server must not
+  // serialize the rest.
+  await Promise.all(
+    Object.entries(servers).map(async ([serverName, config]) => {
+      try {
+        const client = new Client({ name: "minerva", version: "0.1.0" });
+        await client.connect(
+          new StdioClientTransport({
+            command: config.command,
+            ...(config.args ? { args: config.args } : {}),
+            // Launch the server in the session's working directory so relative
+            // paths and project detection match the user's project, not the
+            // Minerva host's cwd.
+            cwd,
+            // Merge with the SDK's safe defaults: passing env alone REPLACES
+            // the environment, and a config that sets one variable would
+            // otherwise strip PATH/HOME and break the server's spawn.
+            ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
+          }),
+        );
+        clients.push(client);
+        const listed = await client.listTools();
+        for (const tool of listed.tools) {
+          tools.push(wrapMcpTool(client, serverName, tool));
+        }
+      } catch (error) {
+        warnings.push(
+          `MCP server "${serverName}" failed to start: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
-    } catch (error) {
-      warnings.push(
-        `MCP server "${serverName}" failed to start: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
+    }),
+  );
 
   return {
     tools,
@@ -82,11 +91,14 @@ function wrapMcpTool(client: Client, serverName: string, info: McpToolInfo): Ker
     title() {
       return `${serverName}:${info.name}`;
     },
-    async execute(input) {
-      const result = await client.callTool({
-        name: info.name,
-        arguments: asRecord(input),
-      });
+    async execute(input, context) {
+      // Forward cancellation so a user cancel aborts the call instead of
+      // waiting out the SDK's default request timeout.
+      const result = await client.callTool(
+        { name: info.name, arguments: asRecord(input) },
+        undefined,
+        context.signal ? { signal: context.signal } : {},
+      );
       const content = Array.isArray(result.content) ? result.content : [];
       const text = content
         .map((part) =>

@@ -7,6 +7,7 @@ import { todoTool } from "./todo";
 import type { KernelTool } from "./types";
 import { writeFileTool } from "./write-file";
 
+export { locateRg, type RgEnv, resolveRgPath } from "./ripgrep";
 export * from "./types";
 export { bashTool, editFileTool, globTool, grepTool, readFileTool, todoTool, writeFileTool };
 

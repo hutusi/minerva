@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -88,7 +88,55 @@ describe("MCP tools through the kernel", () => {
     const toolCall = events.find((event) => event.type === "tool.call");
     expect(toolCall).toMatchObject({ toolName: "mcp__calc__add", input: { a: 19, b: 23 } });
 
-    kernel.close();
+    await kernel.close();
+  }, 30_000);
+
+  test("an MCP server launches in the session cwd, not the host cwd", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-mcpcwd-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-mcpcwd-data-"));
+    mkdirSync(join(cwd, ".minerva"));
+    writeFileSync(
+      join(cwd, ".minerva", "settings.json"),
+      JSON.stringify({ mcpServers: { calc: { command: "bun", args: ["run", MCP_FIXTURE] } } }),
+    );
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([
+        [
+          { type: "tool-call", toolCallId: "c1", toolName: "mcp__calc__pwd", input: {} },
+          { type: "finish", finishReason: "tool-calls", usage: {} },
+        ],
+        [
+          { type: "text-delta", text: "done" },
+          { type: "finish", finishReason: "stop", usage: {} },
+        ],
+      ]),
+    });
+    const client = new Connection(clientTransport);
+    const updates: SessionUpdateParams[] = [];
+    client.handleNotification(CLIENT_METHODS.sessionUpdate, (params) => {
+      updates.push(params as SessionUpdateParams);
+    });
+    client.handleRequest(CLIENT_METHODS.sessionRequestPermission, () => ({
+      outcome: { outcome: "selected", optionId: "allow" },
+    }));
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "where are you" }],
+    });
+
+    const completed = updates.find(
+      (u) => u.update.sessionUpdate === "tool_call_update" && u.update.status === "completed",
+    );
+    // The server reported process.cwd(); it must be the session dir (realpath,
+    // since macOS /tmp resolves to /private/var).
+    expect(JSON.stringify(completed)).toContain(realpathSync(cwd));
+    await kernel.close();
   }, 30_000);
 
   test("a broken MCP server degrades to a warning, not a failed session", async () => {

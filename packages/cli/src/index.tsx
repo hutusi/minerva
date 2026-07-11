@@ -111,8 +111,15 @@ if (command === "acp") {
     console.error("or run `minerva` and use /config to store a key in settings.");
     process.exit(1);
   }
-  await runAcpHost(kernelOptions);
-  process.exit(0);
+  // runAcpHost awaits kernel.close() on disconnect; a durability failure
+  // surfaces here as a nonzero exit rather than a silent success.
+  try {
+    await runAcpHost(kernelOptions);
+    process.exit(0);
+  } catch (error) {
+    console.error(`minerva: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
 }
 
 // Rows for the /config panel: every registry provider plus where (if
@@ -136,7 +143,7 @@ const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, d
 // The CLI embeds the kernel, but only across the protocol's in-proc
 // transport — the same messages a Tauri sidecar or remote kernel would see.
 const [clientTransport, kernelTransport] = createInProcTransportPair();
-createKernel(kernelTransport, kernelOptions);
+const kernel = createKernel(kernelTransport, kernelOptions);
 
 const bridge = createPermissionBridge();
 const client = new MinervaClient(clientTransport, {
@@ -155,5 +162,14 @@ const app = render(
   />,
 );
 await app.waitUntilExit();
+// Flush session logs and close MCP before exiting, or the fire-and-forget
+// appends queued after the last turn (e.g. a model switch) can be lost. A
+// durability failure exits nonzero so the loss isn't silent.
 // Ink unmounts but stdin's raw-mode listener keeps the runtime alive.
-process.exit(0);
+try {
+  await kernel.close();
+  process.exit(0);
+} catch (error) {
+  process.stderr.write(`minerva: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+}

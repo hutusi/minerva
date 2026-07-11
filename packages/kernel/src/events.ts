@@ -68,6 +68,9 @@ export type SessionEvent =
        */
       type: "session.compacted";
       summary: string;
+      /** Tokens the summarization turn itself spent, so replay can restore
+       * the session total (which the summary message alone can't). */
+      usage?: TurnUsage | undefined;
       at: string;
     }
   | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage | undefined; at: string }

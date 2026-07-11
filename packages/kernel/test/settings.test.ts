@@ -1,12 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   defaultRuntime,
   globalSettingsPath,
   loadSettings,
   type MinervaSettings,
+  persistAllowRule,
+  projectSettingsPath,
   updateGlobalSettings,
 } from "../src";
 
@@ -94,5 +106,55 @@ describe("updateGlobalSettings", () => {
     const settings = await loadSettings(defaultRuntime, dataDir, cwd);
     expect(settings.defaultMode).toBe("plan");
     expect(settings.providers.bailian?.apiKey).toBe("sk-secret");
+  });
+
+  test("the atomic write leaves no temp file behind", async () => {
+    const { dataDir } = tempDirs();
+    await updateGlobalSettings(defaultRuntime, dataDir, (current) => ({
+      ...current,
+      model: "bailian/qwen-plus",
+    }));
+    // The temp name is randomized, so scan the directory for any *.tmp residue
+    // rather than probing the old fixed `${path}.tmp` name.
+    const dir = dirname(globalSettingsPath(dataDir));
+    expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+});
+
+describe("atomic write symlink safety", () => {
+  test("a planted settings.json.tmp symlink cannot redirect the write", async () => {
+    const { cwd } = tempDirs();
+    const outside = mkdtempSync(join(tmpdir(), "minerva-outside-"));
+    const target = join(outside, "victim.txt");
+    writeFileSync(target, "do not touch");
+    mkdirSync(join(cwd, ".minerva"));
+    // Attacker plants the (predictable, in the old code) temp name as a symlink
+    // pointing at an external file.
+    symlinkSync(target, `${projectSettingsPath(cwd)}.tmp`);
+
+    await persistAllowRule(defaultRuntime, cwd, "bash(ls)");
+
+    // The external file is untouched, and settings.json is a real file.
+    expect(readFileSync(target, "utf8")).toBe("do not touch");
+    const settingsPath = projectSettingsPath(cwd);
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(false);
+    expect(readFileSync(settingsPath, "utf8")).toContain("bash(ls)");
+  });
+
+  test("a planted settings.json symlink is replaced, not written through", async () => {
+    const { cwd } = tempDirs();
+    const outside = mkdtempSync(join(tmpdir(), "minerva-outside-"));
+    const target = join(outside, "victim.json");
+    writeFileSync(target, "{}");
+    mkdirSync(join(cwd, ".minerva"));
+    symlinkSync(target, projectSettingsPath(cwd)); // settings.json → external
+
+    await persistAllowRule(defaultRuntime, cwd, "bash(ls)");
+
+    // rename replaced the link with a real file; the external target is intact.
+    expect(readFileSync(target, "utf8")).toBe("{}");
+    const settingsPath = projectSettingsPath(cwd);
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(false);
+    expect(readFileSync(settingsPath, "utf8")).toContain("bash(ls)");
   });
 });

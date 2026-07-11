@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   readFileTool,
   resolveWithinWorkspace,
   Session,
+  writeFileTool,
 } from "../src";
 
 function tempProject(): string {
@@ -69,7 +70,89 @@ describe("read_file workspace confinement", () => {
     writeFileSync(join(cwd, "ok.txt"), "fine");
     const result = await readFileTool.execute({ path: join(cwd, "ok.txt") }, ctx(cwd));
     expect(result.output).toBe("fine");
-    expect(resolveWithinWorkspace(cwd, "sub/../ok.txt")).toBe(join(cwd, "ok.txt"));
+    // Also covers the macOS /tmp → /private/tmp case: cwd is under mkdtemp, so
+    // realpath must resolve both sides consistently or this would false-reject.
+    expect(await resolveWithinWorkspace(defaultRuntime, cwd, "sub/../ok.txt")).toBe(
+      join(cwd, "ok.txt"),
+    );
+  });
+
+  test("a symlink escaping the workspace is rejected for reads", async () => {
+    const cwd = tempProject();
+    const outside = tempProject();
+    writeFileSync(join(outside, "secret.txt"), "top secret");
+    symlinkSync(outside, join(cwd, "evil")); // cwd/evil → an outside dir
+    await expect(readFileTool.execute({ path: "evil/secret.txt" }, ctx(cwd))).rejects.toThrow(
+      "outside the workspace",
+    );
+  });
+
+  test("a symlink escaping the workspace is rejected for writes to a new file", async () => {
+    const cwd = tempProject();
+    const outside = tempProject();
+    symlinkSync(outside, join(cwd, "evil"));
+    // The target file does not exist yet; the symlinked ancestor is caught.
+    await expect(
+      writeFileTool.execute({ path: "evil/planted.txt", content: "x" }, ctx(cwd)),
+    ).rejects.toThrow("outside the workspace");
+  });
+
+  test("a symlink pointing inside the workspace is allowed", async () => {
+    const cwd = tempProject();
+    mkdirSync(join(cwd, "real"));
+    writeFileSync(join(cwd, "real", "note.txt"), "hi");
+    symlinkSync(join(cwd, "real"), join(cwd, "link")); // stays inside
+    const result = await readFileTool.execute({ path: "link/note.txt" }, ctx(cwd));
+    expect(result.output).toBe("hi");
+  });
+
+  test("a dangling symlink escaping the workspace is rejected for writes", async () => {
+    const cwd = tempProject();
+    const outside = tempProject();
+    // The symlink target does not exist — realpath alone can't see the escape.
+    symlinkSync(join(outside, "missing"), join(cwd, "dangling"));
+    await expect(
+      writeFileTool.execute({ path: "dangling", content: "x" }, ctx(cwd)),
+    ).rejects.toThrow("outside the workspace");
+  });
+
+  test("a dangling symlink escaping the workspace is rejected for reads", async () => {
+    const cwd = tempProject();
+    const outside = tempProject();
+    symlinkSync(join(outside, "missing"), join(cwd, "dangling"));
+    await expect(readFileTool.execute({ path: "dangling" }, ctx(cwd))).rejects.toThrow(
+      "outside the workspace",
+    );
+  });
+
+  test("a symlink chain that ultimately escapes is rejected", async () => {
+    const cwd = tempProject();
+    const outside = tempProject();
+    symlinkSync(join(outside, "missing"), join(cwd, "b")); // b → outside/missing
+    symlinkSync(join(cwd, "b"), join(cwd, "a")); // a → b
+    await expect(writeFileTool.execute({ path: "a", content: "x" }, ctx(cwd))).rejects.toThrow(
+      "outside the workspace",
+    );
+  });
+
+  test("a dangling symlink pointing inside the workspace is allowed", async () => {
+    const cwd = tempProject();
+    // Points at an as-yet-nonexistent path *inside* the workspace — writing
+    // through it must land inside, not be over-rejected.
+    symlinkSync(join(cwd, "new.txt"), join(cwd, "link"));
+    const result = await writeFileTool.execute({ path: "link", content: "ok" }, ctx(cwd));
+    expect(result.isError).toBeUndefined();
+    expect(readFileSync(join(cwd, "new.txt"), "utf8")).toBe("ok");
+  });
+
+  test("a new file under a new nested directory is still allowed", async () => {
+    const cwd = tempProject();
+    const result = await writeFileTool.execute(
+      { path: "deep/nested/file.txt", content: "ok" },
+      ctx(cwd),
+    );
+    expect(result.isError).toBeUndefined();
+    expect(readFileSync(join(cwd, "deep", "nested", "file.txt"), "utf8")).toBe("ok");
   });
 });
 

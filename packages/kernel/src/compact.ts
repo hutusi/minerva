@@ -1,6 +1,12 @@
-import type { ModelProvider, ProviderMessage } from "@minerva/providers";
+import type { ModelProvider, ProviderMessage, TurnUsage } from "@minerva/providers";
 import { now } from "./events";
 import type { Session } from "./session";
+
+export interface CompactResult {
+  summary: string;
+  /** Tokens the summarization turn spent, so the caller can notify the client. */
+  usage?: TurnUsage;
+}
 
 const SUMMARIZE_SYSTEM =
   "You are summarizing a coding-agent session so it can continue in a fresh " +
@@ -26,11 +32,15 @@ export function compactedContextMessage(summary: string): ProviderMessage {
  * then the model context is replaced by the summary. The event log keeps the
  * full history — compaction changes what the model sees, not the record.
  */
-export async function runCompact(session: Session, provider: ModelProvider): Promise<string> {
+export async function runCompact(
+  session: Session,
+  provider: ModelProvider,
+): Promise<CompactResult> {
   const signal = session.beginPrompt();
   try {
     let summary = "";
     let streamError: unknown;
+    let turnUsage: TurnUsage | undefined;
     const stream = provider.streamTurn({
       system: SUMMARIZE_SYSTEM,
       messages: [...session.messages, { role: "user", content: SUMMARIZE_PROMPT }],
@@ -43,6 +53,9 @@ export async function runCompact(session: Session, provider: ModelProvider): Pro
     for await (const event of stream) {
       if (event.type === "text-delta") summary += event.text;
       if (event.type === "error") streamError = event.error;
+      // The summarization turn spends tokens too; account for them so session
+      // usage isn't understated after a compaction.
+      if (event.type === "finish") turnUsage = event.usage;
     }
     if (streamError !== undefined) {
       throw streamError instanceof Error ? streamError : new Error(String(streamError));
@@ -50,11 +63,19 @@ export async function runCompact(session: Session, provider: ModelProvider): Pro
     summary = summary.trim();
     if (!summary) throw new Error("compaction produced an empty summary");
 
-    session.append({ type: "session.compacted", summary, at: now() });
+    if (turnUsage) session.addTurnUsage(turnUsage);
+    // Persist the spend on the event so replay can restore it — the summary
+    // message alone carries no token count.
+    session.append({
+      type: "session.compacted",
+      summary,
+      ...(turnUsage ? { usage: turnUsage } : {}),
+      at: now(),
+    });
     await session.flush();
     session.messages.length = 0;
     session.messages.push(compactedContextMessage(summary));
-    return summary;
+    return turnUsage ? { summary, usage: turnUsage } : { summary };
   } finally {
     session.endPrompt();
   }

@@ -24,7 +24,11 @@ export const readFileTool: KernelTool = {
   async execute(input, context) {
     // read_file is auto-allowed by policy (readOnly), so it must not be able
     // to reach outside the workspace — no permission prompt would fire.
-    const path = resolveWithinWorkspace(context.cwd, requireString(asRecord(input), "path"));
+    const path = await resolveWithinWorkspace(
+      context.runtime,
+      context.cwd,
+      requireString(asRecord(input), "path"),
+    );
     const content = await context.runtime.readTextFile(path);
     if (content.length > MAX_CHARS) {
       return {

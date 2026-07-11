@@ -125,6 +125,11 @@ function Chat({
   const viewModel = useSyncExternalStore(subscribe, () => session.store.snapshot);
   const [draft, setDraft] = useState("");
   const [configOpen, setConfigOpen] = useState(initialConfigOpen);
+  // The provider snapshot and first-run flag start from the startup values but
+  // must reflect a successful /config, or the panel keeps showing a
+  // just-configured provider as "no key" and re-renders the first-run banner.
+  const [providerChoices, setProviderChoices] = useState(providers);
+  const [firstRun, setFirstRun] = useState(initialConfigOpen);
   const { exit } = useApp();
 
   useInput((_input, key) => {
@@ -207,12 +212,42 @@ function Chat({
     });
     onModelChanged(providerId);
     setConfigOpen(false);
+    // Reflect the just-saved config: setup is done, and the provider now has a
+    // stored key, so reopening /config won't mislabel it "no key" — and a
+    // newly defined custom provider becomes selectable without a restart.
+    setFirstRun(false);
+    const configured = result.provider?.name ?? providerId.split("/")[0] ?? providerId;
+    setProviderChoices((choices) => {
+      if (choices.some((choice) => choice.name === configured)) {
+        return result.apiKey
+          ? choices.map((choice) =>
+              choice.name === configured ? { ...choice, keySource: "settings" } : choice,
+            )
+          : choices;
+      }
+      if (!result.provider) return choices; // built-in ref we don't know — leave it
+      const slash = result.modelRef.indexOf("/");
+      const defaultModel = slash === -1 ? undefined : result.modelRef.slice(slash + 1);
+      return [
+        ...choices,
+        {
+          name: configured,
+          keyVar: `${configured.toUpperCase().replaceAll("-", "_")}_API_KEY`,
+          keySource: result.apiKey ? "settings" : "none",
+          ...(result.provider.baseUrl ? { baseUrl: result.provider.baseUrl } : {}),
+          ...(result.provider.requiresApiKey !== undefined
+            ? { requiresApiKey: result.provider.requiresApiKey }
+            : {}),
+          ...(defaultModel ? { defaultModel } : {}),
+        },
+      ];
+    });
     info(`model set to ${providerId} (saved to global settings)`);
   };
 
   const cancelConfig = () => {
     setConfigOpen(false);
-    if (initialConfigOpen) {
+    if (firstRun) {
       info("no API key configured — prompts will fail until you run /config");
     }
   };
@@ -226,9 +261,9 @@ function Chat({
         <PermissionPrompt pending={pending} />
       ) : configOpen ? (
         <ConfigPanel
-          providers={providers}
+          providers={providerChoices}
           currentModel={model}
-          firstRun={initialConfigOpen}
+          firstRun={firstRun}
           onSubmit={applyConfig}
           onCancel={cancelConfig}
         />

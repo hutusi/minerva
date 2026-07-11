@@ -104,6 +104,26 @@ export class SessionStore {
     }
   }
 
+  /**
+   * Apply many updates as one transition: build the items array on a single
+   * clone (each update mutates it in place) and notify once. Used for session
+   * replay, where applying updates one at a time re-cloned the whole transcript
+   * per update — quadratic over a long session.
+   */
+  applyBatch(updates: SessionUpdate[]): void {
+    const items = [...this.#viewModel.items];
+    let currentModeId = this.#viewModel.currentModeId;
+    for (const update of updates) {
+      const modeId = reduceInto(items, update);
+      if (modeId !== undefined) currentModeId = modeId;
+    }
+    this.#set({
+      ...this.#viewModel,
+      items,
+      ...(currentModeId !== undefined ? { currentModeId } : {}),
+    });
+  }
+
   setMode(modeId: string): void {
     this.#set({ ...this.#viewModel, currentModeId: modeId });
   }
@@ -115,13 +135,8 @@ export class SessionStore {
 
   /** One live plan per session: the latest update replaces it in place. */
   #upsertPlan(entries: PlanEntry[]): void {
-    const existing = this.#viewModel.items.findIndex((item) => item.kind === "plan");
-    if (existing === -1) {
-      this.#push({ kind: "plan", entries });
-      return;
-    }
     const items = [...this.#viewModel.items];
-    items[existing] = { kind: "plan", entries };
+    upsertPlanInto(items, entries);
     this.#set({ ...this.#viewModel, items });
   }
 
@@ -129,32 +144,23 @@ export class SessionStore {
    * item while it streams; a chunk of the other kind finalizes it first —
    * that switch is what collapses a thought when the answer starts. */
   #appendStreamingText(kind: "assistant" | "thought", text: string): void {
-    const last = this.#viewModel.items[this.#viewModel.items.length - 1];
-    if (last?.kind === kind && last.streaming) {
-      const items = [...this.#viewModel.items];
-      items[items.length - 1] = { ...last, text: last.text + text };
-      this.#set({ ...this.#viewModel, items });
-      return;
-    }
-    // A chunk of the other kind starts a fresh streaming item; #push already
-    // finalizes any in-flight streaming item before appending.
-    this.#push({ kind, text, streaming: true });
+    const items = [...this.#viewModel.items];
+    appendStreamingInto(items, kind, text);
+    this.#set({ ...this.#viewModel, items });
   }
 
   #updateToolCall(
     toolCallId: string,
     change: (item: Extract<ViewItem, { kind: "tool" }>) => ViewItem,
   ): void {
-    const items = this.#viewModel.items.map((item) =>
-      item.kind === "tool" && item.toolCallId === toolCallId ? change(item) : item,
-    );
+    const items = [...this.#viewModel.items];
+    updateToolCallInto(items, toolCallId, change);
     this.#set({ ...this.#viewModel, items });
   }
 
   #push(item: ViewItem): void {
-    // A non-assistant item ends the current streamed message: the next
-    // agent_message_chunk starts a fresh block after the tool call.
-    const items = [...this.#viewModel.items.map(finalizeStreamingItem), item];
+    const items = [...this.#viewModel.items];
+    pushInto(items, item);
     this.#set({ ...this.#viewModel, items });
   }
 
@@ -162,6 +168,85 @@ export class SessionStore {
     this.#viewModel = viewModel;
     for (const listener of this.#listeners) listener();
   }
+}
+
+/**
+ * The item-array reductions below mutate the array they are given IN PLACE.
+ * Callers pass a fresh clone (never a live snapshot), so the previously exposed
+ * snapshot is never touched — that is what keeps updates immutable-safe while
+ * letting a batch reuse one array across many updates.
+ */
+function reduceInto(items: ViewItem[], update: SessionUpdate): string | undefined {
+  switch (update.sessionUpdate) {
+    case "agent_message_chunk":
+      appendStreamingInto(items, "assistant", update.content.text);
+      return undefined;
+    case "user_message_chunk":
+      pushInto(items, { kind: "user", text: update.content.text });
+      return undefined;
+    case "agent_thought_chunk":
+      appendStreamingInto(items, "thought", update.content.text);
+      return undefined;
+    case "tool_call":
+      pushInto(items, {
+        kind: "tool",
+        toolCallId: update.toolCallId,
+        title: update.title,
+        toolKind: update.kind,
+        status: update.status,
+      });
+      return undefined;
+    case "tool_call_update":
+      updateToolCallInto(items, update.toolCallId, (item) => ({
+        ...item,
+        status: update.status ?? item.status,
+        title: update.title ?? item.title,
+        output: extractText(update.content) ?? item.output,
+      }));
+      return undefined;
+    case "plan":
+      upsertPlanInto(items, update.entries);
+      return undefined;
+    case "current_mode_update":
+      return update.currentModeId;
+  }
+}
+
+function appendStreamingInto(items: ViewItem[], kind: "assistant" | "thought", text: string): void {
+  const last = items[items.length - 1];
+  if (last?.kind === kind && last.streaming) {
+    items[items.length - 1] = { ...last, text: last.text + text };
+    return;
+  }
+  pushInto(items, { kind, text, streaming: true });
+}
+
+function pushInto(items: ViewItem[], item: ViewItem): void {
+  // A non-assistant/other-kind item ends the current streamed message; only the
+  // tail can be streaming, so finalize it in place before appending.
+  const lastIndex = items.length - 1;
+  const last = items[lastIndex];
+  if (last && (last.kind === "assistant" || last.kind === "thought") && last.streaming) {
+    items[lastIndex] = { ...last, streaming: false };
+  }
+  items.push(item);
+}
+
+function updateToolCallInto(
+  items: ViewItem[],
+  toolCallId: string,
+  change: (item: Extract<ViewItem, { kind: "tool" }>) => ViewItem,
+): void {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item?.kind === "tool" && item.toolCallId === toolCallId) items[i] = change(item);
+  }
+}
+
+function upsertPlanInto(items: ViewItem[], entries: PlanEntry[]): void {
+  const existing = items.findIndex((item) => item.kind === "plan");
+  if (existing === -1) pushInto(items, { kind: "plan", entries });
+  else items[existing] = { kind: "plan", entries };
 }
 
 function finalizeStreamingItem(item: ViewItem): ViewItem {

@@ -1,19 +1,21 @@
-import { glob } from "tinyglobby";
+import { resolveRgPath } from "./ripgrep";
 import type { KernelTool } from "./types";
 import { asRecord, ensureConfinedPattern, requireString, resolveWithinWorkspace } from "./types";
 
-const MAX_FILES = 500;
 const MAX_MATCHES = 100;
-const MAX_FILE_CHARS = 1_000_000;
 const MAX_LINE_CHARS = 500;
-const DEFAULT_IGNORE = ["**/node_modules/**", "**/.git/**"];
+// Skip files larger than this (a real pre-read bound, unlike reading then
+// discarding). ripgrep applies it during traversal.
+const MAX_FILESIZE = "1M";
+const GREP_TIMEOUT_MS = 30_000;
 
 export const grepTool: KernelTool = {
   name: "grep",
   description:
-    "Search file contents with a JavaScript regular expression. Searches the " +
-    "working directory (or an optional subdirectory), optionally filtered by an " +
-    "include glob (e.g. **/*.ts). Returns path:line: text matches, capped at 100.",
+    "Search file contents with a regular expression (ripgrep/Rust syntax). " +
+    "Searches the working directory (or an optional subdirectory), optionally " +
+    "filtered by an include glob (e.g. **/*.ts). Returns path:line: text " +
+    "matches, capped at 100.",
   inputSchema: {
     type: "object",
     properties: {
@@ -30,60 +32,77 @@ export const grepTool: KernelTool = {
   },
   async execute(input, context) {
     const record = asRecord(input);
-    let regex: RegExp;
-    try {
-      regex = new RegExp(requireString(record, "pattern"));
-    } catch (error) {
-      return {
-        output: `Invalid regular expression: ${error instanceof Error ? error.message : String(error)}`,
-        isError: true,
-      };
-    }
+    const pattern = requireString(record, "pattern");
     // readOnly ⇒ policy-allowed with no prompt ⇒ must stay inside the workspace.
-    const base = resolveWithinWorkspace(
+    const base = await resolveWithinWorkspace(
+      context.runtime,
       context.cwd,
       typeof record.path === "string" ? record.path : ".",
     );
-    const include = ensureConfinedPattern(
-      typeof record.include === "string" ? record.include : "**/*",
-    );
-    const files = await glob(include, {
+    const args = ["--json", "--max-filesize", MAX_FILESIZE, "--no-ignore"];
+    if (typeof record.include === "string") {
+      args.push("-g", ensureConfinedPattern(record.include));
+    }
+    // Exclude node_modules/.git at any depth (the `**/` form, not just the root
+    // name) and place these AFTER the include so they always take precedence.
+    // ripgrep does not follow symlinks unless -L is passed.
+    args.push("-g", "!**/node_modules/**", "-g", "!**/.git/**");
+    // -e takes the pattern as a value (never a flag, even if it starts with -);
+    // spawning by argv means it is never interpreted by a shell.
+    args.push("-e", pattern, "--", ".");
+
+    const result = await context.runtime.runProcess(await resolveRgPath(), args, {
       cwd: base,
-      ignore: DEFAULT_IGNORE,
-      onlyFiles: true,
+      timeoutMs: GREP_TIMEOUT_MS,
+      signal: context.signal,
     });
-    files.sort();
+    if (result.aborted) return { output: "Search cancelled by user.", isError: true };
+    if (result.timedOut) return { output: "Search timed out.", isError: true };
+    // rg: 0 = matches, 1 = no matches, 2 = error (e.g. an invalid pattern).
+    if (result.exitCode === 2) {
+      return {
+        output: `Invalid search: ${result.stderr.trim() || "ripgrep error"}`,
+        isError: true,
+      };
+    }
 
     const matches: string[] = [];
-    let scanned = 0;
-    let skipped = 0;
-    for (const file of files) {
-      if (scanned >= MAX_FILES || matches.length >= MAX_MATCHES) {
-        skipped = files.length - scanned;
-        break;
-      }
-      scanned += 1;
-      let content: string;
+    for (const line of result.stdout.split("\n")) {
+      if (matches.length >= MAX_MATCHES) break;
+      if (!line.trim()) continue;
+      let event: RgEvent;
       try {
-        content = await context.runtime.readTextFile(`${base}/${file}`);
+        event = JSON.parse(line) as RgEvent;
       } catch {
         continue;
       }
-      if (content.length > MAX_FILE_CHARS || content.includes("\0")) continue;
-      const lines = content.split("\n");
-      for (let index = 0; index < lines.length && matches.length < MAX_MATCHES; index++) {
-        const line = lines[index] ?? "";
-        if (regex.test(line)) {
-          matches.push(`${file}:${index + 1}: ${line.slice(0, MAX_LINE_CHARS).trimEnd()}`);
-        }
-      }
+      if (event.type !== "match") continue;
+      const path = event.data.path.text;
+      const lineNumber = event.data.line_number;
+      const text = event.data.lines.text ?? "";
+      if (typeof path !== "string" || typeof lineNumber !== "number") continue;
+      const trimmed = text
+        .replace(/\r?\n$/, "")
+        .slice(0, MAX_LINE_CHARS)
+        .trimEnd();
+      matches.push(`${normalize(path)}:${lineNumber}: ${trimmed}`);
     }
 
     if (matches.length === 0) return { output: "No matches found." };
-    const notes: string[] = [];
-    if (matches.length >= MAX_MATCHES) notes.push(`capped at ${MAX_MATCHES} matches`);
-    if (skipped > 0) notes.push(`${skipped} files not scanned`);
-    const suffix = notes.length > 0 ? `\n… (${notes.join("; ")})` : "";
+    const suffix = matches.length >= MAX_MATCHES ? `\n… (capped at ${MAX_MATCHES} matches)` : "";
     return { output: matches.join("\n") + suffix };
   },
 };
+
+interface RgEvent {
+  type: string;
+  data: {
+    path: { text?: string };
+    line_number?: number;
+    lines: { text?: string };
+  };
+}
+
+function normalize(path: string): string {
+  return path.startsWith("./") ? path.slice(2) : path;
+}

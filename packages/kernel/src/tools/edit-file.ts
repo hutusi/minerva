@@ -25,7 +25,11 @@ export const editFileTool: KernelTool = {
     const record = asRecord(input);
     // acceptEdits mode auto-allows edit-kind tools, so confinement to the
     // workspace is the backstop against edits landing anywhere on disk.
-    const path = resolveWithinWorkspace(context.cwd, requireString(record, "path"));
+    const path = await resolveWithinWorkspace(
+      context.runtime,
+      context.cwd,
+      requireString(record, "path"),
+    );
     const oldString = requireString(record, "old_string");
     // Unlike requireString, the empty string is a legal new_string (deletion)
     // — but a missing/non-string value must fail, not silently delete.

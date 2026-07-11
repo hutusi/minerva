@@ -10,7 +10,7 @@
     "@minerva/protocol": "workspace:*",
     "@minerva/providers": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "tinyglobby": "^0.2.17"
+    "@vscode/ripgrep": "^1.15.9"
   },
   "devDependencies": {
     "zod": "^4.4.3"

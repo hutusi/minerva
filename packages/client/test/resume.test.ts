@@ -198,7 +198,7 @@ describe("session resume across kernel restarts", () => {
 
     const second = boot(dataDir, []);
     await second.client.initialize();
-    await expect(second.client.loadSession(sessionId, cwdB)).rejects.toThrow("belongs to");
+    await expect(second.client.loadSession(sessionId, cwdB)).rejects.toThrow("does not belong to");
   });
 
   test("setMode round-trips into the store", async () => {

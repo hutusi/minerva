@@ -141,6 +141,13 @@ characters, `?` one character, and `\*` a literal asterisk. Precedence:
 mode default. Rules match the bash command string or the file path; MCP tools
 are named `mcp__<server>__<tool>` and are never auto-allowed.
 
+> **Bash rules are advisory, not a sandbox.** They match the raw command
+> string, not a parsed argv, so a `bash(rm -rf *)` deny is evaded by
+> `command rm -rf …`, `/bin/rm …`, or an equivalent `python -c …`, and a
+> wildcard allow can match a compound `cmd; <anything>`. Treat them as friction
+> that catches honest mistakes; use OS-level sandboxing for real isolation, and
+> avoid `auto` mode with untrusted input.
+
 Every session is an append-only JSONL event log under
 `~/.minerva/projects/<project>/` — the audit trail and the source of truth for
 `--resume`.
@@ -179,10 +186,14 @@ frontend core), `packages/cli` (Ink UI + acp host), `apps/gui` (planned).
 ## Release build
 
 ```sh
-bun run build:release   # dist/minerva, single-file executable
+bun run build:release   # dist/{minerva, rg}: compiled binary + ripgrep sidecar
 ```
 
-Cross-compile with `--target` (e.g. `bun-linux-x64`, `bun-windows-x64`).
+The release is a **pair**: the compiled `minerva` and a `rg` sidecar it resolves
+at runtime for the glob/grep tools. Because `@vscode/ripgrep` ships only the host
+platform's `rg`, cross-compiling with `--target` for a different OS/arch is
+rejected (it would pair the binary with the wrong `rg`); build on the target
+platform to produce a native pair.
 
 > **Known issue (macOS arm64):** with Bun 1.3.12 the compiled binary comes out
 > unsigned; the kernel kills unsigned arm64 binaries (SIGKILL on launch) and

@@ -6,6 +6,13 @@ import type { KernelTool } from "./tools";
  * Kernel-enforced permission engine (design decision #5): allow/deny/ask
  * rules like `bash(git *)` plus session modes. Policy lives here — behind
  * the protocol — so no frontend can bypass it.
+ *
+ * IMPORTANT: bash rules match the raw command *string*, not a parsed argv, so
+ * they are advisory guardrails over model output, NOT an OS security boundary.
+ * A deny like `bash(rm -rf *)` is trivially evaded by `command rm -rf …`,
+ * `/bin/rm …`, or an equivalent `python -c …`, and a wildcard allow like
+ * `bash(bun test*)` also matches a compound `bun test; <anything>`. Use OS-level
+ * sandboxing for real isolation; treat these rules as friction, not a cage.
  */
 
 export type SessionModeId = "plan" | "default" | "acceptEdits" | "auto";
@@ -47,8 +54,9 @@ export class PermissionEngine {
   evaluate(tool: KernelTool, input: unknown, mode: SessionModeId): PermissionVerdict {
     const value = permissionValue(input);
 
-    // Deny is absolute: it outranks read-only policy, allow rules, and modes,
-    // so an org/project deny list can't be talked around.
+    // Deny outranks read-only policy, allow rules, and modes. (It matches the
+    // literal command string, so it's a guardrail, not a shell sandbox — see
+    // the file header.)
     const denied = matchRules(this.#rules.deny, tool.name, value);
     if (denied) return { action: "deny", rule: denied, reason: `denied by rule ${denied}` };
 

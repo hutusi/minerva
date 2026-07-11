@@ -5,6 +5,7 @@ import {
   type ConfigSetModelParams,
   type ConfigSetModelResult,
   Connection,
+  type InitializeParams,
   type InitializeResult,
   JSON_RPC_ERROR_CODES,
   MINERVA_METHODS,
@@ -21,14 +22,20 @@ import {
   type SessionUsageParams,
   type Transport,
 } from "@minerva/protocol";
-import type { ModelProvider } from "@minerva/providers";
+import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
 import { runPrompt } from "./agent-loop";
 import { runCompact } from "./compact";
 import { now } from "./events";
 import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
-import { defaultRuntime, type Runtime } from "./runtime";
-import { parseEventLog, projectDir, Session } from "./session";
+import { defaultRuntime, isNotFoundError, type Runtime } from "./runtime";
+import {
+  migrateDataDirPermissions,
+  parseEventLog,
+  previewText,
+  projectDir,
+  Session,
+} from "./session";
 import {
   defaultDataDir,
   loadSettings,
@@ -37,6 +44,42 @@ import {
 } from "./settings";
 import { builtinTools, type KernelTool } from "./tools";
 import { hasUsage, toTokenUsage } from "./usage";
+
+/**
+ * A whole transcript can be large; over stdio a client that negotiated batch
+ * replay would disconnect once one batch serialized past the transport frame
+ * cap (16 MB). Split replay into batches whose serialized size stays well under
+ * that, plus a count guard so a batch of tiny updates isn't unbounded work. The
+ * kernel stays transport-agnostic (in-proc has no frame limit) — this is a safe
+ * worst-case for stdio and harmless elsewhere. Batches are additive on the
+ * client, so N of them rebuild the same transcript as one.
+ */
+const REPLAY_BATCH_MAX_BYTES = 4 * 1024 * 1024;
+const REPLAY_BATCH_MAX_UPDATES = 1000;
+
+export function chunkReplayUpdates<T>(updates: T[]): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 0;
+  for (const update of updates) {
+    const bytes = Buffer.byteLength(JSON.stringify(update), "utf8");
+    // Start a fresh batch when adding this update would breach either bound —
+    // but never emit an empty batch, so a single oversized update still ships
+    // alone (nothing smaller can be done for it).
+    if (
+      current.length > 0 &&
+      (currentBytes + bytes > REPLAY_BATCH_MAX_BYTES || current.length >= REPLAY_BATCH_MAX_UPDATES)
+    ) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(update);
+    currentBytes += bytes;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
 
 export interface KernelOptions {
   provider: ModelProvider;
@@ -52,6 +95,8 @@ export interface KernelOptions {
   dataDir?: string | undefined;
   tools?: KernelTool[];
   systemPrompt?: (cwd: string) => string;
+  /** Max time close() waits for in-flight operations to drain (ms, default 5000). */
+  shutdownDrainMs?: number | undefined;
 }
 
 /**
@@ -69,6 +114,14 @@ export class MinervaKernel {
   #dataDir: string;
   #tools: KernelTool[];
   #systemPrompt: (cwd: string) => string;
+  /** Operations running now; drained on shutdown so their trailing events are
+   * flushed before the process exits. */
+  #inFlight = new Set<Promise<unknown>>();
+  #closed = false;
+  #shutdownDrainMs: number;
+  /** Set from the initialize handshake; gates the minerva batch-replay
+   * extension so generic ACP clients still get standard notifications. */
+  #clientSupportsBatch = false;
 
   constructor(transport: Transport, options: KernelOptions) {
     this.#provider = options.provider;
@@ -77,35 +130,48 @@ export class MinervaKernel {
     this.#dataDir = options.dataDir ?? defaultDataDir(this.#runtime);
     this.#tools = options.tools ?? builtinTools();
     this.#systemPrompt = options.systemPrompt ?? defaultSystemPrompt;
+    this.#shutdownDrainMs = options.shutdownDrainMs ?? 5000;
+    // Tighten any pre-existing data dir to owner-only; best-effort, never
+    // blocks startup.
+    void migrateDataDirPermissions(this.#runtime, this.#dataDir).catch(() => {});
 
     this.#connection = new Connection(transport);
-    this.#connection.handleRequest(AGENT_METHODS.initialize, () => this.#initialize());
-    this.#connection.handleRequest(AGENT_METHODS.sessionNew, (params) => this.#sessionNew(params));
-    this.#connection.handleRequest(AGENT_METHODS.sessionLoad, (params) =>
-      this.#sessionLoad(params),
-    );
-    this.#connection.handleRequest(AGENT_METHODS.sessionPrompt, (params) =>
-      this.#sessionPrompt(params),
-    );
-    this.#connection.handleRequest(AGENT_METHODS.sessionSetMode, (params) =>
-      this.#sessionSetMode(params),
-    );
-    this.#connection.handleRequest(MINERVA_METHODS.sessionsList, (params) =>
-      this.#sessionsList(params),
-    );
-    this.#connection.handleRequest(MINERVA_METHODS.sessionCompact, (params) =>
-      this.#sessionCompact(params),
-    );
-    this.#connection.handleRequest(MINERVA_METHODS.configSetModel, (params) =>
-      this.#configSetModel(params),
-    );
+    this.#register(AGENT_METHODS.initialize, (params) => this.#initialize(params));
+    this.#register(AGENT_METHODS.sessionNew, (params) => this.#sessionNew(params));
+    this.#register(AGENT_METHODS.sessionLoad, (params) => this.#sessionLoad(params));
+    this.#register(AGENT_METHODS.sessionPrompt, (params) => this.#sessionPrompt(params));
+    this.#register(AGENT_METHODS.sessionSetMode, (params) => this.#sessionSetMode(params));
+    this.#register(MINERVA_METHODS.sessionsList, (params) => this.#sessionsList(params));
+    this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
+    this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
+    // Cancel is a notification, deliberately unwrapped: it carries no state to
+    // persist and must keep working during shutdown — close() relies on it.
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
       const { sessionId } = params as { sessionId?: string };
       if (sessionId) this.#sessions.get(sessionId)?.cancel();
     });
   }
 
-  #initialize(): InitializeResult {
+  /**
+   * Register a request handler that (1) refuses new work once shutdown has
+   * begun and (2) enrolls its promise in #inFlight so close() can drain it.
+   * Promise.resolve wraps the synchronous initialize handler.
+   */
+  #register<T>(method: string, handler: (params: unknown) => T | Promise<T>): void {
+    this.#connection.handleRequest(method, (params) => {
+      if (this.#closed) {
+        throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, "kernel is shutting down");
+      }
+      return this.#track(Promise.resolve(handler(params)));
+    });
+  }
+
+  #initialize(params: unknown): InitializeResult {
+    // Only clients that advertise the minerva batch extension get batched
+    // replay; a generic ACP client (Zed) gets standard session/update
+    // notifications so it can rebuild the transcript.
+    const capabilities = (params as InitializeParams | undefined)?.clientCapabilities;
+    this.#clientSupportsBatch = capabilities?.batchReplay === true;
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: { loadSession: true },
@@ -140,7 +206,7 @@ export class MinervaKernel {
 
     const settings = await loadSettings(this.#runtime, this.#dataDir, cwd);
     if (Object.keys(settings.mcpServers).length === 0) return;
-    const connection = await connectMcpServers(settings.mcpServers);
+    const connection = await connectMcpServers(settings.mcpServers, cwd);
     for (const warning of connection.warnings) {
       process.stderr.write(`minerva: ${warning}\n`);
     }
@@ -168,8 +234,19 @@ export class MinervaKernel {
       );
     }
     // The live session's log writes are fire-and-forget; settle them before
-    // rebuilding from the file or the reload silently drops recent events.
-    await existing?.flush().catch(() => {});
+    // rebuilding from the file. A flush failure means the on-disk log is
+    // missing recent events, so rebuilding from it would silently lose data —
+    // fail the reload loudly instead of reporting success on a stale state.
+    if (existing) {
+      try {
+        await existing.flush();
+      } catch (error) {
+        throw new RpcError(
+          JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+          `cannot reload session: pending writes failed (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+    }
 
     let loaded: Awaited<ReturnType<typeof Session.load>>;
     try {
@@ -186,10 +263,20 @@ export class MinervaKernel {
     }
     this.#sessions.set(sessionId, loaded.session);
     await this.#connectMcp(sessionId, cwd);
-    // ACP: replay the conversation as session/update notifications before
-    // answering, so the frontend can rebuild its transcript.
-    for (const update of loaded.replay.updates) {
-      this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });
+    // Replay the conversation so the frontend can rebuild its transcript. A
+    // client that advertised batch support gets it in one message (one
+    // apply+render instead of the O(n²) per-update path); a generic ACP client
+    // gets standard session/update notifications.
+    if (loaded.replay.updates.length > 0) {
+      if (this.#clientSupportsBatch) {
+        for (const updates of chunkReplayUpdates(loaded.replay.updates)) {
+          this.#connection.notify(CLIENT_METHODS.sessionUpdateBatch, { sessionId, updates });
+        }
+      } else {
+        for (const update of loaded.replay.updates) {
+          this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });
+        }
+      }
     }
     // Session-lifetime spend lives only in the log; without this a resumed
     // frontend would show totals starting from zero.
@@ -233,8 +320,14 @@ export class MinervaKernel {
     let raw: string;
     try {
       raw = await this.#runtime.readTextFile(join(dir, "index.jsonl"));
-    } catch {
-      return { sessions: [] };
+    } catch (error) {
+      // No index yet means no sessions; any other read failure is real and
+      // must not masquerade as an empty list.
+      if (isNotFoundError(error)) return { sessions: [] };
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        `cannot read session index: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     const entries = raw
       .split("\n")
@@ -252,12 +345,19 @@ export class MinervaKernel {
     // last entry per session id reflects most-recent use. Return the 20
     // most recently used — a hard cap, matching the picker UIs it feeds.
     const bySessionId = new Map<string, SessionSummary>();
-    for (const entry of entries) bySessionId.set(entry.sessionId, entry);
+    for (const entry of entries) {
+      // delete-before-set so a resumed session moves to the most-recent
+      // position rather than keeping its original insertion order.
+      bySessionId.delete(entry.sessionId);
+      bySessionId.set(entry.sessionId, entry);
+    }
     const recent = [...bySessionId.values()].reverse().slice(0, 20);
     const sessions = await Promise.all(
       recent.map(async (entry) => ({
         ...entry,
-        preview: await this.#sessionPreview(dir, entry.sessionId),
+        // Previews are persisted in the index; only fall back to reading the
+        // log for old entries written before previews existed.
+        preview: entry.preview ?? (await this.#sessionPreview(dir, entry.sessionId)),
       })),
     );
     return { sessions };
@@ -267,11 +367,7 @@ export class MinervaKernel {
     try {
       const raw = await this.#runtime.readTextFile(join(dir, `${sessionId}.jsonl`));
       for (const event of parseEventLog(raw)) {
-        if (event.type === "user.message") {
-          // Slice by code point so an emoji at the boundary isn't torn.
-          const chars = [...event.text];
-          return chars.length > 80 ? `${chars.slice(0, 80).join("")}…` : event.text;
-        }
+        if (event.type === "user.message") return previewText(event.text);
       }
     } catch {
       // Index entry without a readable log — list it without a preview.
@@ -301,6 +397,9 @@ export class MinervaKernel {
     if (!text) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "prompt has no text content");
     }
+    // Persist the first prompt as the session's index preview (once), so the
+    // picker doesn't have to read the log to show it.
+    void session.recordPreview(text).catch(() => {});
 
     return runPrompt(
       {
@@ -313,6 +412,21 @@ export class MinervaKernel {
       },
       text,
     );
+  }
+
+  /**
+   * Enroll an in-flight operation so shutdown can drain it. #inFlight.add runs
+   * synchronously before the first await, so close()'s synchronous
+   * (#closed=true → snapshot) section can't miss an operation that passed the
+   * guard.
+   */
+  async #track<T>(promise: Promise<T>): Promise<T> {
+    this.#inFlight.add(promise);
+    try {
+      return await promise;
+    } finally {
+      this.#inFlight.delete(promise);
+    }
   }
 
   async #sessionCompact(params: unknown): Promise<SessionCompactResult> {
@@ -330,7 +444,16 @@ export class MinervaKernel {
     if (session.messages.length === 0) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, "nothing to compact yet");
     }
-    const summary = await runCompact(session, this.#provider);
+    const { summary, usage } = await runCompact(session, this.#provider);
+    // Reflect the summarization spend immediately, like a completed turn does.
+    if (usage && hasUsage(usage)) {
+      const params: SessionUsageParams = {
+        sessionId: session.id,
+        lastTurn: toTokenUsage(usage),
+        cumulative: toTokenUsage(session.usage),
+      };
+      this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
+    }
     return { summary };
   }
 
@@ -352,25 +475,37 @@ export class MinervaKernel {
     const slash = modelRef.indexOf("/");
     const providerName = provider?.name ?? (slash === -1 ? "anthropic" : modelRef.slice(0, slash));
     let previousModel: string | undefined;
-    await updateGlobalSettings(this.#runtime, this.#dataDir, (current) => {
-      previousModel = current.model;
-      const entry: ProviderSettings = {
-        ...current.providers?.[providerName],
-        ...(provider?.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
-        ...(provider?.apiKeyEnv !== undefined ? { apiKeyEnv: provider.apiKeyEnv } : {}),
-        ...(provider?.defaultModel !== undefined ? { defaultModel: provider.defaultModel } : {}),
-        ...(provider?.requiresApiKey !== undefined
-          ? { requiresApiKey: provider.requiresApiKey }
-          : {}),
-        ...(apiKey !== undefined ? { apiKey } : {}),
-      };
-      const touched = provider !== undefined || apiKey !== undefined;
-      return {
-        ...current,
-        model: modelRef,
-        ...(touched ? { providers: { ...current.providers, [providerName]: entry } } : {}),
-      };
-    });
+    try {
+      await updateGlobalSettings(this.#runtime, this.#dataDir, (current) => {
+        previousModel = current.model;
+        const entry: ProviderSettings = {
+          ...current.providers?.[providerName],
+          ...(provider?.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
+          ...(provider?.apiKeyEnv !== undefined ? { apiKeyEnv: provider.apiKeyEnv } : {}),
+          ...(provider?.defaultModel !== undefined ? { defaultModel: provider.defaultModel } : {}),
+          ...(provider?.requiresApiKey !== undefined
+            ? { requiresApiKey: provider.requiresApiKey }
+            : {}),
+          ...(apiKey !== undefined ? { apiKey } : {}),
+        };
+        const touched = provider !== undefined || apiKey !== undefined;
+        const next = {
+          ...current,
+          model: modelRef,
+          ...(touched ? { providers: { ...current.providers, [providerName]: entry } } : {}),
+        };
+        // Validate the candidate registry in memory before it reaches disk. An
+        // invalid provider (bad name, missing baseUrl) would otherwise persist
+        // and brick the next startup, which builds the registry unguarded.
+        if (touched) buildProviderRegistry(next.providers);
+        return next;
+      });
+    } catch (error) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
     let next: ModelProvider;
     try {
@@ -409,12 +544,67 @@ export class MinervaKernel {
     return this.#sessions.get(sessionId);
   }
 
-  close(): void {
-    for (const connection of this.#mcp.values()) {
-      void connection.close();
-    }
+  /**
+   * Cancel and drain in-flight operations, flush every session's log, and close
+   * MCP connections before tearing down the transport. Ordering is
+   * load-bearing: set #closed first so no new work slips in; cancel *before*
+   * awaiting, or a prompt blocked on a permission round-trip to a gone frontend
+   * would deadlock the drain (cancel rejects that pending request). No `await`
+   * between #closed=true and the #inFlight snapshot, so a handler that passed
+   * the shutdown guard is already enrolled and can't be missed.
+   *
+   * Draining lets each operation's own flush persist its trailing events
+   * (turn.completed, session.model_changed) that a plain exit would drop. Every
+   * teardown step runs regardless of the others; afterwards, the steps that
+   * actually mean "data may be lost" — a drain timeout or a failed session
+   * flush — are raised as an AggregateError so the host can exit nonzero. An
+   * ordinary in-flight rejection (a prompt erroring at shutdown already flushed
+   * and surfaced its error to its caller) and MCP/connection teardown errors
+   * are logged but not fatal.
+   */
+  async close(): Promise<void> {
+    this.#closed = true;
+    for (const session of this.#sessions.values()) session.cancel();
+    const drainTimedOut = await this.#drainInFlight();
+    const flushes = await Promise.allSettled([...this.#sessions.values()].map((s) => s.flush()));
+    const closes = await Promise.allSettled([...this.#mcp.values()].map((c) => c.close()));
     this.#mcp.clear();
     this.#connection.close();
+
+    const durabilityErrors: Error[] = [];
+    if (drainTimedOut) {
+      durabilityErrors.push(new Error(`shutdown drain timed out after ${this.#shutdownDrainMs}ms`));
+    }
+    for (const result of flushes) {
+      if (result.status === "rejected") durabilityErrors.push(asError(result.reason));
+    }
+    for (const result of closes) {
+      if (result.status === "rejected") {
+        process.stderr.write(`minerva: MCP teardown failed: ${String(result.reason)}\n`);
+      }
+    }
+    if (durabilityErrors.length > 0) {
+      throw new AggregateError(
+        durabilityErrors,
+        `kernel shutdown incomplete: ${durabilityErrors.length} step(s) failed`,
+      );
+    }
+  }
+
+  /** Await in-flight operations, bounded by shutdownDrainMs. Returns true if
+   * the deadline was hit (some operations may not have flushed). */
+  async #drainInFlight(): Promise<boolean> {
+    const inFlight = Promise.allSettled([...this.#inFlight]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), this.#shutdownDrainMs);
+      timer.unref?.(); // never keep the process alive just for the drain deadline
+    });
+    try {
+      return (await Promise.race([inFlight.then(() => "drained" as const), timeout])) === "timeout";
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -424,6 +614,10 @@ export function createKernel(transport: Transport, options: KernelOptions): Mine
 
 function modeState(session: Session): SessionModeState {
   return { currentModeId: session.mode, availableModes: SESSION_MODES };
+}
+
+function asError(reason: unknown): Error {
+  return reason instanceof Error ? reason : new Error(String(reason));
 }
 
 function defaultSystemPrompt(cwd: string): string {

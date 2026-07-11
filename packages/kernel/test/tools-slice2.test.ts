@@ -1,9 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PlanEntry } from "@minerva/protocol";
-import { defaultRuntime, editFileTool, globTool, grepTool, todoTool, writeFileTool } from "../src";
+import {
+  defaultRuntime,
+  editFileTool,
+  globTool,
+  grepTool,
+  locateRg,
+  resolveRgPath,
+  todoTool,
+  writeFileTool,
+} from "../src";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "minerva-t2-"));
@@ -44,6 +60,47 @@ describe("write_file", () => {
   });
 });
 
+describe("ripgrep resolution", () => {
+  test("resolves an existing rg executable (dev fallback)", async () => {
+    const rg = await resolveRgPath();
+    expect(existsSync(rg)).toBe(true);
+    expect(rg.endsWith("rg") || rg.endsWith("rg.exe")).toBe(true);
+  });
+
+  // locateRg's three branches are otherwise unreachable: a real release binary
+  // exits 137 locally, so the sidecar/not-found paths can only be driven via
+  // the injected env seam.
+  test("prefers a sidecar next to the executable", async () => {
+    const rg = await locateRg({
+      execPath: "/opt/minerva/minerva",
+      exists: (p) => p === "/opt/minerva/rg" || p === "/opt/minerva/rg.exe",
+      importRgPath: async () => {
+        throw new Error("sidecar should win before @vscode/ripgrep is consulted");
+      },
+    });
+    expect(rg).toBe(process.platform === "win32" ? "/opt/minerva/rg.exe" : "/opt/minerva/rg");
+  });
+
+  test("falls back to @vscode/ripgrep when there is no sidecar", async () => {
+    const rg = await locateRg({
+      execPath: "/opt/minerva/minerva",
+      exists: (p) => p === "/node_modules/rg",
+      importRgPath: async () => "/node_modules/rg",
+    });
+    expect(rg).toBe("/node_modules/rg");
+  });
+
+  test("throws when neither a sidecar nor @vscode/ripgrep is present", async () => {
+    await expect(
+      locateRg({
+        execPath: "/opt/minerva/minerva",
+        exists: () => false,
+        importRgPath: async () => undefined,
+      }),
+    ).rejects.toThrow("ripgrep (rg) was not found");
+  });
+});
+
 describe("glob", () => {
   test("matches files and ignores node_modules", async () => {
     const cwd = tempProject();
@@ -55,6 +112,18 @@ describe("glob", () => {
 
     const result = await globTool.execute({ pattern: "**/*.ts" }, ctx(cwd));
     expect(result.output).toBe("src/a.ts");
+  });
+
+  test("a slashless pattern matches its basename at any depth (ripgrep semantics)", async () => {
+    const cwd = tempProject();
+    mkdirSync(join(cwd, "src", "deep"), { recursive: true });
+    writeFileSync(join(cwd, "root.ts"), "");
+    writeFileSync(join(cwd, "src", "deep", "nested.ts"), "");
+
+    // Documented, intentional: `*.ts` is a basename match, so it reaches nested
+    // files too — unlike a shell glob. Scope with `**/` or a path segment.
+    const result = await globTool.execute({ pattern: "*.ts" }, ctx(cwd));
+    expect(result.output.split("\n").sort()).toEqual(["root.ts", "src/deep/nested.ts"]);
   });
 
   test("search base is confined to the workspace", async () => {
@@ -94,7 +163,39 @@ describe("grep", () => {
   test("invalid regex is an error result, not a crash", async () => {
     const result = await grepTool.execute({ pattern: "([unclosed" }, ctx(tempProject()));
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("Invalid regular expression");
+    expect(result.output).toContain("Invalid search");
+  });
+
+  test("a catastrophic-backtracking pattern returns promptly (no ReDoS)", async () => {
+    const cwd = tempProject();
+    writeFileSync(join(cwd, "a.txt"), `${"a".repeat(60)}!\n`);
+    const started = Date.now();
+    // (a+)+$ hangs the JS engine on this input; ripgrep's linear engine can't.
+    const result = await grepTool.execute({ pattern: "(a+)+$" }, ctx(cwd));
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(result.isError).toBeUndefined();
+  });
+
+  test("grep excludes nested node_modules and .git, not just root-level", async () => {
+    const cwd = tempProject();
+    mkdirSync(join(cwd, "nested", "node_modules"), { recursive: true });
+    mkdirSync(join(cwd, "nested", ".git"), { recursive: true });
+    writeFileSync(join(cwd, "nested", "node_modules", "dep.ts"), "MARKER here\n");
+    writeFileSync(join(cwd, "nested", ".git", "config.ts"), "MARKER here\n");
+    writeFileSync(join(cwd, "src.ts"), "MARKER here\n");
+    const result = await grepTool.execute({ pattern: "MARKER" }, ctx(cwd));
+    expect(result.output).toContain("src.ts");
+    expect(result.output).not.toContain("node_modules");
+    expect(result.output).not.toContain(".git");
+  });
+
+  test("grep does not follow a symlink that escapes the workspace", async () => {
+    const cwd = tempProject();
+    const outside = tempProject();
+    writeFileSync(join(outside, "secret.txt"), "TOPSECRET marker\n");
+    symlinkSync(join(outside, "secret.txt"), join(cwd, "link.txt"));
+    const result = await grepTool.execute({ pattern: "TOPSECRET" }, ctx(cwd));
+    expect(result.output).toBe("No matches found.");
   });
 });
 

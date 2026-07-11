@@ -38,6 +38,9 @@ export const MINERVA_METHODS = {
 export const CLIENT_METHODS = {
   /** Notification. */
   sessionUpdate: "session/update",
+  /** Notification (minerva/* extension): a whole session's replay updates in
+   * one message, so the frontend rebuilds the transcript in a single pass. */
+  sessionUpdateBatch: "minerva/session/update_batch",
   sessionRequestPermission: "session/request_permission",
   /** Notification (minerva/* extension): token usage after each completed turn. */
   sessionUsage: "minerva/session/usage",
@@ -237,6 +240,11 @@ export type SessionUpdate =
 export interface SessionUpdateParams {
   sessionId: string;
   update: SessionUpdate;
+}
+
+export interface SessionUpdateBatchParams {
+  sessionId: string;
+  updates: SessionUpdate[];
 }
 
 // --- minerva/session/usage ---------------------------------------------

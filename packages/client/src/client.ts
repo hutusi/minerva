@@ -15,6 +15,7 @@ import {
   type SessionPromptResult,
   type SessionSummary,
   type SessionsListResult,
+  type SessionUpdateBatchParams,
   type SessionUpdateParams,
   type SessionUsageParams,
   type StopReason,
@@ -53,6 +54,10 @@ export class MinervaClient {
       const { sessionId, update } = params as SessionUpdateParams;
       this.#stores.get(sessionId)?.apply(update);
     });
+    this.#connection.handleNotification(CLIENT_METHODS.sessionUpdateBatch, (params) => {
+      const { sessionId, updates } = params as SessionUpdateBatchParams;
+      this.#stores.get(sessionId)?.applyBatch(updates);
+    });
     this.#connection.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
       const { sessionId, lastTurn, cumulative } = params as SessionUsageParams;
       this.#stores.get(sessionId)?.setUsage(lastTurn, cumulative);
@@ -65,6 +70,9 @@ export class MinervaClient {
   initialize(): Promise<InitializeResult> {
     return this.#connection.request<InitializeResult>(AGENT_METHODS.initialize, {
       protocolVersion: PROTOCOL_VERSION,
+      // Opt into batched session replay; the kernel falls back to standard
+      // session/update notifications for clients that don't advertise this.
+      clientCapabilities: { batchReplay: true },
     });
   }
 

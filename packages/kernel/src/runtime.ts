@@ -6,7 +6,20 @@
  */
 
 import { spawn } from "node:child_process";
-import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 
 export interface ExecResult {
@@ -31,10 +44,42 @@ export interface WriteTextFileOptions {
 export interface Runtime {
   readTextFile(path: string): Promise<string>;
   writeTextFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
-  appendTextFile(path: string, content: string): Promise<void>;
-  mkdirp(path: string): Promise<void>;
+  /**
+   * Create and write a brand-new file, failing if it already exists and
+   * never following a symlink at the final component (for atomic temp
+   * writes). Guards against a planted temp-name symlink redirecting the write.
+   */
+  writeNewFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
+  /** `mode` is applied only when the append creates the file (0600 for logs). */
+  appendTextFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
+  /** `mode` applies to directories this call creates (0700 for the data dir). */
+  mkdirp(path: string, options?: WriteTextFileOptions): Promise<void>;
+  /** Tighten permissions on an existing path (data-dir migration). */
+  chmod(path: string, mode: number): Promise<void>;
+  /** List a directory's entry names (data-dir migration). */
+  readdir(path: string): Promise<string[]>;
+  /** Resolve symlinks to the canonical path. Rejects (ENOENT) if absent. */
+  realpath(path: string): Promise<string>;
+  /** Read a symlink's target. Rejects EINVAL if the path is not a symlink. */
+  readlink(path: string): Promise<string>;
+  /** Atomically replace `to` with `from` (same filesystem). */
+  rename(from: string, to: string): Promise<void>;
+  /** Remove a file. Used to clean up a temp file after a failed atomic write. */
+  unlink(path: string): Promise<void>;
+  /** Run a shell command line (`bash -c`). Untrusted args must use runProcess. */
   exec(command: string, options: ExecOptions): Promise<ExecResult>;
+  /** Spawn a binary by argv — no shell, so arguments are never interpreted. */
+  runProcess(file: string, args: string[], options: ExecOptions): Promise<ExecResult>;
   homedir(): string;
+}
+
+/**
+ * A missing file (ENOENT) is a normal "not configured yet" state; any other
+ * read failure (EACCES, EIO, EISDIR) is a real error that must not be
+ * mistaken for absence — a swallowed EACCES silently drops policy.
+ */
+export function isNotFoundError(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === "ENOENT";
 }
 
 /**
@@ -57,89 +102,127 @@ export const defaultRuntime: Runtime = {
     // pre-existing files that must be tightened (e.g. stored API keys).
     if (mode !== undefined) await chmod(path, mode);
   },
-  appendTextFile: (path, content) => appendFile(path, content, "utf8"),
-  mkdirp: async (path) => {
-    await mkdir(path, { recursive: true });
+  writeNewFile: async (path, content, options) => {
+    const mode = options?.mode;
+    // O_EXCL fails if the name exists (incl. a symlink); O_NOFOLLOW refuses a
+    // symlink final component. Together they stop a planted temp symlink from
+    // redirecting the write outside the intended directory.
+    const flags = constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW;
+    const handle = await open(path, flags, mode ?? 0o666);
+    try {
+      await handle.writeFile(content, "utf8");
+      // open()'s mode is masked by umask; chmod pins the exact bits (0600).
+      if (mode !== undefined) await handle.chmod(mode);
+    } finally {
+      await handle.close();
+    }
   },
+  appendTextFile: (path, content, options) =>
+    appendFile(path, content, {
+      encoding: "utf8",
+      ...(options?.mode !== undefined ? { mode: options.mode } : {}),
+    }),
+  mkdirp: async (path, options) => {
+    await mkdir(path, {
+      recursive: true,
+      ...(options?.mode !== undefined ? { mode: options.mode } : {}),
+    });
+  },
+  chmod: (path, mode) => chmod(path, mode),
+  readdir: (path) => readdir(path),
+  realpath: (path) => realpath(path),
+  readlink: (path) => readlink(path),
+  rename: (from, to) => rename(from, to),
+  unlink: (path) => unlink(path),
   homedir: () => homedir(),
 
   exec(command, options) {
-    return new Promise((resolve, reject) => {
-      // detached puts the child in its own process group so kills reach
-      // grandchildren, not just the bash wrapper.
-      const child = spawn("/bin/bash", ["-c", command], {
-        cwd: options.cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      let aborted = false;
-      let exitCode: number | null = null;
-      let settled = false;
-      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    // Shell interpretation is the point for the bash tool; untrusted argv must
+    // use runProcess instead.
+    return spawnCaptured("/bin/bash", ["-c", command], options);
+  },
 
-      const killTree = () => {
-        if (child.pid === undefined) return;
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      };
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        killTree();
-      }, options.timeoutMs);
-
-      const onAbort = () => {
-        aborted = true;
-        killTree();
-      };
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-      if (options.signal?.aborted) onAbort();
-
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        clearTimeout(graceTimer);
-        options.signal?.removeEventListener("abort", onAbort);
-        resolve({ stdout, stderr, exitCode: exitCode ?? -1, timedOut, aborted });
-      };
-
-      // setEncoding decodes via StringDecoder, so multi-byte UTF-8 characters
-      // split across chunk boundaries survive intact.
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        if (stdout.length < MAX_STREAM_CHARS) stdout += chunk;
-      });
-      child.stderr.on("data", (chunk: string) => {
-        if (stderr.length < MAX_STREAM_CHARS) stderr += chunk;
-      });
-      child.on("error", (error) => {
-        clearTimeout(timer);
-        clearTimeout(graceTimer);
-        options.signal?.removeEventListener("abort", onAbort);
-        if (!settled) {
-          settled = true;
-          reject(error);
-        }
-      });
-      // 'close' waits for the pipes to drain — which never happens when the
-      // command backgrounds a process that inherits them. Settle on 'close'
-      // normally, but treat 'exit' + grace period as good enough.
-      child.on("exit", (code) => {
-        exitCode = code ?? -1;
-        graceTimer = setTimeout(settle, PIPE_GRACE_MS);
-      });
-      child.on("close", (code) => {
-        exitCode = exitCode ?? code ?? -1;
-        settle();
-      });
-    });
+  runProcess(file, args, options) {
+    return spawnCaptured(file, args, options);
   },
 };
+
+function spawnCaptured(file: string, args: string[], options: ExecOptions): Promise<ExecResult> {
+  return new Promise((resolve, reject) => {
+    // detached puts the child in its own process group so kills reach
+    // grandchildren, not just the wrapper.
+    const child = spawn(file, args, {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let aborted = false;
+    let exitCode: number | null = null;
+    let settled = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const killTree = () => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree();
+    }, options.timeoutMs);
+
+    const onAbort = () => {
+      aborted = true;
+      killTree();
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+      resolve({ stdout, stderr, exitCode: exitCode ?? -1, timedOut, aborted });
+    };
+
+    // setEncoding decodes via StringDecoder, so multi-byte UTF-8 characters
+    // split across chunk boundaries survive intact.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (stdout.length < MAX_STREAM_CHARS) stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      if (stderr.length < MAX_STREAM_CHARS) stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    // 'close' waits for the pipes to drain — which never happens when the
+    // command backgrounds a process that inherits them. Settle on 'close'
+    // normally, but treat 'exit' + grace period as good enough.
+    child.on("exit", (code) => {
+      exitCode = code ?? -1;
+      graceTimer = setTimeout(settle, PIPE_GRACE_MS);
+    });
+    child.on("close", (code) => {
+      exitCode = exitCode ?? code ?? -1;
+      settle();
+    });
+  });
+}
