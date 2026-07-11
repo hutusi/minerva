@@ -54,6 +54,13 @@ Params `{ sessionId, prompt: [{ type: "text", text }] }` → `{ stopReason }`.
 Blocks until the turn completes. One prompt per session at a time.
 `stopReason ∈ end_turn | max_tokens | max_turn_requests | refusal | cancelled`.
 
+Skill expansion (minerva/* behavior): a prompt of the form `/name args`
+whose `name` matches a skill loaded for the session is expanded kernel-side —
+the transcript and replay keep the literal text the user typed, while the
+model receives the skill's SKILL.md body plus the arguments. Slash text
+matching no skill passes through unchanged. ACP hosts get this for free by
+sending the user's raw input.
+
 ### `session/set_mode`
 Params `{ sessionId, modeId }` → `null`. Persisted to the event log before the
 response; echoed to every frontend as a `current_mode_update`.
@@ -120,6 +127,14 @@ Most recently *used* first (resume re-appends to the index); capped at 20.
 Params `{ sessionId }` → `{ summary }`. Runs one summarization turn, appends a
 `session.compacted` event, and resets the model context to the summary. The
 event log — and therefore the replayed transcript — keeps the full history.
+
+### `minerva/skills/list`
+Params `{ cwd }` → `{ skills: [{ name, description, source: "global" |
+"project" }] }`. Reads `skills/<name>/SKILL.md` directories fresh from disk
+(global data dir + project `.minerva/`), so no session is required and a
+frontend can refresh after the user adds a skill. Project skills win name
+collisions. Frontends use this to offer skills as slash commands; the model
+reaches the same skills through the per-session `skill` tool.
 
 ### `minerva/config/set_model`
 Params `{ modelRef, provider?, apiKey? }` → `{ providerId }`. Persists the

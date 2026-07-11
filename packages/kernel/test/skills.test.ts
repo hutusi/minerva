@@ -7,18 +7,22 @@ import {
   CLIENT_METHODS,
   Connection,
   createInProcTransportPair,
+  MINERVA_METHODS,
   type RequestPermissionParams,
   type SessionUpdateParams,
+  type SkillsListResult,
 } from "@minerva/protocol";
-import { createScriptedProvider } from "@minerva/providers";
+import { createScriptedProvider, type ModelProvider, type TurnRequest } from "@minerva/providers";
 import {
   createKernel,
   createSkillTool,
   defaultRuntime,
   loadSkills,
   PermissionEngine,
+  parseEventLog,
   parseFrontmatter,
   readSkillBody,
+  replayEvents,
   type SessionEvent,
 } from "../src";
 
@@ -190,6 +194,108 @@ describe("the skill tool", () => {
 
     await kernel.close();
   }, 15_000);
+
+  test("a /name prompt expands for the provider while the transcript keeps the literal", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    writeSkill(
+      join(cwd, ".minerva", "skills"),
+      "haiku",
+      "description: Answer in haiku",
+      "Respond only in haiku form.",
+    );
+
+    const requests: TurnRequest[] = [];
+    const capturing: ModelProvider = {
+      id: "test/capturing",
+      async *streamTurn(request) {
+        requests.push(request);
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish", finishReason: "stop", usage: {} };
+      },
+    };
+
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, { dataDir, provider: capturing });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "/haiku describe the moon" }],
+    });
+
+    // The model sees the skill body plus the user's arguments…
+    const sent = requests[0]?.messages.find((m) => m.role === "user");
+    expect(sent && "content" in sent ? sent.content : "").toContain("Respond only in haiku form.");
+    expect(sent && "content" in sent ? sent.content : "").toContain("describe the moon");
+
+    // …while the log keeps what the user typed, and replay rebuilds the
+    // provider context from the expanded text.
+    const session = kernel.getSession(sessionId);
+    if (!session) throw new Error("session missing");
+    await session.flush();
+    const events = parseEventLog(readFileSync(session.logPath, "utf8"));
+    const userEvent = events.find((event) => event.type === "user.message");
+    expect(userEvent).toMatchObject({ text: "/haiku describe the moon" });
+    const replay = replayEvents(events, []);
+    const replayedUser = replay.messages.find((m) => m.role === "user");
+    expect(replayedUser && "content" in replayedUser ? replayedUser.content : "").toContain(
+      "Respond only in haiku form.",
+    );
+    const rendered = replay.updates.find((u) => u.sessionUpdate === "user_message_chunk");
+    expect(JSON.stringify(rendered)).toContain("/haiku describe the moon");
+    expect(JSON.stringify(rendered)).not.toContain("Respond only in haiku");
+
+    await kernel.close();
+  }, 15_000);
+
+  test("a slash line matching no skill passes through to the model unchanged", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    const requests: TurnRequest[] = [];
+    const capturing: ModelProvider = {
+      id: "test/capturing",
+      async *streamTurn(request) {
+        requests.push(request);
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish", finishReason: "stop", usage: {} };
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, { dataDir, provider: capturing });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "/typo do thing" }],
+    });
+    const sent = requests[0]?.messages.find((m) => m.role === "user");
+    expect(sent && "content" in sent ? sent.content : "").toBe("/typo do thing");
+    await kernel.close();
+  }, 15_000);
+
+  test("minerva/skills/list returns names, descriptions, and sources", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    writeSkill(join(cwd, ".minerva", "skills"), "deploy", "description: Ship it");
+    writeSkill(join(dataDir, "skills"), "review", "description: Review it");
+
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const result = await client.request<SkillsListResult>(MINERVA_METHODS.skillsList, { cwd });
+    expect(result.skills).toEqual([
+      { name: "deploy", description: "Ship it", source: "project" },
+      { name: "review", description: "Review it", source: "global" },
+    ]);
+  });
 
   test("an unknown skill name returns a tool error listing what exists", async () => {
     const tool = createSkillTool({

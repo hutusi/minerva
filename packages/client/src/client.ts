@@ -19,6 +19,8 @@ import {
   type SessionUpdateBatchParams,
   type SessionUpdateParams,
   type SessionUsageParams,
+  type SkillInfo,
+  type SkillsListResult,
   type StopReason,
   type Transport,
 } from "@minerva/protocol";
@@ -128,6 +130,13 @@ export class MinervaClient {
       { cwd },
     );
     return result.sessions;
+  }
+
+  async listSkills(cwd: string): Promise<SkillInfo[]> {
+    const result = await this.#connection.request<SkillsListResult>(MINERVA_METHODS.skillsList, {
+      cwd,
+    });
+    return result.skills;
   }
 
   async setMode(sessionId: string, modeId: string): Promise<void> {

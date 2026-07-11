@@ -21,6 +21,7 @@ import {
   type SessionSummary,
   type SessionsListResult,
   type SessionUsageParams,
+  type SkillsListResult,
   type Transport,
 } from "@minerva/protocol";
 import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
@@ -44,7 +45,7 @@ import {
   type ProviderSettings,
   updateGlobalSettings,
 } from "./settings";
-import { loadSkills, type SkillRegistry } from "./skills";
+import { loadSkills, readSkillBody, type SkillRegistry } from "./skills";
 import { builtinTools, createSkillTool, type KernelTool } from "./tools";
 import { hasUsage, toTokenUsage } from "./usage";
 
@@ -149,6 +150,7 @@ export class MinervaKernel {
     this.#register(MINERVA_METHODS.sessionsList, (params) => this.#sessionsList(params));
     this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
     this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
+    this.#register(MINERVA_METHODS.skillsList, (params) => this.#skillsList(params));
     // Cancel is a notification, deliberately unwrapped: it carries no state to
     // persist and must keep working during shutdown — close() relies on it.
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
@@ -349,6 +351,23 @@ export class MinervaKernel {
     return null;
   }
 
+  async #skillsList(params: unknown): Promise<SkillsListResult> {
+    const { cwd } = (params ?? {}) as { cwd?: string };
+    if (typeof cwd !== "string" || cwd.length === 0) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "skills/list requires cwd");
+    }
+    // Fresh from disk rather than a per-session cache: needs no session, is
+    // two readdirs, and lets a frontend refresh after the user adds a skill.
+    const registry = await loadSkills(this.#runtime, this.#dataDir, cwd);
+    return {
+      skills: registry.skills.map(({ name, description, source }) => ({
+        name,
+        description,
+        source,
+      })),
+    };
+  }
+
   async #sessionsList(params: unknown): Promise<SessionsListResult> {
     const { cwd } = (params ?? {}) as { cwd?: string };
     if (typeof cwd !== "string" || cwd.length === 0) {
@@ -444,6 +463,7 @@ export class MinervaKernel {
     // session to take effect.
     const instructions = this.#instructions.get(session.id)?.text;
     const base = this.#systemPrompt(session.cwd);
+    const providerText = await this.#expandSkillInvocation(session.id, text);
     return runPrompt(
       {
         session,
@@ -454,7 +474,36 @@ export class MinervaKernel {
         runtime: this.#runtime,
       },
       text,
+      providerText,
     );
+  }
+
+  /**
+   * A `/name args` prompt naming a session skill expands kernel-side: the
+   * transcript keeps the literal line while the provider receives the skill
+   * body — so skills work identically from the CLI and ACP hosts. Slash text
+   * matching no skill passes through to the model unchanged (today's
+   * behavior for stray slashes).
+   */
+  async #expandSkillInvocation(sessionId: string, text: string): Promise<string | undefined> {
+    const match = text.match(/^\/([a-z0-9][a-z0-9_-]*)\s*([\s\S]*)$/i);
+    if (!match) return undefined;
+    const [, name = "", args = ""] = match;
+    const skill = this.#skills.get(sessionId)?.skills.find((entry) => entry.name === name);
+    if (!skill) return undefined;
+    let body: string;
+    try {
+      body = await readSkillBody(this.#runtime, skill);
+    } catch (error) {
+      // Unlike discovery, the user explicitly asked for this skill — a
+      // vanished/unreadable file should fail the prompt loudly.
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        `skill "${name}": ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const invocation = args.trim() ? `with: ${args.trim()}` : "with no arguments";
+    return `${body}\n\n---\nThe user invoked the "${name}" skill ${invocation}`;
   }
 
   /**

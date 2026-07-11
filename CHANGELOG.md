@@ -7,6 +7,17 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Skills: reusable instructions as `skills/<name>/SKILL.md` directories
+  (project `.minerva/` and global `~/.minerva/`, project winning name
+  collisions). The model discovers them through a read-only `skill` tool
+  whose description lists names+descriptions only — the body is read from
+  disk at invoke time, so a big skill library costs nothing per request —
+  and every invocation is permission-gated and audited like any other tool.
+  Users invoke one as `/name args`: the kernel expands it for the model
+  while the transcript keeps the literal line (a new `providerText` field on
+  `user.message` events; old logs replay unchanged), so skills behave the
+  same from the CLI and ACP hosts. A new `minerva/skills/list` method feeds
+  the CLI's slash dispatch and `/help`, which now lists skills.
 - AGENTS.md project instructions: a project-root `AGENTS.md` (and a global
   `~/.minerva/AGENTS.md`) is appended to the system prompt at session
   establish, so per-project guidance no longer requires forking the host's

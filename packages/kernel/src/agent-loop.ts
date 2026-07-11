@@ -37,11 +37,13 @@ export interface LoopContext {
 export async function runPrompt(
   context: LoopContext,
   promptText: string,
+  /** Model-facing text when it differs from promptText (skill expansion). */
+  providerText?: string,
 ): Promise<{ stopReason: StopReason }> {
   const { session } = context;
   const signal = session.beginPrompt();
   try {
-    return await runLoop({ ...context, signal }, promptText);
+    return await runLoop({ ...context, signal }, promptText, providerText);
   } catch (error) {
     // Errored turns must still leave a terminal event, or replay/audit can't
     // tell a crashed turn from one still in flight.
@@ -60,6 +62,7 @@ export async function runPrompt(
 async function runLoop(
   context: LoopContext,
   promptText: string,
+  providerText?: string,
 ): Promise<{ stopReason: StopReason }> {
   const { session, provider, tools, system, signal } = context;
   const toolDefinitions = tools.map((tool) => ({
@@ -69,8 +72,13 @@ async function runLoop(
   }));
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 
-  session.append({ type: "user.message", text: promptText, at: now() });
-  session.messages.push({ role: "user", content: promptText });
+  session.append({
+    type: "user.message",
+    text: promptText,
+    ...(providerText !== undefined ? { providerText } : {}),
+    at: now(),
+  });
+  session.messages.push({ role: "user", content: providerText ?? promptText });
 
   // Accumulated across every model turn of this prompt: each tool-call
   // round-trip reports its own usage, and turn.completed must record the

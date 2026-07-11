@@ -1,10 +1,11 @@
 import type { MinervaClient, SessionStore, SessionViewModel, ViewItem } from "@minerva/client";
-import type { InstructionsInfo } from "@minerva/protocol";
+import type { InstructionsInfo, SkillInfo } from "@minerva/protocol";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
 import type { PendingPermission, PermissionBridge } from "./permission-bridge";
+import { resolveSlashInput, skillsHelp } from "./slash";
 
 interface AppProps {
   client: MinervaClient;
@@ -25,6 +26,14 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
   const [error, setError] = useState<string | null>(null);
   // Header model ref; updated live when /config swaps the provider.
   const [modelRef, setModelRef] = useState(model);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  // A skills outage must not break the TUI — degrade to "no skills".
+  const refreshSkills = useCallback(() => {
+    client
+      .listSkills(cwd)
+      .then(setSkills)
+      .catch(() => setSkills([]));
+  }, [client, cwd]);
 
   useEffect(() => {
     bridge.handler = (request) =>
@@ -52,12 +61,13 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
       .then(({ sessionId, store, instructions }) => {
         announceInstructions(store, instructions);
         setSession({ id: sessionId, store });
+        refreshSkills();
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     return () => {
       bridge.handler = null;
     };
-  }, [client, bridge, cwd, resume]);
+  }, [client, bridge, cwd, resume, refreshSkills]);
 
   if (error) {
     return <Text color="red">Failed to start session: {error}</Text>;
@@ -71,6 +81,8 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
       .then(({ sessionId, store, instructions }) => {
         announceInstructions(store, instructions);
         setSession({ id: sessionId, store });
+        // The project may have gained/lost skills since the last session.
+        refreshSkills();
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
@@ -84,6 +96,7 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
         session={session}
         pending={pending}
         cwd={cwd}
+        skills={skills}
         onNewSession={startNewSession}
         providers={providers}
         model={modelRef}
@@ -116,6 +129,7 @@ function Chat({
   session,
   pending,
   cwd,
+  skills,
   onNewSession,
   providers,
   model,
@@ -126,6 +140,7 @@ function Chat({
   session: { id: string; store: SessionStore };
   pending: PendingPermission | null;
   cwd: string;
+  skills: SkillInfo[];
   onNewSession: () => void;
   providers: ProviderChoice[];
   model: string;
@@ -155,15 +170,25 @@ function Chat({
     info(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
 
   const runCommand = (input: string) => {
-    const [command = "", ...rest] = input.slice(1).split(/\s+/);
-    const argument = rest.join(" ");
+    const resolved = resolveSlashInput(input, skills);
+    if (resolved.kind === "skill") {
+      // The raw /name line goes to the kernel, which expands it into the
+      // skill's instructions for the model; the transcript keeps the literal.
+      client.prompt(session.id, input).catch(reportError);
+      return;
+    }
+    if (resolved.kind === "unknown") {
+      info(`unknown command: /${resolved.command} — try /help`);
+      return;
+    }
+    const { command, argument } = resolved;
     switch (command) {
       case "exit":
       case "quit":
         exit();
         break;
       case "help":
-        info(HELP_TEXT);
+        info(HELP_TEXT + skillsHelp(skills));
         break;
       case "config":
         setConfigOpen(true);
@@ -203,6 +228,8 @@ function Chat({
         onNewSession();
         break;
       default:
+        // Unreachable: resolveSlashInput only returns builtin for the cases
+        // above; keep a fallback so a drifted command list still responds.
         info(`unknown command: /${command} — try /help`);
     }
   };

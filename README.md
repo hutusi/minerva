@@ -175,6 +175,33 @@ loaded. Only those two locations are read (no per-subdirectory files), each
 capped at 24k characters, and edits take effect on the next new or resumed
 session.
 
+## Skills
+
+Skills are reusable instructions the agent can pull in on demand: a
+`SKILL.md` per skill under `.minerva/skills/<name>/` (project) or
+`~/.minerva/skills/<name>/` (global), with frontmatter naming and describing
+it:
+
+```markdown
+---
+name: release-checklist
+description: Steps for cutting a release safely
+---
+
+1. Run the full verify gate.
+2. Tag with the CHANGELOG version.
+...
+```
+
+Two ways in: the model sees every skill's name and description through a
+read-only `skill` tool and loads the full instructions when one matches the
+task (so a large skill library costs nothing per request), and you can invoke
+one directly as `/release-checklist <args>` — the transcript keeps what you
+typed while the model receives the skill body. `/help` lists the available
+skills; project skills override same-named global ones, and built-in commands
+always beat a same-named skill. Frontmatter is parsed as simple `key: value`
+lines (no multiline YAML).
+
 ## Editors (ACP)
 
 `minerva acp` hosts the kernel on stdio with ACP framing. For Zed, add an

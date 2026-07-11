@@ -32,6 +32,8 @@ export const MINERVA_METHODS = {
   sessionCompact: "minerva/session/compact",
   /** Frontend → kernel: persist model/provider config and swap the live provider. */
   configSetModel: "minerva/config/set_model",
+  /** Frontend → kernel: list the skills available for a project. */
+  skillsList: "minerva/skills/list",
 } as const;
 
 /** Kernel → frontend. */
@@ -135,6 +137,22 @@ export interface SessionCompactParams {
 
 export interface SessionCompactResult {
   summary: string;
+}
+
+// --- minerva/skills/list -----------------------------------------------
+
+export interface SkillsListParams {
+  cwd: string;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  source: "global" | "project";
+}
+
+export interface SkillsListResult {
+  skills: SkillInfo[];
 }
 
 // --- minerva/config/set_model ------------------------------------------
