@@ -70,6 +70,43 @@ export function isResponse(message: JsonRpcMessage): message is JsonRpcResponse 
   return !("method" in message) && "id" in message;
 }
 
+function isValidId(id: unknown): id is JsonRpcId {
+  return typeof id === "number" || typeof id === "string";
+}
+
+/**
+ * Structural check before a message is classified and dispatched. The wire is
+ * only as trustworthy as the peer, and #dispatch routes responses to pending
+ * requests by id — a shaped-but-invalid response (non-string method, both
+ * result and error, a bad id type) could otherwise settle the wrong caller.
+ */
+export function isValidMessage(message: unknown): message is JsonRpcMessage {
+  if (typeof message !== "object" || message === null) return false;
+  const m = message as Record<string, unknown>;
+  if (m.jsonrpc !== "2.0") return false;
+  const hasMethod = "method" in m;
+  const hasId = "id" in m;
+  if (hasMethod && typeof m.method !== "string") return false;
+  if (hasId && !isValidId(m.id)) return false;
+  // A request (method + id) or notification (method, no id) is valid here.
+  if (hasMethod) return true;
+  // No method ⇒ it must be a response: a valid id and exactly one of
+  // result/error. When it carries an error, the error object must be
+  // well-formed — otherwise `error: null` slips through the dispatcher's
+  // truthiness check and resolves the caller with `undefined`.
+  if (!hasId) return false;
+  const hasResult = "result" in m;
+  const hasError = "error" in m;
+  if (hasResult === hasError) return false; // need exactly one
+  return hasError ? isValidError(m.error) : true; // result may be any value, incl. null
+}
+
+function isValidError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as Record<string, unknown>;
+  return typeof e.code === "number" && typeof e.message === "string";
+}
+
 export interface Transport {
   send(message: JsonRpcMessage): void;
   onMessage(handler: (message: JsonRpcMessage) => void): void;
@@ -153,6 +190,14 @@ export class Connection {
   }
 
   #dispatch(message: JsonRpcMessage): void {
+    if (!isValidMessage(message)) {
+      // Drop rather than misroute; stderr only where a console exists (never
+      // stdout, which carries the protocol on stdio transports).
+      if (typeof process !== "undefined") {
+        process.stderr.write("minerva: dropping malformed JSON-RPC message\n");
+      }
+      return;
+    }
     if (isResponse(message)) {
       this.#dispatchResponse(message);
     } else if (isRequest(message)) {

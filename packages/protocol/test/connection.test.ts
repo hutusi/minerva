@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Connection, createInProcTransportPair, RpcError } from "../src";
+import { Connection, createInProcTransportPair, isValidMessage, RpcError } from "../src";
 
 function connectedPair(): [Connection, Connection] {
   const [a, b] = createInProcTransportPair();
@@ -84,6 +84,86 @@ describe("Connection over in-proc transport", () => {
     const pending = client.request("hang");
     client.close();
     await expect(pending).rejects.toThrow("connection closed");
+  });
+
+  test("a shaped-but-invalid response is dropped, not misrouted to a pending request", async () => {
+    const [a, b] = createInProcTransportPair();
+    const client = new Connection(a);
+    // No server on `b`; drive raw messages back over it. The first request
+    // takes id 1.
+    const pending = client.request<string>("echo");
+    let settled = false;
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    // Both result and error → an invalid response that must not settle id 1.
+    b.send({ jsonrpc: "2.0", id: 1, result: "wrong", error: { code: 1, message: "x" } });
+    await Bun.sleep(0);
+    expect(settled).toBe(false);
+
+    // A well-formed response for the same id still settles it.
+    b.send({ jsonrpc: "2.0", id: 1, result: "ok" });
+    expect(await pending).toBe("ok");
+  });
+
+  test("isValidMessage accepts valid shapes and rejects malformed ones", () => {
+    expect(isValidMessage({ jsonrpc: "2.0", method: "m", id: 1 })).toBe(true); // request
+    expect(isValidMessage({ jsonrpc: "2.0", method: "m" })).toBe(true); // notification
+    expect(isValidMessage({ jsonrpc: "2.0", id: 1, result: "ok" })).toBe(true); // response
+    expect(isValidMessage({ jsonrpc: "2.0", id: 1, result: null })).toBe(true); // null result
+    expect(isValidMessage({ jsonrpc: "2.0", id: 1, error: { code: 1, message: "e" } })).toBe(true);
+
+    expect(isValidMessage({ jsonrpc: "1.0", method: "m" })).toBe(false); // wrong version
+    expect(isValidMessage({ jsonrpc: "2.0", method: 123, id: 1 })).toBe(false); // non-string method
+    expect(isValidMessage({ jsonrpc: "2.0", id: {}, method: "m" })).toBe(false); // bad id type
+    expect(isValidMessage({ jsonrpc: "2.0", id: 1 })).toBe(false); // response with neither
+    expect(
+      isValidMessage({ jsonrpc: "2.0", id: 1, result: "a", error: { code: 1, message: "e" } }),
+    ).toBe(false); // response with both
+    // Malformed error objects must be rejected, or `error: null` resolves the
+    // caller with undefined instead of rejecting.
+    expect(isValidMessage({ jsonrpc: "2.0", id: 1, error: null })).toBe(false);
+    expect(isValidMessage({ jsonrpc: "2.0", id: 1, error: {} })).toBe(false);
+    expect(isValidMessage({ jsonrpc: "2.0", id: 1, error: { code: "x", message: "y" } })).toBe(
+      false,
+    );
+    expect(isValidMessage(null)).toBe(false);
+  });
+
+  test("a null-error response is dropped, not resolved with undefined", async () => {
+    const [a, b] = createInProcTransportPair();
+    const client = new Connection(a);
+    const pending = client.request("echo"); // id 1
+    let settled = false;
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    b.send({ jsonrpc: "2.0", id: 1, error: null } as unknown as Parameters<typeof b.send>[0]);
+    await Bun.sleep(0);
+    expect(settled).toBe(false);
+
+    b.send({ jsonrpc: "2.0", id: 1, result: "ok" });
+    expect(await pending).toBe("ok");
+  });
+
+  test("a well-formed error response rejects the pending request", async () => {
+    const [a, b] = createInProcTransportPair();
+    const client = new Connection(a);
+    const pending = client.request("echo"); // id 1
+    b.send({ jsonrpc: "2.0", id: 1, error: { code: -32001, message: "denied" } });
+    await expect(pending).rejects.toMatchObject({ code: -32001 });
   });
 
   test("concurrent requests correlate by id", async () => {
