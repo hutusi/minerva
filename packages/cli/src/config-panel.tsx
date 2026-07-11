@@ -220,7 +220,14 @@ export function ConfigPanel({
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="cyan" paddingX={1}>
       <Text color="cyan" bold>
-        Configure model{custom && name ? ` — ${name}` : selected ? ` — ${selected.name}` : ""}
+        Configure model
+        {step === "provider"
+          ? ""
+          : custom && name
+            ? ` — ${name}`
+            : selected
+              ? ` — ${selected.name}`
+              : ""}
       </Text>
       {firstRun && step === "provider" ? (
         <Text color="yellow">
@@ -231,12 +238,17 @@ export function ConfigPanel({
       {step === "provider" ? (
         <Box flexDirection="column">
           {providers.map((choice, i) => (
-            <Text key={choice.name} {...(i === index ? { color: "cyan" } : {})}>
-              {i === index ? "❯ " : "  "}
-              {choice.name.padEnd(12)}
-              {(choice.defaultModel ?? "").padEnd(22)}
-              <Text dimColor>{keyStatus(choice)}</Text>
-            </Text>
+            <Box key={choice.name} flexDirection="column">
+              <Text {...(i === index ? { color: "cyan" } : {})}>
+                {i === index ? "❯ " : "  "}
+                {choice.name.padEnd(12)}
+                <Text dimColor>{keyStatus(choice)}</Text>
+              </Text>
+              <Text dimColor>
+                {"              "}
+                {modelsLine(choice)}
+              </Text>
+            </Box>
           ))}
           <Text {...(index === providers.length ? { color: "cyan" } : {})}>
             {index === providers.length ? "❯ " : "  "}custom…{"     "}
@@ -315,6 +327,12 @@ export function ConfigPanel({
       ) : null}
     </Box>
   );
+}
+
+/** All of a provider's known models, so the list doesn't read as one-model-per-provider. */
+function modelsLine(choice: ProviderChoice): string {
+  if (choice.models && choice.models.length > 0) return choice.models.join(" · ");
+  return choice.defaultModel ?? "any model id";
 }
 
 function keyStatus(choice: ProviderChoice): string {

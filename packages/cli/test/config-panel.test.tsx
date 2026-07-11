@@ -75,6 +75,17 @@ describe("ConfigPanel", () => {
     ui.unmount();
   });
 
+  test("the provider list shows every known model up front, not just defaults", async () => {
+    const ui = renderPanel({ choices: [CHOICES[0] as ProviderChoice, BAILIAN_WITH_MODELS] });
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Configure model"), "panel");
+    const frame = ui.lastFrame() ?? "";
+    // A provider without a models list falls back to its default model…
+    expect(frame).toContain("claude-opus-4-8");
+    // …and one with a list shows all of it on the start screen.
+    for (const id of BAILIAN_WITH_MODELS.models ?? []) expect(frame).toContain(id);
+    ui.unmount();
+  });
+
   test("custom provider flow: k wraps up to custom, keyless endpoint allowed", async () => {
     const results: ConfigResult[] = [];
     const ui = renderPanel({
