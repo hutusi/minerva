@@ -28,7 +28,8 @@ export const globTool: KernelTool = {
     const record = asRecord(input);
     // readOnly ⇒ policy-allowed with no prompt ⇒ must stay inside the workspace.
     const pattern = ensureConfinedPattern(requireString(record, "pattern"));
-    const base = resolveWithinWorkspace(
+    const base = await resolveWithinWorkspace(
+      context.runtime,
       context.cwd,
       typeof record.path === "string" ? record.path : ".",
     );

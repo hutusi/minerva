@@ -6,7 +6,19 @@
  */
 
 import { spawn } from "node:child_process";
-import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 
 export interface ExecResult {
@@ -31,10 +43,33 @@ export interface WriteTextFileOptions {
 export interface Runtime {
   readTextFile(path: string): Promise<string>;
   writeTextFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
+  /**
+   * Create and write a brand-new file, failing if it already exists and
+   * never following a symlink at the final component (for atomic temp
+   * writes). Guards against a planted temp-name symlink redirecting the write.
+   */
+  writeNewFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
   appendTextFile(path: string, content: string): Promise<void>;
   mkdirp(path: string): Promise<void>;
+  /** Resolve symlinks to the canonical path. Rejects (ENOENT) if absent. */
+  realpath(path: string): Promise<string>;
+  /** Read a symlink's target. Rejects EINVAL if the path is not a symlink. */
+  readlink(path: string): Promise<string>;
+  /** Atomically replace `to` with `from` (same filesystem). */
+  rename(from: string, to: string): Promise<void>;
+  /** Remove a file. Used to clean up a temp file after a failed atomic write. */
+  unlink(path: string): Promise<void>;
   exec(command: string, options: ExecOptions): Promise<ExecResult>;
   homedir(): string;
+}
+
+/**
+ * A missing file (ENOENT) is a normal "not configured yet" state; any other
+ * read failure (EACCES, EIO, EISDIR) is a real error that must not be
+ * mistaken for absence — a swallowed EACCES silently drops policy.
+ */
+export function isNotFoundError(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === "ENOENT";
 }
 
 /**
@@ -57,10 +92,29 @@ export const defaultRuntime: Runtime = {
     // pre-existing files that must be tightened (e.g. stored API keys).
     if (mode !== undefined) await chmod(path, mode);
   },
+  writeNewFile: async (path, content, options) => {
+    const mode = options?.mode;
+    // O_EXCL fails if the name exists (incl. a symlink); O_NOFOLLOW refuses a
+    // symlink final component. Together they stop a planted temp symlink from
+    // redirecting the write outside the intended directory.
+    const flags = constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW;
+    const handle = await open(path, flags, mode ?? 0o666);
+    try {
+      await handle.writeFile(content, "utf8");
+      // open()'s mode is masked by umask; chmod pins the exact bits (0600).
+      if (mode !== undefined) await handle.chmod(mode);
+    } finally {
+      await handle.close();
+    }
+  },
   appendTextFile: (path, content) => appendFile(path, content, "utf8"),
   mkdirp: async (path) => {
     await mkdir(path, { recursive: true });
   },
+  realpath: (path) => realpath(path),
+  readlink: (path) => readlink(path),
+  rename: (from, to) => rename(from, to),
+  unlink: (path) => unlink(path),
   homedir: () => homedir(),
 
   exec(command, options) {

@@ -25,7 +25,11 @@ export const writeFileTool: KernelTool = {
     const record = asRecord(input);
     // acceptEdits mode auto-allows edit-kind tools, so confinement to the
     // workspace is the backstop against writes landing anywhere on disk.
-    const path = resolveWithinWorkspace(context.cwd, requireString(record, "path"));
+    const path = await resolveWithinWorkspace(
+      context.runtime,
+      context.cwd,
+      requireString(record, "path"),
+    );
     const content = record.content;
     if (typeof content !== "string") {
       throw new Error("missing required string parameter: content");
