@@ -6,6 +6,7 @@
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import {
+  type JSONValue,
   jsonSchema,
   type LanguageModel,
   type ModelMessage,
@@ -38,10 +39,9 @@ export function createAnthropicProvider(options: AnthropicProviderOptions = {}):
   return createAiSdkProvider(anthropic(modelId), `anthropic/${modelId}`);
 }
 
-// Mirrors the AI SDK's ProviderOptions shape (`ai` doesn't export the type):
-// a JSON object per provider-options namespace.
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-export type ProviderOptions = Record<string, Record<string, JsonValue>>;
+// Mirrors the AI SDK's ProviderOptions shape (`ai` doesn't export that type,
+// but it does export JSONValue): a JSON object per provider-options namespace.
+export type ProviderOptions = Record<string, Record<string, JSONValue>>;
 
 export interface AiSdkProviderOptions {
   /** Passed through to every streamText call, e.g. a thinking toggle. */

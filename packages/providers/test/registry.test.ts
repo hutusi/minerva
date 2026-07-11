@@ -5,7 +5,33 @@ import {
   createProviderFromRef,
   parseModelRef,
   resolveApiKey,
+  type TurnEvent,
 } from "../src";
+
+/** A minimal OpenAI-style streaming response: one content delta, then done. */
+function sseResponse(): Response {
+  const body =
+    'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}\n\n' +
+    'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n' +
+    "data: [DONE]\n\n";
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+async function drain(events: AsyncIterable<TurnEvent>): Promise<TurnEvent[]> {
+  const all: TurnEvent[] = [];
+  for await (const event of events) all.push(event);
+  return all;
+}
+
+/** A capturing fetch that records the parsed request body, then streams a
+ * canned response. Cast to the full fetch type (the SDK wants preconnect). */
+function capturingFetch(onBody: (body: Record<string, unknown>) => void): typeof globalThis.fetch {
+  const impl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    onBody(JSON.parse(init?.body as string));
+    return sseResponse();
+  };
+  return impl as unknown as typeof globalThis.fetch;
+}
 
 describe("model references", () => {
   test("bare model ids default to anthropic", () => {
@@ -123,6 +149,59 @@ describe("provider registry", () => {
     expect(createProviderFromRef("bailian/qwen-plus", { providers, apiKey: "sk-test" }).id).toBe(
       "bailian/qwen-plus",
     );
+  });
+
+  test("the thinking flag reaches the request body as enable_thinking", async () => {
+    let body: Record<string, unknown> | undefined;
+    const providers = buildProviderRegistry({ bailian: { thinking: true } });
+    const provider = createProviderFromRef("bailian/qwen-plus", {
+      providers,
+      apiKey: "sk-test",
+      fetch: capturingFetch((b) => {
+        body = b;
+      }),
+    });
+
+    const events = await drain(
+      provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }),
+    );
+
+    // The seam createProviderFromRef builds — namespace key + body key — must
+    // actually put enable_thinking on the wire, and streaming must still work.
+    expect(body?.enable_thinking).toBe(true);
+    expect(body?.stream_options).toEqual({ include_usage: true });
+    expect(events.some((e) => e.type === "text-delta")).toBe(true);
+  });
+
+  test("a dash-named provider's thinking reaches the body without a deprecation warning", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      let body: Record<string, unknown> | undefined;
+      const providers = buildProviderRegistry({
+        "my-proxy": { baseUrl: "https://llm.example.com/v1", thinking: false },
+      });
+      const provider = createProviderFromRef("my-proxy/some-model", {
+        providers,
+        apiKey: "sk-test",
+        fetch: capturingFetch((b) => {
+          body = b;
+        }),
+      });
+
+      await drain(provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }));
+
+      expect(body?.enable_thinking).toBe(false);
+      // The AI SDK warns (via console.warn, which corrupts the Ink TUI) when a
+      // dash-containing raw providerOptions key is present; the camelCased key
+      // must avoid it.
+      expect(warnings.join("\n")).not.toContain("providerOptions key");
+    } finally {
+      console.warn = original;
+    }
   });
 
   test("thinking is rejected for non-openai-compatible providers", () => {
