@@ -105,6 +105,39 @@ describe("AI SDK provider adapter", () => {
     expect(seenProviderOptions).toEqual({ bailian: { enable_thinking: true } });
   });
 
+  test("an empty assistant message (thought-only turn) survives into the prompt", async () => {
+    let seenPrompt: unknown;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        seenPrompt = options.prompt;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+            ],
+          }),
+        };
+      },
+    });
+    const provider = createAiSdkProvider(model, "mock");
+
+    await collect(
+      provider.streamTurn({
+        messages: [
+          { role: "user", content: "think only" },
+          // A thought-only turn records an assistant message with no text and
+          // no tool calls; it must still reach the model as an assistant slot.
+          { role: "assistant", text: "", toolCalls: [] },
+          { role: "user", content: "now answer" },
+        ],
+        tools: [],
+      }),
+    );
+
+    const prompt = seenPrompt as Array<{ role: string }>;
+    expect(prompt.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+  });
+
   test("surfaces tool calls with parsed input", async () => {
     const model = new MockLanguageModelV4({
       doStream: async () => ({

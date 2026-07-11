@@ -226,6 +226,88 @@ describe("kernel over in-proc transport", () => {
     ]);
   });
 
+  test("a thought-only turn records an assistant message so roles stay alternating", async () => {
+    const harness = await setup({
+      turns: [
+        // Reasoning burned the whole budget: no text, no tool calls.
+        [{ type: "reasoning-delta", text: "Only thinking." }, FINISH_STOP],
+        [{ type: "text-delta", text: "Now answering." }, FINISH_STOP],
+      ],
+    });
+
+    const first = await prompt(harness, "first");
+    expect(first.stopReason).toBe("end_turn");
+    // The empty assistant message closes the turn; the trailing thought
+    // follows it. Replay emits nothing for the empty message, so the user
+    // still sees only the thought.
+    expect(harness.logEvents().map((event) => event.type)).toEqual([
+      "session.created",
+      "user.message",
+      "assistant.message",
+      "assistant.thought",
+      "turn.completed",
+    ]);
+    expect(harness.logEvents().find((e) => e.type === "assistant.message")).toMatchObject({
+      text: "",
+    });
+    // An empty assistant message keeps the provider history alternating; a
+    // second prompt must not produce two consecutive user messages.
+    expect(harness.sessionMessages().map((m) => (m as { role: string }).role)).toEqual([
+      "user",
+      "assistant",
+    ]);
+
+    const second = await prompt(harness, "second");
+    expect(second.stopReason).toBe("end_turn");
+    expect(harness.sessionMessages().map((m) => (m as { role: string }).role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+  });
+
+  test("a thought that streams after the answer is logged and replayed in stream order", async () => {
+    const harness = await setup({
+      turns: [
+        [
+          { type: "text-delta", text: "Answer." },
+          { type: "reasoning-delta", text: "Afterthought." },
+          FINISH_STOP,
+        ],
+      ],
+    });
+
+    const result = await prompt(harness, "answer then reflect");
+    expect(result.stopReason).toBe("end_turn");
+
+    // Live stream order: the message chunk streamed before the thought chunk.
+    expect(harness.updates.map((u) => u.update.sessionUpdate)).toEqual([
+      "agent_message_chunk",
+      "agent_thought_chunk",
+    ]);
+    // The log preserves that order: message ahead of the trailing thought.
+    expect(harness.logEvents().map((event) => event.type)).toEqual([
+      "session.created",
+      "user.message",
+      "assistant.message",
+      "assistant.thought",
+      "turn.completed",
+    ]);
+
+    // Resume re-renders them in the same order the user watched.
+    harness.updates.length = 0;
+    await harness.client.request(AGENT_METHODS.sessionLoad, {
+      sessionId: harness.sessionId,
+      cwd: harness.cwd,
+    });
+    expect(harness.updates.map((u) => u.update.sessionUpdate)).toEqual([
+      "user_message_chunk",
+      "agent_message_chunk",
+      "agent_thought_chunk",
+    ]);
+  });
+
   test("a thought before a cancelled tool call still lands in the log", async () => {
     const harness = await setup({
       permission: "cancel",
