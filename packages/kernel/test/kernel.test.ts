@@ -153,6 +153,13 @@ describe("kernel over in-proc transport", () => {
     ]);
     const decision = harness.logEvents()[4];
     expect(decision).toMatchObject({ decision: "allowed", source: "user", toolName: "bash" });
+
+    // Usage must be summed across both model turns (tool round-trip + final
+    // answer), not just the last one.
+    expect(harness.logEvents().at(-1)).toMatchObject({
+      type: "turn.completed",
+      usage: { inputTokens: 30, outputTokens: 13 },
+    });
   });
 
   test("denied permission becomes an error tool result and the loop continues", async () => {
