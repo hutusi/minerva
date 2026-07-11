@@ -1,4 +1,4 @@
-import { rgPath } from "@vscode/ripgrep";
+import { resolveRgPath } from "./ripgrep";
 import type { KernelTool } from "./types";
 import { asRecord, ensureConfinedPattern, requireString, resolveWithinWorkspace } from "./types";
 
@@ -51,7 +51,7 @@ export const grepTool: KernelTool = {
     // spawning by argv means it is never interpreted by a shell.
     args.push("-e", pattern, "--", ".");
 
-    const result = await context.runtime.runProcess(rgPath, args, {
+    const result = await context.runtime.runProcess(await resolveRgPath(), args, {
       cwd: base,
       timeoutMs: GREP_TIMEOUT_MS,
       signal: context.signal,

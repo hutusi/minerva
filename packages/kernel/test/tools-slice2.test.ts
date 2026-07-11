@@ -1,9 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PlanEntry } from "@minerva/protocol";
-import { defaultRuntime, editFileTool, globTool, grepTool, todoTool, writeFileTool } from "../src";
+import {
+  defaultRuntime,
+  editFileTool,
+  globTool,
+  grepTool,
+  resolveRgPath,
+  todoTool,
+  writeFileTool,
+} from "../src";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "minerva-t2-"));
@@ -41,6 +56,14 @@ describe("write_file", () => {
     await expect(
       editFileTool.execute({ path: "../outside.txt", old_string: "a", new_string: "b" }, ctx(cwd)),
     ).rejects.toThrow("outside the workspace");
+  });
+});
+
+describe("ripgrep resolution", () => {
+  test("resolves an existing rg executable (dev fallback)", async () => {
+    const rg = await resolveRgPath();
+    expect(existsSync(rg)).toBe(true);
+    expect(rg.endsWith("rg") || rg.endsWith("rg.exe")).toBe(true);
   });
 });
 

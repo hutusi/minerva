@@ -1,4 +1,4 @@
-import { rgPath } from "@vscode/ripgrep";
+import { resolveRgPath } from "./ripgrep";
 import type { KernelTool } from "./types";
 import { asRecord, ensureConfinedPattern, requireString, resolveWithinWorkspace } from "./types";
 
@@ -37,7 +37,7 @@ export const globTool: KernelTool = {
     // node_modules/.git at any depth, after the include pattern so the
     // exclusions win. Spawned by argv, so the pattern is never shell-interpreted.
     const result = await context.runtime.runProcess(
-      rgPath,
+      await resolveRgPath(),
       ["--files", "--no-ignore", "-g", pattern, "-g", "!**/node_modules/**", "-g", "!**/.git/**"],
       { cwd: base, timeoutMs: GLOB_TIMEOUT_MS, signal: context.signal },
     );
