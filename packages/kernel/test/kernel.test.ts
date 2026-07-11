@@ -226,6 +226,35 @@ describe("kernel over in-proc transport", () => {
     ]);
   });
 
+  test("consecutive reasoning blocks are separated by a blank line", async () => {
+    const harness = await setup({
+      turns: [
+        [
+          { type: "reasoning-start" },
+          { type: "reasoning-delta", text: "First block." },
+          { type: "reasoning-start" },
+          { type: "reasoning-delta", text: "Second block." },
+          { type: "text-delta", text: "Answer." },
+          FINISH_STOP,
+        ],
+      ],
+    });
+
+    const result = await prompt(harness, "reason in two blocks");
+    expect(result.stopReason).toBe("end_turn");
+
+    // Persisted thought carries the blank-line boundary between blocks.
+    const thought = harness.logEvents().find((event) => event.type === "assistant.thought");
+    expect(thought).toMatchObject({ text: "First block.\n\nSecond block." });
+
+    // Streamed chunks concatenate to exactly the persisted thought.
+    const streamed = harness.updates
+      .filter((u) => u.update.sessionUpdate === "agent_thought_chunk")
+      .map((u) => (u.update as { content: { text: string } }).content.text)
+      .join("");
+    expect(streamed).toBe("First block.\n\nSecond block.");
+  });
+
   test("a thought-only turn records an assistant message so roles stay alternating", async () => {
     const harness = await setup({
       turns: [

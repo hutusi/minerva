@@ -47,6 +47,10 @@ export type TurnFinishReason = "stop" | "tool-calls" | "length" | "other";
 
 export type TurnEvent =
   | { type: "text-delta"; text: string }
+  // Marks the start of a reasoning block. Carries no text; it exists so the
+  // kernel can separate consecutive reasoning blocks that would otherwise
+  // concatenate into one run-on thought.
+  | { type: "reasoning-start" }
   | { type: "reasoning-delta"; text: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "finish"; finishReason: TurnFinishReason; usage: TurnUsage }

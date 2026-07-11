@@ -46,7 +46,7 @@ describe("AI SDK provider adapter", () => {
     ]);
   });
 
-  test("surfaces reasoning deltas and drops the start/end markers", async () => {
+  test("surfaces reasoning-start and deltas, drops the end marker", async () => {
     const model = new MockLanguageModelV4({
       doStream: async () => ({
         stream: simulateReadableStream({
@@ -70,13 +70,16 @@ describe("AI SDK provider adapter", () => {
       provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }),
     );
 
+    // reasoning-start is surfaced (block boundary); reasoning-end is dropped.
     expect(events.map((event) => event.type)).toEqual([
+      "reasoning-start",
       "reasoning-delta",
       "reasoning-delta",
       "text-delta",
       "finish",
     ]);
-    expect(events.slice(0, 2)).toEqual([
+    expect(events.slice(0, 3)).toEqual([
+      { type: "reasoning-start" },
       { type: "reasoning-delta", text: "Think" },
       { type: "reasoning-delta", text: "ing" },
     ]);

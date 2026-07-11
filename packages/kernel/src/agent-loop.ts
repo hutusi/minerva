@@ -85,6 +85,11 @@ async function runLoop(
     // or the next prompt sends two consecutive user messages and strict
     // role-alternating endpoints reject the whole history.
     let hadThought = false;
+    // A new reasoning block started while the current thought is non-empty:
+    // insert a blank line before its first delta so back-to-back blocks read
+    // as distinct paragraphs instead of one run-on thought. Deferred to the
+    // next delta so an empty trailing block adds no whitespace.
+    let pendingThoughtSeparator = false;
     const toolCalls: ProviderToolCall[] = [];
     let finishReason: TurnFinishReason = "other";
     let streamError: unknown;
@@ -144,15 +149,28 @@ async function runLoop(
               content: { type: "text", text: event.text },
             });
             break;
-          case "reasoning-delta":
+          case "reasoning-start":
+            // Only a boundary between two non-empty blocks needs a separator.
+            pendingThoughtSeparator = thought.length > 0;
+            break;
+          case "reasoning-delta": {
             if (!event.text) break;
             hadThought = true;
-            thought += event.text;
+            // Guard on thought.length too: a text/tool event between the
+            // block boundary and here already flushed the thought, so the
+            // new block starts a fresh item that needs no separator.
+            const chunk =
+              pendingThoughtSeparator && thought.length > 0 ? `\n\n${event.text}` : event.text;
+            pendingThoughtSeparator = false;
+            thought += chunk;
+            // Stream the same text that is persisted, so the client's live
+            // thought and the replayed one are byte-identical.
             sendUpdate(context, {
               sessionUpdate: "agent_thought_chunk",
-              content: { type: "text", text: event.text },
+              content: { type: "text", text: chunk },
             });
             break;
+          }
           case "tool-call":
             flushThought();
             toolCalls.push(event);

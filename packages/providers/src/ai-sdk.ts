@@ -128,9 +128,12 @@ function toTurnEvent(part: StreamPart): TurnEvent | null {
   switch (part.type) {
     case "text-delta":
       return { type: "text-delta", text: part.text };
-    // reasoning-start/-end are dropped: they exist to carry provider
-    // metadata (Anthropic signatures) that the kernel doesn't consume;
-    // the boundary is derivable from the next text/tool event.
+    // reasoning-start marks a block boundary so the kernel can keep
+    // consecutive reasoning blocks from merging into one run-on thought.
+    // reasoning-end is still dropped: it only carries provider metadata
+    // (Anthropic signatures) the kernel doesn't consume.
+    case "reasoning-start":
+      return { type: "reasoning-start" };
     case "reasoning-delta":
       return { type: "reasoning-delta", text: part.text };
     case "tool-call":
