@@ -7,6 +7,11 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Token usage telemetry end-to-end: new `minerva/session/usage` notification
+  carrying last-turn and session-cumulative token counts (including cache
+  read/write tokens, now captured from the AI SDK), session totals rebuilt
+  from the event log on resume, and a dim usage footer in the CLI. Tokens
+  only — cost/pricing is deliberately deferred (see `docs/PROTOCOL.md`).
 - Alibaba Bailian (DashScope) provider preset (`bailian/qwen-plus`,
   `DASHSCOPE_API_KEY`) and settings-defined custom OpenAI-compatible
   providers (any name + `baseUrl`), via `@ai-sdk/openai-compatible`. Keyless
@@ -27,6 +32,15 @@ All notable changes to Minerva are documented here. The format follows
   secret-gated live-model smoke on main pushes; Dependabot.
 - Ink UI test suite (ink-testing-library) and PTY e2e scripts in `scripts/`.
 - `CONTRIBUTING.md`, `docs/PROTOCOL.md`, this changelog.
+
+### Fixed
+- `turn.completed` events now record usage summed across every model turn of
+  a prompt; previously only the final model turn's tokens were persisted, so
+  tool-call round-trips went uncounted (and `max_turn_requests` exits dropped
+  usage entirely).
+- The client store's `setBusy` no longer drops status state (`currentModeId`,
+  usage) that was set while a prompt was running or during a `session/load`
+  replay.
 
 ### Changed
 - Upgraded Ink to v7 (`@minerva/cli`). Requires Node ≥22 and React ≥19.2, both

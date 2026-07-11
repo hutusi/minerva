@@ -133,3 +133,12 @@ audit event, which replay ignores.
 `minerva/*` methods, new update variants frontends may ignore) don't bump it;
 breaking changes to existing shapes do, with a migration note in CHANGELOG.
 The ACP-shaped subset tracks ACP v1; divergences must be recorded here.
+
+Recorded divergences:
+- **Usage telemetry.** ACP's session-usage RFD added a `usage_update` variant
+  to `session/update` carrying context-window utilization (`used`/`size`,
+  optional `cost`). Minerva instead emits the richer per-turn/cumulative
+  token counts as the separate `minerva/session/usage` notification: emitting
+  a truthful `used`/`size` needs per-model context-window metadata the open
+  provider registry doesn't carry. ACP `usage_update` alignment is deferred
+  until providers declare a context window.
