@@ -141,6 +141,13 @@ characters, `?` one character, and `\*` a literal asterisk. Precedence:
 mode default. Rules match the bash command string or the file path; MCP tools
 are named `mcp__<server>__<tool>` and are never auto-allowed.
 
+> **Bash rules are advisory, not a sandbox.** They match the raw command
+> string, not a parsed argv, so a `bash(rm -rf *)` deny is evaded by
+> `command rm -rf …`, `/bin/rm …`, or an equivalent `python -c …`, and a
+> wildcard allow can match a compound `cmd; <anything>`. Treat them as friction
+> that catches honest mistakes; use OS-level sandboxing for real isolation, and
+> avoid `auto` mode with untrusted input.
+
 Every session is an append-only JSONL event log under
 `~/.minerva/projects/<project>/` — the audit trail and the source of truth for
 `--resume`.

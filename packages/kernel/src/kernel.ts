@@ -28,7 +28,13 @@ import { now } from "./events";
 import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
 import { defaultRuntime, isNotFoundError, type Runtime } from "./runtime";
-import { migrateDataDirPermissions, parseEventLog, projectDir, Session } from "./session";
+import {
+  migrateDataDirPermissions,
+  parseEventLog,
+  previewText,
+  projectDir,
+  Session,
+} from "./session";
 import {
   defaultDataDir,
   loadSettings,
@@ -212,10 +218,14 @@ export class MinervaKernel {
     }
     this.#sessions.set(sessionId, loaded.session);
     await this.#connectMcp(sessionId, cwd);
-    // ACP: replay the conversation as session/update notifications before
-    // answering, so the frontend can rebuild its transcript.
-    for (const update of loaded.replay.updates) {
-      this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });
+    // Replay the whole conversation in a single batch so the frontend rebuilds
+    // its transcript in one pass instead of one apply+render per update (which
+    // is quadratic over a long session).
+    if (loaded.replay.updates.length > 0) {
+      this.#connection.notify(CLIENT_METHODS.sessionUpdateBatch, {
+        sessionId,
+        updates: loaded.replay.updates,
+      });
     }
     // Session-lifetime spend lives only in the log; without this a resumed
     // frontend would show totals starting from zero.
@@ -284,12 +294,19 @@ export class MinervaKernel {
     // last entry per session id reflects most-recent use. Return the 20
     // most recently used — a hard cap, matching the picker UIs it feeds.
     const bySessionId = new Map<string, SessionSummary>();
-    for (const entry of entries) bySessionId.set(entry.sessionId, entry);
+    for (const entry of entries) {
+      // delete-before-set so a resumed session moves to the most-recent
+      // position rather than keeping its original insertion order.
+      bySessionId.delete(entry.sessionId);
+      bySessionId.set(entry.sessionId, entry);
+    }
     const recent = [...bySessionId.values()].reverse().slice(0, 20);
     const sessions = await Promise.all(
       recent.map(async (entry) => ({
         ...entry,
-        preview: await this.#sessionPreview(dir, entry.sessionId),
+        // Previews are persisted in the index; only fall back to reading the
+        // log for old entries written before previews existed.
+        preview: entry.preview ?? (await this.#sessionPreview(dir, entry.sessionId)),
       })),
     );
     return { sessions };
@@ -299,11 +316,7 @@ export class MinervaKernel {
     try {
       const raw = await this.#runtime.readTextFile(join(dir, `${sessionId}.jsonl`));
       for (const event of parseEventLog(raw)) {
-        if (event.type === "user.message") {
-          // Slice by code point so an emoji at the boundary isn't torn.
-          const chars = [...event.text];
-          return chars.length > 80 ? `${chars.slice(0, 80).join("")}…` : event.text;
-        }
+        if (event.type === "user.message") return previewText(event.text);
       }
     } catch {
       // Index entry without a readable log — list it without a preview.
@@ -333,6 +346,9 @@ export class MinervaKernel {
     if (!text) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "prompt has no text content");
     }
+    // Persist the first prompt as the session's index preview (once), so the
+    // picker doesn't have to read the log to show it.
+    void session.recordPreview(text).catch(() => {});
 
     return runPrompt(
       {

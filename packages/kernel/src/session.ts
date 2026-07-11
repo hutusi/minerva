@@ -57,11 +57,13 @@ export class Session {
   usage: TurnUsage = {};
   promptActive = false;
 
+  #dir: string;
   #logPath: string;
   #runtime: Runtime;
   #logChain: Promise<void> = Promise.resolve();
   #logError: unknown = null;
   #abort: AbortController | null = null;
+  #previewRecorded = false;
 
   private constructor(
     id: string,
@@ -73,8 +75,25 @@ export class Session {
     this.cwd = options.cwd;
     this.permissions = permissions;
     this.mode = mode;
-    this.#logPath = join(projectDir(options.dataDir, options.cwd), `${id}.jsonl`);
+    this.#dir = projectDir(options.dataDir, options.cwd);
+    this.#logPath = join(this.#dir, `${id}.jsonl`);
     this.#runtime = options.runtime;
+  }
+
+  /**
+   * Persist the first user message into the session index (once) so the picker
+   * can show a preview without reading the whole log. The index dedupes by id,
+   * so this later entry supersedes the create-time one.
+   */
+  async recordPreview(text: string): Promise<void> {
+    if (this.#previewRecorded) return;
+    this.#previewRecorded = true;
+    await appendSessionIndex(this.#runtime, this.#dir, {
+      sessionId: this.id,
+      cwd: this.cwd,
+      createdAt: now(),
+      preview: previewText(text),
+    });
   }
 
   static async create(options: SessionOptions): Promise<Session> {
@@ -142,12 +161,17 @@ export class Session {
     session.messages.push(...replay.messages);
     session.todos = replay.todos;
     session.usage = replay.usage;
-    // Re-append to the index so "latest session" means most recently used,
-    // not most recently created; the list handler dedupes by id.
+    // Re-append to the index so "latest session" means most recently used, not
+    // most recently created (the list handler dedupes by id), carrying the
+    // first user message forward as a preview so the picker needn't read the
+    // full log.
+    const firstUser = events.find((event) => event.type === "user.message");
+    session.#previewRecorded = firstUser !== undefined;
     await appendSessionIndex(options.runtime, dir, {
       sessionId,
       cwd: options.cwd,
       createdAt: now(),
+      ...(firstUser ? { preview: previewText(firstUser.text) } : {}),
     });
     session.append({ type: "session.resumed", provider: options.providerId, at: now() });
     return { session, replay };
@@ -251,6 +275,14 @@ interface IndexEntry {
   sessionId: string;
   cwd: string;
   createdAt: string;
+  /** First user message, truncated — lets the picker skip reading the log. */
+  preview?: string;
+}
+
+/** Truncate a first-user-message to a picker-sized preview (code-point safe). */
+export function previewText(text: string): string {
+  const chars = [...text];
+  return chars.length > 80 ? `${chars.slice(0, 80).join("")}…` : text;
 }
 
 /**

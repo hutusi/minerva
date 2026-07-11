@@ -289,6 +289,12 @@ describe("TUI (ink-testing-library, full stack)", () => {
     await completeConfigPanel(ui);
     await waitFor(() => (ui.lastFrame() ?? "").includes(">"), "composer after config");
     expect(statSync(join(ui.dataDir, "settings.json")).mode & 0o777).toBe(0o600);
+
+    // Reopening /config after setup must not re-show the first-run banner or
+    // treat the just-configured provider as keyless (stale startup snapshot).
+    await type(ui, "/config");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Configure model"), "config reopened");
+    expect(ui.lastFrame()).not.toContain("No API key found");
     ui.unmount();
   }, 20_000);
 

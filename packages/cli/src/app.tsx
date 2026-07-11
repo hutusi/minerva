@@ -125,6 +125,11 @@ function Chat({
   const viewModel = useSyncExternalStore(subscribe, () => session.store.snapshot);
   const [draft, setDraft] = useState("");
   const [configOpen, setConfigOpen] = useState(initialConfigOpen);
+  // The provider snapshot and first-run flag start from the startup values but
+  // must reflect a successful /config, or the panel keeps showing a
+  // just-configured provider as "no key" and re-renders the first-run banner.
+  const [providerChoices, setProviderChoices] = useState(providers);
+  const [firstRun, setFirstRun] = useState(initialConfigOpen);
   const { exit } = useApp();
 
   useInput((_input, key) => {
@@ -207,12 +212,23 @@ function Chat({
     });
     onModelChanged(providerId);
     setConfigOpen(false);
+    // Reflect the just-saved config: setup is done, and the provider now has a
+    // stored key, so reopening /config won't mislabel it "no key".
+    setFirstRun(false);
+    if (result.apiKey) {
+      const configured = result.provider?.name ?? providerId.split("/")[0];
+      setProviderChoices((choices) =>
+        choices.map((choice) =>
+          choice.name === configured ? { ...choice, keySource: "settings" } : choice,
+        ),
+      );
+    }
     info(`model set to ${providerId} (saved to global settings)`);
   };
 
   const cancelConfig = () => {
     setConfigOpen(false);
-    if (initialConfigOpen) {
+    if (firstRun) {
       info("no API key configured — prompts will fail until you run /config");
     }
   };
@@ -226,9 +242,9 @@ function Chat({
         <PermissionPrompt pending={pending} />
       ) : configOpen ? (
         <ConfigPanel
-          providers={providers}
+          providers={providerChoices}
           currentModel={model}
-          firstRun={initialConfigOpen}
+          firstRun={firstRun}
           onSubmit={applyConfig}
           onCancel={cancelConfig}
         />

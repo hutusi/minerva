@@ -167,6 +167,37 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  test("applyBatch yields the same transcript as one-at-a-time apply, in one notify", () => {
+    const updates = [
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "hi" } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hel" } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "lo" } },
+      {
+        sessionUpdate: "tool_call",
+        toolCallId: "c1",
+        title: "ls",
+        kind: "execute",
+        status: "pending",
+      },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } },
+    ] as const;
+
+    const oneByOne = new SessionStore();
+    for (const u of updates) oneByOne.apply(u);
+
+    const batched = new SessionStore();
+    let notified = 0;
+    batched.subscribe(() => {
+      notified += 1;
+    });
+    const before = batched.snapshot;
+    batched.applyBatch([...updates]);
+
+    expect(notified).toBe(1); // one transition for the whole replay
+    expect(before.items).toHaveLength(0); // prior snapshot untouched (immutable)
+    expect(batched.snapshot.items).toEqual(oneByOne.snapshot.items);
+  });
+
   test("notifies subscribers on every change and snapshots are immutable", () => {
     const store = new SessionStore();
     let notified = 0;

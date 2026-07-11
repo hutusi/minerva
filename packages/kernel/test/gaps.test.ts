@@ -186,6 +186,44 @@ describe("sessions/list edges", () => {
     );
   });
 
+  test("a resumed session sorts most-recent, with its preview served from the index", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-mru-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-mru-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([
+        [{ type: "text-delta", text: "a" }, FINISH_STOP],
+        [{ type: "text-delta", text: "b" }, FINISH_STOP],
+      ]),
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+
+    const { sessionId: a } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId: a,
+      prompt: [{ type: "text", text: "first prompt for A" }],
+    });
+    const { sessionId: b } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId: b,
+      prompt: [{ type: "text", text: "prompt for B" }],
+    });
+    // Resuming A must move it to the front of the most-recently-used list.
+    await client.request(AGENT_METHODS.sessionLoad, { sessionId: a, cwd });
+
+    const { sessions } = await client.request<{
+      sessions: Array<{ sessionId: string; preview?: string }>;
+    }>("minerva/sessions/list", { cwd });
+    expect(sessions.map((s) => s.sessionId)).toEqual([a, b]);
+    expect(sessions[0]?.preview).toContain("first prompt for A");
+  });
+
   test("a missing session index lists nothing (ENOENT is normal)", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "gaps-list2-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "gaps-list2-data-"));

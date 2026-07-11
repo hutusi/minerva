@@ -15,6 +15,7 @@ import {
   type SessionPromptResult,
   type SessionSummary,
   type SessionsListResult,
+  type SessionUpdateBatchParams,
   type SessionUpdateParams,
   type SessionUsageParams,
   type StopReason,
@@ -52,6 +53,10 @@ export class MinervaClient {
     this.#connection.handleNotification(CLIENT_METHODS.sessionUpdate, (params) => {
       const { sessionId, update } = params as SessionUpdateParams;
       this.#stores.get(sessionId)?.apply(update);
+    });
+    this.#connection.handleNotification(CLIENT_METHODS.sessionUpdateBatch, (params) => {
+      const { sessionId, updates } = params as SessionUpdateBatchParams;
+      this.#stores.get(sessionId)?.applyBatch(updates);
     });
     this.#connection.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
       const { sessionId, lastTurn, cumulative } = params as SessionUsageParams;

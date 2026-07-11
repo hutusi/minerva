@@ -9,6 +9,7 @@ import {
   createInProcTransportPair,
   PROTOCOL_VERSION,
   type RequestPermissionParams,
+  type SessionUpdateBatchParams,
   type SessionUpdateParams,
   type SessionUsageParams,
 } from "@minerva/protocol";
@@ -57,6 +58,12 @@ async function setup(options: {
   const permissionRequests: RequestPermissionParams[] = [];
   client.handleNotification(CLIENT_METHODS.sessionUpdate, (params) => {
     updates.push(params as SessionUpdateParams);
+  });
+  // Replay arrives as one batch; flatten it so the per-update assertions below
+  // see the same sequence they would from individual notifications.
+  client.handleNotification(CLIENT_METHODS.sessionUpdateBatch, (params) => {
+    const { sessionId, updates: batch } = params as SessionUpdateBatchParams;
+    for (const update of batch) updates.push({ sessionId, update });
   });
   client.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
     usageNotices.push(params as SessionUsageParams);
