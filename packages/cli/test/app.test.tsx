@@ -263,6 +263,27 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.unmount();
   }, 20_000);
 
+  test("a thought streams dimmed, then collapses to a summary line", async () => {
+    const thought = "Weighing the options before answering.";
+    const ui = renderTui([
+      [
+        { type: "reasoning-delta", text: thought },
+        { type: "text-delta", text: "Answer: A." },
+        FINISH_STOP,
+      ],
+    ]);
+    await ready(ui);
+
+    await type(ui, "choose one");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Answer: A."), "answer text");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain(`✻ thought · ${thought.length} chars`);
+    expect(frame).not.toContain("Weighing the options");
+    // The streaming state showed the raw thought before the collapse.
+    expect(ui.frames.some((f) => f.includes("✻ Weighing the options"))).toBe(true);
+    ui.unmount();
+  }, 20_000);
+
   test("token usage footer shows last-turn and session totals", async () => {
     const ui = renderTui([
       [

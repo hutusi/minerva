@@ -7,6 +7,17 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Streamed model reasoning end-to-end: `agent_thought_chunk` (reserved since
+  v0.1) is now emitted live and on `session/load` replay, backed by a new
+  `assistant.thought` session event; the CLI shows the thought dimmed while
+  it streams and collapses it to a one-line summary when the answer starts.
+  A per-provider `thinking` setting sends `enable_thinking` to
+  OpenAI-compatible endpoints (`true` for Qwen-style opt-in, `false` to
+  suppress GLM's default thinking). Anthropic extended thinking is
+  deliberately deferred — it requires replaying signature-carrying reasoning
+  into tool loops — and the registry rejects the toggle on non-compatible
+  providers at startup. Thoughts are display-only and never re-sent to the
+  model.
 - Token usage telemetry end-to-end: new `minerva/session/usage` notification
   carrying last-turn and session-cumulative token counts (including cache
   read/write tokens, now captured from the AI SDK), session totals rebuilt

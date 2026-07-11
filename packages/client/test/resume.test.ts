@@ -155,6 +155,32 @@ describe("session resume across kernel restarts", () => {
     expect(stopReason).toBe("end_turn");
   });
 
+  test("a replayed thought re-renders collapsed before its answer", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-thought-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-thought-data-"));
+
+    const first = boot(dataDir, [
+      [
+        { type: "reasoning-delta", text: "Weigh the options." },
+        { type: "text-delta", text: "Going with A." },
+        FINISH_STOP,
+      ],
+    ]);
+    await first.client.initialize();
+    const { sessionId } = await first.client.newSession(cwd);
+    await first.client.prompt(sessionId, "choose one");
+    first.client.close();
+
+    const second = boot(dataDir, []);
+    await second.client.initialize();
+    const { store } = await second.client.loadSession(sessionId, cwd);
+    expect(store.snapshot.items).toEqual([
+      { kind: "user", text: "choose one" },
+      { kind: "thought", text: "Weigh the options.", streaming: false },
+      { kind: "assistant", text: "Going with A.", streaming: false },
+    ]);
+  });
+
   test("a session cannot be loaded from a slug-colliding foreign cwd", async () => {
     const base = mkdtempSync(join(tmpdir(), "minerva-slug-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-slug-data-"));

@@ -46,6 +46,65 @@ describe("AI SDK provider adapter", () => {
     ]);
   });
 
+  test("surfaces reasoning deltas and drops the start/end markers", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            // Provider layer uses `delta`; streamText renames it to `text`.
+            { type: "reasoning-start", id: "r1" },
+            { type: "reasoning-delta", id: "r1", delta: "Think" },
+            { type: "reasoning-delta", id: "r1", delta: "ing" },
+            { type: "reasoning-end", id: "r1" },
+            { type: "text-start", id: "t1" },
+            { type: "text-delta", id: "t1", delta: "Answer" },
+            { type: "text-end", id: "t1" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+          ],
+        }),
+      }),
+    });
+    const provider = createAiSdkProvider(model, "mock");
+
+    const events = await collect(
+      provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }),
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "reasoning-delta",
+      "reasoning-delta",
+      "text-delta",
+      "finish",
+    ]);
+    expect(events.slice(0, 2)).toEqual([
+      { type: "reasoning-delta", text: "Think" },
+      { type: "reasoning-delta", text: "ing" },
+    ]);
+  });
+
+  test("providerOptions reach the model call", async () => {
+    let seenProviderOptions: unknown;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        seenProviderOptions = options.providerOptions;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+            ],
+          }),
+        };
+      },
+    });
+    const provider = createAiSdkProvider(model, "mock", {
+      providerOptions: { bailian: { enable_thinking: true } },
+    });
+
+    await collect(provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }));
+
+    expect(seenProviderOptions).toEqual({ bailian: { enable_thinking: true } });
+  });
+
   test("surfaces tool calls with parsed input", async () => {
     const model = new MockLanguageModelV4({
       doStream: async () => ({

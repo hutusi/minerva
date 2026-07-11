@@ -16,6 +16,7 @@ import type {
 export type ViewItem =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; streaming: boolean }
+  | { kind: "thought"; text: string; streaming: boolean }
   | {
       kind: "tool";
       toolCallId: string;
@@ -69,13 +70,13 @@ export class SessionStore {
   apply(update: SessionUpdate): void {
     switch (update.sessionUpdate) {
       case "agent_message_chunk":
-        this.#appendAssistantText(update.content.text);
+        this.#appendStreamingText("assistant", update.content.text);
         break;
       case "user_message_chunk":
         this.addUserMessage(update.content.text);
         break;
       case "agent_thought_chunk":
-        // Not surfaced in slice 1.
+        this.#appendStreamingText("thought", update.content.text);
         break;
       case "tool_call":
         this.#push({
@@ -124,14 +125,21 @@ export class SessionStore {
     this.#set({ ...this.#viewModel, items });
   }
 
-  #appendAssistantText(text: string): void {
-    const items = [...this.#viewModel.items];
-    const last = items[items.length - 1];
-    if (last?.kind === "assistant" && last.streaming) {
+  /** Shared by assistant text and thoughts: chunks coalesce into the last
+   * item while it streams; a chunk of the other kind finalizes it first —
+   * that switch is what collapses a thought when the answer starts. */
+  #appendStreamingText(kind: "assistant" | "thought", text: string): void {
+    const last = this.#viewModel.items[this.#viewModel.items.length - 1];
+    if (last?.kind === kind && last.streaming) {
+      const items = [...this.#viewModel.items];
       items[items.length - 1] = { ...last, text: last.text + text };
-    } else {
-      items.push({ kind: "assistant", text, streaming: true });
+      this.#set({ ...this.#viewModel, items });
+      return;
     }
+    const items = [
+      ...this.#viewModel.items.map(finalizeStreamingItem),
+      { kind, text, streaming: true },
+    ];
     this.#set({ ...this.#viewModel, items });
   }
 
@@ -159,7 +167,9 @@ export class SessionStore {
 }
 
 function finalizeStreamingItem(item: ViewItem): ViewItem {
-  return item.kind === "assistant" && item.streaming ? { ...item, streaming: false } : item;
+  return (item.kind === "assistant" || item.kind === "thought") && item.streaming
+    ? { ...item, streaming: false }
+    : item;
 }
 
 function extractText(content: ToolCallContent[] | undefined): string | undefined {

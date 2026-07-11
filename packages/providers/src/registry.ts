@@ -28,6 +28,11 @@ export interface ProviderDef {
   models?: string[] | undefined;
   /** false = the endpoint needs no key (e.g. a local server). Default true. */
   requiresApiKey?: boolean | undefined;
+  /**
+   * Request (true) or suppress (false) model thinking; unset sends nothing.
+   * OpenAI-compatible endpoints only (enable_thinking in the request body).
+   */
+  thinking?: boolean | undefined;
 }
 
 export type ProviderRegistry = Record<string, ProviderDef>;
@@ -62,6 +67,7 @@ export interface CustomProviderConfig {
   defaultModel?: string | undefined;
   models?: string[] | undefined;
   requiresApiKey?: boolean | undefined;
+  thinking?: boolean | undefined;
 }
 
 // Names must survive ref parsing ("name/model") and env-var derivation.
@@ -79,6 +85,13 @@ export function buildProviderRegistry(
   for (const [name, config] of Object.entries(custom ?? {})) {
     const builtin = BUILTIN_PROVIDERS[name];
     if (builtin) {
+      // Anthropic thinking needs signature-carrying reasoning replayed on
+      // tool loops — unsupported here, so fail at startup, not mid-turn.
+      if (config.thinking !== undefined && builtin.kind !== "openai-compatible") {
+        throw new Error(
+          `provider "${name}": thinking is only supported for OpenAI-compatible providers`,
+        );
+      }
       registry[name] = {
         ...builtin,
         ...(config.baseUrl !== undefined ? { baseURL: config.baseUrl } : {}),
@@ -86,6 +99,7 @@ export function buildProviderRegistry(
         ...(config.defaultModel !== undefined ? { defaultModel: config.defaultModel } : {}),
         ...(config.models !== undefined ? { models: config.models } : {}),
         ...(config.requiresApiKey !== undefined ? { requiresApiKey: config.requiresApiKey } : {}),
+        ...(config.thinking !== undefined ? { thinking: config.thinking } : {}),
       };
       continue;
     }
@@ -104,6 +118,7 @@ export function buildProviderRegistry(
       ...(config.defaultModel !== undefined ? { defaultModel: config.defaultModel } : {}),
       ...(config.models !== undefined ? { models: config.models } : {}),
       ...(config.requiresApiKey !== undefined ? { requiresApiKey: config.requiresApiKey } : {}),
+      ...(config.thinking !== undefined ? { thinking: config.thinking } : {}),
     };
   }
   return registry;
@@ -222,7 +237,16 @@ export function createProviderFromRef(
         includeUsage: true,
         ...(options.apiKey ? { apiKey: options.apiKey } : {}),
       });
-      return createAiSdkProvider(compatible(model), `${provider}/${model}`);
+      // Unknown providerOptions keys are spread verbatim into the request
+      // body; enable_thinking asks DashScope-style servers to emit
+      // reasoning_content (they require streaming for it, which we always
+      // do). The key is the provider name because createOpenAICompatible's
+      // `name` sets the providerOptions namespace.
+      return createAiSdkProvider(compatible(model), `${provider}/${model}`, {
+        ...(def.thinking !== undefined
+          ? { providerOptions: { [provider]: { enable_thinking: def.thinking } } }
+          : {}),
+      });
     }
     default: {
       const modelId = model || DEFAULT_ANTHROPIC_MODEL;

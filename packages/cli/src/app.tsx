@@ -296,6 +296,8 @@ function ItemView({ item }: { item: ViewItem }) {
           <Text>{item.text}</Text>
         </Box>
       );
+    case "thought":
+      return <ThoughtView item={item} />;
     case "tool":
       return <ToolView item={item} />;
     case "plan":
@@ -334,10 +336,36 @@ function ToolView({ item }: { item: Extract<ViewItem, { kind: "tool" }> }) {
   );
 }
 
+/**
+ * Model reasoning: a rolling tail while it streams (full thoughts run to
+ * thousands of chars and would flood the live region), one dim summary
+ * line once the answer starts.
+ */
+function ThoughtView({ item }: { item: Extract<ViewItem, { kind: "thought" }> }) {
+  if (!item.streaming) {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>✻ thought · {formatTokens([...item.text].length)} chars</Text>
+      </Box>
+    );
+  }
+  return (
+    <Box marginTop={1}>
+      <Text dimColor>✻ {lastLines(item.text, 4)}</Text>
+    </Box>
+  );
+}
+
 function firstLines(text: string, count: number): string {
   const lines = text.trimEnd().split("\n");
   if (lines.length <= count) return lines.join("\n");
   return `${lines.slice(0, count).join("\n")}\n… (${lines.length - count} more lines)`;
+}
+
+function lastLines(text: string, count: number): string {
+  const lines = text.trimEnd().split("\n");
+  if (lines.length <= count) return lines.join("\n");
+  return `… ${lines.slice(-count).join("\n")}`;
 }
 
 function PlanView({ entries }: { entries: Extract<ViewItem, { kind: "plan" }>["entries"] }) {

@@ -88,7 +88,8 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
   "providers": {
     "bailian": {
       "apiKey": "sk-...",
-      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+      "baseUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "thinking": true
     },
     "deepseek": {
       "baseUrl": "https://api.deepseek.com/v1",
@@ -115,6 +116,15 @@ defaults to `<NAME>_API_KEY`. Keyless endpoints (e.g. a local Ollama) set
 panel writes this automatically when you save a custom provider without one.
 **API keys are honored from the global file only** (never the shareable
 project file), and any file that may hold keys is written with mode `0600`.
+
+`"thinking"` asks the model to reason before answering: `true` sends
+`enable_thinking: true` to the endpoint (needed by Qwen models, which default
+it off), `false` suppresses it (GLM models think by default), unset sends
+nothing. OpenAI-compatible providers only — setting it on `anthropic`/`openai`
+is rejected at startup (Anthropic extended thinking needs reasoning replayed
+into tool loops, which Minerva doesn't do yet). Reasoning the model streams is
+shown dimmed while it thinks and collapses to a one-line summary once the
+answer starts; either way it is display-only and never re-sent to the model.
 
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:

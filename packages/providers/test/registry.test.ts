@@ -112,6 +112,29 @@ describe("provider registry", () => {
     expect(() => buildProviderRegistry({ deepseek: {} })).toThrow("needs a baseUrl");
   });
 
+  test("thinking flag is carried for openai-compatible providers", () => {
+    const providers = buildProviderRegistry({
+      bailian: { thinking: true },
+      "my-proxy": { baseUrl: "https://llm.example.com/v1", thinking: false },
+    });
+    expect(providers.bailian?.thinking).toBe(true);
+    expect(providers["my-proxy"]?.thinking).toBe(false);
+    // The flag must not break provider construction.
+    expect(createProviderFromRef("bailian/qwen-plus", { providers, apiKey: "sk-test" }).id).toBe(
+      "bailian/qwen-plus",
+    );
+  });
+
+  test("thinking is rejected for non-openai-compatible providers", () => {
+    expect(() => buildProviderRegistry({ anthropic: { thinking: true } })).toThrow(
+      "only supported for OpenAI-compatible",
+    );
+    // false is still a request to control thinking — same guard.
+    expect(() => buildProviderRegistry({ openai: { thinking: false } })).toThrow(
+      "only supported for OpenAI-compatible",
+    );
+  });
+
   test("invalid provider names are rejected", () => {
     expect(() => buildProviderRegistry({ "Bad Name": { baseUrl: "https://x" } })).toThrow(
       "invalid provider name",
