@@ -216,6 +216,13 @@ export class Session {
   }
 
   beginPrompt(): AbortSignal {
+    // Hard backstop: callers guard promptActive with a friendly RpcError
+    // first, and must claim the lease with NO await between guard and claim.
+    // Reaching this while active means that invariant broke — overwriting the
+    // live AbortController would detach cancel() from the running prompt.
+    if (this.promptActive) {
+      throw new Error("a prompt is already running in this session");
+    }
     this.promptActive = true;
     this.#abort = new AbortController();
     return this.#abort.signal;

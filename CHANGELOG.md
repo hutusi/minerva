@@ -10,14 +10,16 @@ All notable changes to Minerva are documented here. The format follows
 - Skills: reusable instructions as `skills/<name>/SKILL.md` directories
   (project `.minerva/` and global `~/.minerva/`, project winning name
   collisions). The model discovers them through a read-only `skill` tool
-  whose description lists names+descriptions only — the body is read from
-  disk at invoke time, so a big skill library costs nothing per request —
-  and every invocation is permission-gated and audited like any other tool.
-  Users invoke one as `/name args`: the kernel expands it for the model
-  while the transcript keeps the literal line (a new `providerText` field on
+  whose description lists names+descriptions only — those ride in each
+  request, while bodies are read from disk at invoke time — and model
+  invocations are permission-gated and audited like any other tool. Users
+  invoke one as `/name args`: the kernel expands it for the model while the
+  transcript keeps the literal line (a new `providerText` field on
   `user.message` events; old logs replay unchanged), so skills behave the
-  same from the CLI and ACP hosts. A new `minerva/skills/list` method feeds
-  the CLI's slash dispatch and `/help`, which now lists skills.
+  same from the CLI and ACP hosts. `/name` honors deny permission rules and
+  skips ask rules (typing the command is consent); the expansion is audited
+  via `providerText`. A new `minerva/skills/list` method feeds the CLI's
+  slash dispatch and `/help`, which now lists skills.
 - AGENTS.md project instructions: a project-root `AGENTS.md` (and a global
   `~/.minerva/AGENTS.md`) is appended to the system prompt at session
   establish, so per-project guidance no longer requires forking the host's
@@ -72,7 +74,35 @@ All notable changes to Minerva are documented here. The format follows
 - Ink UI test suite (ink-testing-library) and PTY e2e scripts in `scripts/`.
 - `CONTRIBUTING.md`, `docs/PROTOCOL.md`, this changelog.
 
+### Security
+- Project-layer `AGENTS.md` and `.minerva/skills/` files must now resolve
+  inside the workspace: a repo-planted symlink can no longer pull outside
+  files (`~/.ssh/...`) into the model prompt. Skills re-check confinement at
+  every read, so a symlink swapped in after discovery is refused too. Global
+  `~/.minerva` files stay unconfined — they are user-owned, and symlinking
+  them from a dotfiles repo is legitimate.
+- Instruction and skill files are read through a new bounded-read runtime
+  primitive: discovery reads only an 8 KiB frontmatter prefix, bodies read at
+  most 4× their character cap, and a huge or sparse file can no longer
+  exhaust memory before truncation applies. Skill descriptions are capped at
+  500 chars and discovery scans at most 64 entries per directory. Remote MCP
+  tool output is capped at 50k chars and server-provided descriptions at 2k.
+
 ### Fixed
+- Two prompts arriving in the same tick can no longer interleave one
+  session's state: the prompt lease is claimed synchronously before the
+  kernel awaits anything (the skills change had opened a window between the
+  guard and the claim), and `beginPrompt` now throws instead of silently
+  replacing the live AbortController.
+- A skill added after a session was established now expands on `/name`
+  instead of passing the literal line to the model — the kernel reloads the
+  registry on a miss, matching what `minerva/skills/list` advertises.
+- The MCP SSE fallback only fires when the server answered Streamable HTTP
+  with a 4xx (the actual "legacy server" signal); DNS failures, timeouts, and
+  5xx no longer trigger a second connection attempt that doubled the
+  worst-case session-start delay.
+- A host-injected tool named `skill` is no longer duplicated by the generated
+  one (host tools win).
 - `turn.completed` events now record usage summed across every model turn of
   a prompt; previously only the final model turn's tokens were persisted, so
   tool-call round-trips went uncounted (and `max_turn_requests` exits dropped

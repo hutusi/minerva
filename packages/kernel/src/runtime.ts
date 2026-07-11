@@ -41,8 +41,25 @@ export interface WriteTextFileOptions {
   mode?: number | undefined;
 }
 
+export interface BoundedRead {
+  text: string;
+  /** True when the file (at stat time) was larger than maxBytes. */
+  truncated: boolean;
+  /** The file's full size in bytes, for honest truncation diagnostics. */
+  totalBytes: number;
+}
+
 export interface Runtime {
   readTextFile(path: string): Promise<string>;
+  /**
+   * Read at most maxBytes from the start of a file, decoded as UTF-8, without
+   * ever buffering the whole file — for user-supplied inputs (AGENTS.md,
+   * SKILL.md) where a huge file must not exhaust memory before a size cap
+   * applies. A multi-byte character split at the boundary decodes as U+FFFD,
+   * acceptable at a truncation cut. Symlinks are followed (confinement is the
+   * caller's separate realpath check); error codes match readTextFile.
+   */
+  readTextFilePrefix(path: string, maxBytes: number): Promise<BoundedRead>;
   writeTextFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
   /**
    * Create and write a brand-new file, failing if it already exists and
@@ -95,6 +112,36 @@ const PIPE_GRACE_MS = 1_000;
 
 export const defaultRuntime: Runtime = {
   readTextFile: (path) => readFile(path, "utf8"),
+  readTextFilePrefix: async (path, maxBytes) => {
+    const handle = await open(path, "r");
+    try {
+      const stats = await handle.stat();
+      // open() on a directory succeeds on some platforms; fail like readFile
+      // does so callers' EISDIR handling stays uniform.
+      if (stats.isDirectory()) {
+        throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), {
+          code: "EISDIR",
+        });
+      }
+      const budget = Math.min(stats.size, maxBytes);
+      const buffer = Buffer.alloc(budget);
+      let offset = 0;
+      // read() may return short counts; loop until the budget is filled or
+      // the file shrank underneath us (bytesRead === 0).
+      while (offset < budget) {
+        const { bytesRead } = await handle.read(buffer, offset, budget - offset, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      return {
+        text: buffer.toString("utf8", 0, offset),
+        truncated: stats.size > maxBytes,
+        totalBytes: stats.size,
+      };
+    } finally {
+      await handle.close();
+    }
+  },
   writeTextFile: async (path, content, options) => {
     const mode = options?.mode;
     await writeFile(path, content, { encoding: "utf8", ...(mode !== undefined ? { mode } : {}) });

@@ -161,6 +161,15 @@ are named `mcp__<server>__<tool>` and are never auto-allowed.
 > that catches honest mistakes; use OS-level sandboxing for real isolation, and
 > avoid `auto` mode with untrusted input.
 
+> **Opening a third-party repository activates its configuration.** The
+> project's `AGENTS.md` enters the system prompt, `.minerva/skills/` becomes
+> invocable instructions, and `.minerva/settings.json` contributes permission
+> allow rules and MCP server definitions the moment a session starts. Project
+> files that resolve outside the workspace (symlinks) are refused, and project
+> API keys are never honored — but prompt-shaping text is trusted by design.
+> Skim those files before working in an unfamiliar repo, and prefer `default`
+> or `plan` mode over `acceptEdits`/`auto` there.
+
 Every session is an append-only JSONL event log under
 `~/.minerva/projects/<project>/` — the audit trail and the source of truth for
 `--resume`.
@@ -195,12 +204,14 @@ description: Steps for cutting a release safely
 
 Two ways in: the model sees every skill's name and description through a
 read-only `skill` tool and loads the full instructions when one matches the
-task (so a large skill library costs nothing per request), and you can invoke
-one directly as `/release-checklist <args>` — the transcript keeps what you
-typed while the model receives the skill body. `/help` lists the available
-skills; project skills override same-named global ones, and built-in commands
-always beat a same-named skill. Frontmatter is parsed as simple `key: value`
-lines (no multiline YAML).
+task (only names and descriptions ride in each request — bodies stay on disk
+until invoked), and you can invoke one directly as `/release-checklist <args>`
+— the transcript keeps what you typed while the model receives the skill body.
+`/help` lists the available skills; project skills override same-named global
+ones, and built-in commands always beat a same-named skill. Frontmatter is
+parsed as simple `key: value` lines (no multiline YAML). A `deny: ["skill"]`
+permission rule blocks skills for the model **and** for `/name` invocations;
+ask rules don't apply to `/name` — typing the command is consent.
 
 ## Editors (ACP)
 

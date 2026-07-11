@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { isNotFoundError, type Runtime } from "./runtime";
+// Direct module import (not the ./tools barrel) to avoid an import cycle.
+import { resolveWithinWorkspace } from "./tools/types";
 
 /**
  * AGENTS.md project instructions (agents.md open standard): user-authored
@@ -13,6 +15,7 @@ import { isNotFoundError, type Runtime } from "./runtime";
 export interface InstructionFile {
   path: string;
   scope: "global" | "project";
+  /** Full on-disk size in bytes (the loaded content may be truncated). */
   bytes: number;
   truncated: boolean;
 }
@@ -30,6 +33,14 @@ export interface ProjectInstructions {
  */
 export const MAX_INSTRUCTIONS_CHARS = 24_000;
 
+/**
+ * Byte budget for the bounded read: 4× the char cap guarantees the char-cap
+ * slice is always the visible cut (worst case 3-byte UTF-8 chars still yield
+ * more than MAX_INSTRUCTIONS_CHARS UTF-16 units), while a multi-gigabyte
+ * file never gets buffered.
+ */
+const INSTRUCTIONS_BYTE_BUDGET = 4 * MAX_INSTRUCTIONS_CHARS;
+
 export async function loadProjectInstructions(
   runtime: Runtime,
   dataDir: string,
@@ -45,9 +56,22 @@ export async function loadProjectInstructions(
   const sections: string[] = [];
 
   for (const candidate of candidates) {
-    let raw: string;
+    // Project files are repo-controlled: a symlinked AGENTS.md must not pull
+    // content from outside the workspace into the prompt. The global file is
+    // user-owned (like stored API keys) — dotfile symlinks stay legitimate.
+    if (candidate.scope === "project") {
+      try {
+        await resolveWithinWorkspace(runtime, cwd, candidate.path);
+      } catch (error) {
+        warnings.push(
+          `skipping ${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+    }
+    let raw: { text: string; truncated: boolean; totalBytes: number };
     try {
-      raw = await runtime.readTextFile(candidate.path);
+      raw = await runtime.readTextFilePrefix(candidate.path, INSTRUCTIONS_BYTE_BUDGET);
     } catch (error) {
       // Absent is the normal case; anything else (EACCES, EISDIR) is worth a
       // warning but must not fail session start.
@@ -58,13 +82,13 @@ export async function loadProjectInstructions(
       }
       continue;
     }
-    const trimmed = raw.trim();
+    const trimmed = raw.text.trim();
     if (trimmed.length === 0) continue;
-    const truncated = trimmed.length > MAX_INSTRUCTIONS_CHARS;
+    const truncated = raw.truncated || trimmed.length > MAX_INSTRUCTIONS_CHARS;
     const content = truncated
-      ? `${trimmed.slice(0, MAX_INSTRUCTIONS_CHARS)}\n[truncated: AGENTS.md is ${trimmed.length} characters]`
+      ? `${trimmed.slice(0, MAX_INSTRUCTIONS_CHARS)}\n[truncated: AGENTS.md is ${raw.totalBytes} bytes; loaded the first ${MAX_INSTRUCTIONS_CHARS} characters]`
       : trimmed;
-    files.push({ path: candidate.path, scope: candidate.scope, bytes: raw.length, truncated });
+    files.push({ path: candidate.path, scope: candidate.scope, bytes: raw.totalBytes, truncated });
     sections.push(`## From ${candidate.path} (${candidate.scope})\n\n${content}`);
   }
 

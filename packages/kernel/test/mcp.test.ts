@@ -11,7 +11,7 @@ import {
   type SessionUpdateParams,
 } from "@minerva/protocol";
 import { createScriptedProvider } from "@minerva/providers";
-import { createKernel, type SessionEvent } from "../src";
+import { createKernel, defaultRuntime, type SessionEvent } from "../src";
 import { startHttpCalcServer } from "./fixtures/mcp-http-server";
 
 const MCP_FIXTURE = join(import.meta.dir, "fixtures", "mcp-server.ts");
@@ -287,6 +287,70 @@ describe("MCP tools through the kernel", () => {
     expect(JSON.stringify(completed)).toContain("3");
     await kernel.close();
   }, 30_000);
+
+  test("SSE fallback fires only for 4xx protocol rejections, not server failures", async () => {
+    const { connectMcpServers } = await import("../src/mcp");
+    const startPostRejecting = (postStatus: number) => {
+      let gets = 0;
+      const server = Bun.serve({
+        port: 0,
+        fetch(req) {
+          if (req.method === "GET") {
+            gets++;
+            return new Response("no sse here", { status: 404 });
+          }
+          return new Response("nope", { status: postStatus });
+        },
+      });
+      return {
+        url: `http://127.0.0.1:${server.port}/mcp`,
+        gets: () => gets,
+        close: () => server.stop(true),
+      };
+    };
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-mcpsse-proj-"));
+
+    // 405 = "server doesn't speak Streamable HTTP" → one SSE attempt, and the
+    // warning still names the original streamable failure.
+    const legacy = startPostRejecting(405);
+    const legacyResult = await connectMcpServers(
+      { legacy: { type: "http", url: legacy.url } },
+      cwd,
+    );
+    expect(legacy.gets()).toBe(1);
+    // The warning surfaces the ORIGINAL streamable failure, not the SSE one.
+    expect(legacyResult.warnings[0]).toContain("Error POSTing to endpoint");
+    await legacyResult.close();
+    legacy.close();
+
+    // 500 = the endpoint itself is broken → fail fast, no SSE probe.
+    const broken = startPostRejecting(500);
+    const brokenResult = await connectMcpServers(
+      { broken: { type: "http", url: broken.url } },
+      cwd,
+    );
+    expect(broken.gets()).toBe(0);
+    expect(brokenResult.warnings[0]).toContain("failed to start");
+    await brokenResult.close();
+    broken.close();
+  }, 15_000);
+
+  test("remote tool output is capped before it reaches the log and UI", async () => {
+    const { connectMcpServers } = await import("../src/mcp");
+    const httpServer = await startHttpCalcServer();
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-mcpcap-proj-"));
+    const connection = await connectMcpServers(
+      { calc: { type: "http", url: httpServer.url } },
+      cwd,
+    );
+    const spam = connection.tools.find((tool) => tool.name === "mcp__calc__spam");
+    if (!spam) throw new Error("spam tool missing");
+    const result = await spam.execute({ n: 60_000 }, { cwd, runtime: defaultRuntime });
+    expect(result.output.length).toBeLessThan(50_100);
+    expect(result.output).toContain("[truncated: 60000 characters]");
+    await connection.close();
+    await httpServer.close();
+  }, 15_000);
 
   test("a broken MCP server degrades to a warning, not a failed session", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-mcpbad-proj-"));

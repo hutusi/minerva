@@ -71,6 +71,55 @@ describe("loadProjectInstructions", () => {
     expect(result.text).toBe("");
   });
 
+  test("a project AGENTS.md symlinked outside the workspace is skipped with a warning", async () => {
+    const cwd = tmp("minerva-instr-proj-");
+    const outside = tmp("minerva-instr-outside-");
+    const { symlinkSync } = await import("node:fs");
+    writeFileSync(join(outside, "secret.md"), "EXFILTRATED");
+    symlinkSync(join(outside, "secret.md"), join(cwd, "AGENTS.md"));
+
+    const result = await loadProjectInstructions(defaultRuntime, tmp("minerva-instr-data-"), cwd);
+    expect(result.files).toHaveLength(0);
+    expect(result.text).not.toContain("EXFILTRATED");
+    expect(result.warnings[0]).toContain("outside the workspace");
+  });
+
+  test("a project AGENTS.md symlinked to a file inside the workspace loads", async () => {
+    const cwd = tmp("minerva-instr-proj-");
+    const { symlinkSync } = await import("node:fs");
+    writeFileSync(join(cwd, "real.md"), "In-tree rules.");
+    symlinkSync(join(cwd, "real.md"), join(cwd, "AGENTS.md"));
+
+    const result = await loadProjectInstructions(defaultRuntime, tmp("minerva-instr-data-"), cwd);
+    expect(result.text).toContain("In-tree rules.");
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  test("a global AGENTS.md symlink is exempt from confinement (user-owned)", async () => {
+    const dataDir = tmp("minerva-instr-data-");
+    const dotfiles = tmp("minerva-instr-dotfiles-");
+    const { symlinkSync } = await import("node:fs");
+    writeFileSync(join(dotfiles, "AGENTS.md"), "Dotfile rules.");
+    symlinkSync(join(dotfiles, "AGENTS.md"), join(dataDir, "AGENTS.md"));
+
+    const result = await loadProjectInstructions(
+      defaultRuntime,
+      dataDir,
+      tmp("minerva-instr-proj-"),
+    );
+    expect(result.text).toContain("Dotfile rules.");
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  test("a file past the byte budget is truncated without buffering it whole", async () => {
+    const cwd = tmp("minerva-instr-proj-");
+    const size = 4 * MAX_INSTRUCTIONS_CHARS + 5_000;
+    writeFileSync(join(cwd, "AGENTS.md"), "y".repeat(size));
+    const result = await loadProjectInstructions(defaultRuntime, tmp("minerva-instr-data-"), cwd);
+    expect(result.files[0]).toMatchObject({ truncated: true, bytes: size });
+    expect(result.text).toContain("[truncated: AGENTS.md is");
+  });
+
   test("an unreadable file degrades to a warning, not a throw", async () => {
     const cwd = tmp("minerva-instr-proj-");
     // A directory named AGENTS.md fails reads with EISDIR — not ENOENT, so it

@@ -4,7 +4,10 @@ import {
   getDefaultEnvironment,
   StdioClientTransport,
 } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerConfig } from "./settings";
 import type { KernelTool } from "./tools";
@@ -78,11 +81,12 @@ async function connectClient(client: Client, config: McpServerConfig, cwd: strin
       // exactOptionalPropertyTypes — an SDK-internal mismatch, not ours.
       await client.connect(new StreamableHTTPClientTransport(url, options) as Transport);
     } catch (streamableError) {
+      if (!shouldFallBackToSse(streamableError)) throw streamableError;
       try {
         await client.connect(new SSEClientTransport(url, options));
       } catch {
         // The SSE attempt was only a courtesy; the streamable error names
-        // the real problem (auth, DNS, protocol), so surface that one.
+        // the real problem (auth, protocol), so surface that one.
         throw streamableError;
       }
     }
@@ -107,17 +111,49 @@ async function connectClient(client: Client, config: McpServerConfig, cwd: strin
   );
 }
 
+/**
+ * The MCP back-compat rule: fall back to legacy SSE only when the server
+ * answered the Streamable HTTP initialize POST with a 4xx (405/404 per spec;
+ * any 4xx counts, one fast extra request). Network failures (plain fetch
+ * errors), 5xx, and non-HTTP errors mean the endpoint itself is broken —
+ * retrying with SSE would just double the failure, and against a slow host
+ * double the startup delay.
+ */
+function shouldFallBackToSse(error: unknown): boolean {
+  return (
+    error instanceof StreamableHTTPError &&
+    error.code !== undefined &&
+    error.code >= 400 &&
+    error.code < 500
+  );
+}
+
 interface McpToolInfo {
   name: string;
   description?: string | undefined;
   inputSchema: Record<string, unknown>;
 }
 
+/** Server-controlled text rides in every provider request — keep it bounded.
+ * Input schemas stay unbounded (accepted risk: no meaningful cap exists that
+ * wouldn't break legitimate tools). */
+const MAX_MCP_DESCRIPTION_CHARS = 2_000;
+
+/** Tool output enters kernel memory, the event log, replay, and the UI. */
+const MAX_MCP_OUTPUT_CHARS = 50_000;
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}\n[truncated: ${text.length} characters]` : text;
+}
+
 function wrapMcpTool(client: Client, serverName: string, info: McpToolInfo): KernelTool {
   const qualifiedName = `mcp__${serverName}__${info.name}`;
   return {
     name: qualifiedName,
-    description: info.description ?? `${info.name} (MCP server: ${serverName})`,
+    description: clip(
+      info.description ?? `${info.name} (MCP server: ${serverName})`,
+      MAX_MCP_DESCRIPTION_CHARS,
+    ),
     inputSchema: info.inputSchema,
     kind: "other",
     // Server-provided readOnlyHint is not trusted for permission bypass:
@@ -142,7 +178,10 @@ function wrapMcpTool(client: Client, serverName: string, info: McpToolInfo): Ker
             : `[${String((part as { type?: unknown })?.type ?? "unknown")} content]`,
         )
         .join("\n");
-      return { output: text || "(no output)", isError: result.isError === true };
+      return {
+        output: clip(text, MAX_MCP_OUTPUT_CHARS) || "(no output)",
+        isError: result.isError === true,
+      };
     },
   };
 }

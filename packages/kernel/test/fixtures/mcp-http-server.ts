@@ -29,6 +29,11 @@ export async function startHttpCalcServer(): Promise<HttpCalcServer> {
         { description: "Add two numbers", inputSchema: { a: z.number(), b: z.number() } },
         async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
       );
+      server.registerTool(
+        "spam",
+        { description: "Return n characters", inputSchema: { n: z.number() } },
+        async ({ n }) => ({ content: [{ type: "text", text: "s".repeat(n) }] }),
+      );
       // No sessionIdGenerator = stateless mode (explicit `undefined` trips
       // exactOptionalPropertyTypes against the SDK's option types).
       const transport = new WebStandardStreamableHTTPServerTransport();

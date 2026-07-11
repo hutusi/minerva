@@ -14,6 +14,7 @@ import {
 } from "@minerva/protocol";
 import { createScriptedProvider, type ModelProvider, type TurnRequest } from "@minerva/providers";
 import {
+  builtinTools,
   createKernel,
   createSkillTool,
   defaultRuntime,
@@ -73,8 +74,9 @@ describe("loadSkills", () => {
     const registry = await loadSkills(defaultRuntime, dataDir, cwd);
     expect(registry.skills.map((s) => s.name)).toEqual(["deploy", "review"]);
     const review = registry.skills.find((s) => s.name === "review");
-    expect(review?.source).toBe("project");
-    expect(await readSkillBody(defaultRuntime, review!)).toBe("project body");
+    if (!review) throw new Error("review skill missing");
+    expect(review.source).toBe("project");
+    expect(await readSkillBody(defaultRuntime, review)).toBe("project body");
     expect(registry.warnings).toHaveLength(0);
   });
 
@@ -100,6 +102,97 @@ describe("loadSkills", () => {
     const registry = await loadSkills(defaultRuntime, tmp("minerva-skills-data-"), cwd);
     expect(registry.skills.map((s) => s.name)).toEqual(["help"]);
     expect(registry.warnings[0]).toContain("shadows a built-in");
+  });
+
+  test("a project SKILL.md symlinked outside the workspace is skipped with a warning", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const outside = tmp("minerva-skills-outside-");
+    const { symlinkSync } = await import("node:fs");
+    writeFileSync(join(outside, "secret.md"), "---\ndescription: evil\n---\n\nEXFILTRATED");
+    mkdirSync(join(cwd, ".minerva", "skills", "evil"), { recursive: true });
+    symlinkSync(join(outside, "secret.md"), join(cwd, ".minerva", "skills", "evil", "SKILL.md"));
+
+    const registry = await loadSkills(defaultRuntime, tmp("minerva-skills-data-"), cwd);
+    expect(registry.skills).toHaveLength(0);
+    expect(registry.warnings[0]).toContain("outside the workspace");
+  });
+
+  test("a SKILL.md swapped for an outside symlink after discovery is refused at read time", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const outside = tmp("minerva-skills-outside-");
+    const { rmSync, symlinkSync } = await import("node:fs");
+    writeSkill(join(cwd, ".minerva", "skills"), "swapme", "description: looks fine");
+    const registry = await loadSkills(defaultRuntime, tmp("minerva-skills-data-"), cwd);
+    const skill = registry.skills.find((s) => s.name === "swapme");
+    if (!skill) throw new Error("skill missing");
+
+    writeFileSync(join(outside, "secret.md"), "EXFILTRATED");
+    rmSync(skill.path);
+    symlinkSync(join(outside, "secret.md"), skill.path);
+
+    expect(readSkillBody(defaultRuntime, skill)).rejects.toThrow("outside the workspace");
+  });
+
+  test("a global skill symlink is exempt from confinement (user-owned)", async () => {
+    const dataDir = tmp("minerva-skills-data-");
+    const dotfiles = tmp("minerva-skills-dotfiles-");
+    const { symlinkSync } = await import("node:fs");
+    writeFileSync(
+      join(dotfiles, "SKILL.md"),
+      "---\ndescription: from dotfiles\n---\n\nDotfile body",
+    );
+    mkdirSync(join(dataDir, "skills", "dot"), { recursive: true });
+    symlinkSync(join(dotfiles, "SKILL.md"), join(dataDir, "skills", "dot", "SKILL.md"));
+
+    const registry = await loadSkills(defaultRuntime, dataDir, tmp("minerva-skills-proj-"));
+    const skill = registry.skills.find((s) => s.name === "dot");
+    if (!skill) throw new Error("skill missing");
+    expect(await readSkillBody(defaultRuntime, skill)).toBe("Dotfile body");
+  });
+
+  test("frontmatter not closed within the prefix is skipped with a clear warning", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    mkdirSync(join(cwd, ".minerva", "skills", "huge"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".minerva", "skills", "huge", "SKILL.md"),
+      `---\ndescription: ${"x".repeat(10_000)}\n---\n\nbody`,
+    );
+    const registry = await loadSkills(defaultRuntime, tmp("minerva-skills-data-"), cwd);
+    expect(registry.skills).toHaveLength(0);
+    expect(registry.warnings[0]).toContain("frontmatter not closed");
+  });
+
+  test("descriptions are clipped at 500 characters", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    writeSkill(join(cwd, ".minerva", "skills"), "wordy", `description: ${"d".repeat(600)}`);
+    const registry = await loadSkills(defaultRuntime, tmp("minerva-skills-data-"), cwd);
+    expect(registry.skills[0]?.description.length).toBe(501); // 500 + ellipsis
+    expect(registry.skills[0]?.description.endsWith("…")).toBe(true);
+  });
+
+  test("a directory with too many entries is capped with a warning", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    for (let i = 0; i < 65; i++) {
+      writeSkill(
+        join(cwd, ".minerva", "skills"),
+        `skill-${String(i).padStart(3, "0")}`,
+        "description: d",
+      );
+    }
+    const registry = await loadSkills(defaultRuntime, tmp("minerva-skills-data-"), cwd);
+    expect(registry.skills).toHaveLength(64);
+    expect(registry.warnings[0]).toContain("only the first 64");
+  });
+
+  test("a body past the char cap gets a truncation marker", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    writeSkill(join(cwd, ".minerva", "skills"), "big", "description: d", "b".repeat(60_000));
+    const registry = await loadSkills(defaultRuntime, tmp("minerva-skills-data-"), cwd);
+    const skill = registry.skills[0];
+    if (!skill) throw new Error("skill missing");
+    const body = await readSkillBody(defaultRuntime, skill);
+    expect(body).toContain("[truncated: SKILL.md is");
+    expect(body.length).toBeLessThan(51_000);
   });
 
   test("no skills directories yields an empty registry", async () => {
@@ -277,6 +370,115 @@ describe("the skill tool", () => {
     });
     const sent = requests[0]?.messages.find((m) => m.role === "user");
     expect(sent && "content" in sent ? sent.content : "").toBe("/typo do thing");
+    await kernel.close();
+  }, 15_000);
+
+  test("a skill added after session establish still expands (registry refresh on miss)", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    const requests: TurnRequest[] = [];
+    const capturing: ModelProvider = {
+      id: "test/capturing",
+      async *streamTurn(request) {
+        requests.push(request);
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish", finishReason: "stop", usage: {} };
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, { dataDir, provider: capturing });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    // The skill arrives only after the session was established.
+    writeSkill(join(cwd, ".minerva", "skills"), "late", "description: Added late", "Late body.");
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "/late do it" }],
+    });
+    const sent = requests[0]?.messages.find((m) => m.role === "user");
+    expect(sent && "content" in sent ? sent.content : "").toContain("Late body.");
+    // The refreshed registry also advertises the skill tool in the same turn.
+    expect(requests[0]?.tools.some((tool) => tool.name === "skill")).toBe(true);
+    await kernel.close();
+  }, 15_000);
+
+  test("a deny rule blocks /name invocation while plain prompts still work", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    writeSkill(join(cwd, ".minerva", "skills"), "blocked", "description: d");
+    mkdirSync(join(cwd, ".minerva"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".minerva", "settings.json"),
+      JSON.stringify({ permissions: { deny: ["skill"] } }),
+    );
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([
+        [
+          { type: "text-delta", text: "plain ok" },
+          { type: "finish", finishReason: "stop", usage: {} },
+        ],
+      ]),
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    expect(
+      client.request(AGENT_METHODS.sessionPrompt, {
+        sessionId,
+        prompt: [{ type: "text", text: "/blocked go" }],
+      }),
+    ).rejects.toThrow("blocked by a deny permission rule");
+    // The lease was released on the deny path: a normal prompt still runs.
+    const plain = await client.request<{ stopReason: string }>(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "hello" }],
+    });
+    expect(plain.stopReason).toBe("end_turn");
+    await kernel.close();
+  }, 15_000);
+
+  test("a host-injected skill tool is not duplicated by the generated one", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    writeSkill(join(cwd, ".minerva", "skills"), "demo", "description: d");
+    const requests: TurnRequest[] = [];
+    const capturing: ModelProvider = {
+      id: "test/capturing",
+      async *streamTurn(request) {
+        requests.push(request);
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish", finishReason: "stop", usage: {} };
+      },
+    };
+    const hostSkillTool = createSkillTool({
+      skills: [{ name: "host-only", description: "host's own", source: "global", path: "/x" }],
+      warnings: [],
+    });
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: capturing,
+      tools: [...builtinTools(), hostSkillTool],
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "hi" }],
+    });
+    const skillDefs = requests[0]?.tools.filter((tool) => tool.name === "skill") ?? [];
+    expect(skillDefs).toHaveLength(1);
+    expect(skillDefs[0]?.description).toContain("host-only");
     await kernel.close();
   }, 15_000);
 

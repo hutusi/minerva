@@ -252,8 +252,12 @@ export class MinervaKernel {
     const mcpTools = this.#mcp.get(sessionId)?.tools ?? [];
     const skills = this.#skills.get(sessionId);
     // The skill tool only exists when the session has skills: an empty
-    // listing would just burn prompt tokens and invite bogus calls.
-    const skillTools = skills && skills.skills.length > 0 ? [createSkillTool(skills)] : [];
+    // listing would just burn prompt tokens and invite bogus calls. A host
+    // that injected its own "skill" tool wins — providers reject duplicate
+    // definitions, and the execute map would silently shadow the host's.
+    const hostHasSkillTool = this.#tools.some((tool) => tool.name === "skill");
+    const skillTools =
+      !hostHasSkillTool && skills && skills.skills.length > 0 ? [createSkillTool(skills)] : [];
     if (mcpTools.length === 0 && skillTools.length === 0) return this.#tools;
     return [...this.#tools, ...skillTools, ...mcpTools];
   }
@@ -454,6 +458,11 @@ export class MinervaKernel {
     if (!text) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "prompt has no text content");
     }
+    // Claim the prompt lease synchronously: an await between the promptActive
+    // guard above and this claim would let two same-tick requests both pass
+    // the guard and interleave their events. runPrompt releases the lease.
+    const signal = session.beginPrompt();
+
     // Persist the first prompt as the session's index preview (once), so the
     // picker doesn't have to read the log to show it.
     void session.recordPreview(text).catch(() => {});
@@ -463,7 +472,15 @@ export class MinervaKernel {
     // session to take effect.
     const instructions = this.#instructions.get(session.id)?.text;
     const base = this.#systemPrompt(session.cwd);
-    const providerText = await this.#expandSkillInvocation(session.id, text);
+    let providerText: string | undefined;
+    try {
+      providerText = await this.#expandSkillInvocation(session, text);
+    } catch (error) {
+      // The lease is held across expansion; this is the only throw path
+      // before runPrompt takes over releasing it. Nothing was logged yet.
+      session.endPrompt();
+      throw error;
+    }
     return runPrompt(
       {
         session,
@@ -472,6 +489,7 @@ export class MinervaKernel {
         tools: this.#toolsFor(session.id),
         system: instructions ? `${base}\n\n${instructions}` : base,
         runtime: this.#runtime,
+        signal,
       },
       text,
       providerText,
@@ -485,12 +503,34 @@ export class MinervaKernel {
    * matching no skill passes through to the model unchanged (today's
    * behavior for stray slashes).
    */
-  async #expandSkillInvocation(sessionId: string, text: string): Promise<string | undefined> {
+  async #expandSkillInvocation(session: Session, text: string): Promise<string | undefined> {
     const match = text.match(/^\/([a-z0-9][a-z0-9_-]*)\s*([\s\S]*)$/i);
     if (!match) return undefined;
     const [, name = "", args = ""] = match;
-    const skill = this.#skills.get(sessionId)?.skills.find((entry) => entry.name === name);
-    if (!skill) return undefined;
+    let registry = this.#skills.get(session.id);
+    let skill = registry?.skills.find((entry) => entry.name === name);
+    if (!skill) {
+      // skills/list reads fresh from disk, so a frontend can offer a
+      // just-added skill this session's establish-time registry doesn't know.
+      // Reload once on a miss so a listed command actually expands.
+      registry = await loadSkills(this.#runtime, this.#dataDir, session.cwd);
+      for (const warning of registry.warnings) {
+        process.stderr.write(`minerva: ${warning}\n`);
+      }
+      this.#skills.set(session.id, registry);
+      skill = registry.skills.find((entry) => entry.name === name);
+    }
+    if (!skill || !registry) return undefined;
+    // Deny rules block even explicit user invocations; "ask" is skipped —
+    // typing the command is consent, and the expansion is audited via the
+    // user.message providerText field.
+    const verdict = session.permissions.evaluate(createSkillTool(registry), { name }, session.mode);
+    if (verdict.action === "deny") {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        `skill "${name}" is blocked by a deny permission rule`,
+      );
+    }
     let body: string;
     try {
       body = await readSkillBody(this.#runtime, skill);
@@ -536,6 +576,8 @@ export class MinervaKernel {
     if (session.messages.length === 0) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, "nothing to compact yet");
     }
+    // No await may sit between the guard above and runCompact's synchronous
+    // beginPrompt(), or a same-tick prompt could claim the lease in between.
     const { summary, usage } = await runCompact(session, this.#provider);
     // Reflect the summarization spend immediately, like a completed turn does.
     if (usage && hasUsage(usage)) {

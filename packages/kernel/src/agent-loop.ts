@@ -31,7 +31,12 @@ export interface LoopContext {
   tools: KernelTool[];
   system: string;
   runtime: Runtime;
-  signal?: AbortSignal | undefined;
+  /**
+   * From the session's prompt lease, claimed by the CALLER synchronously
+   * after its promptActive guard (an await between guard and claim opens a
+   * same-tick race). runPrompt releases the lease when it settles.
+   */
+  signal: AbortSignal;
 }
 
 export async function runPrompt(
@@ -41,9 +46,8 @@ export async function runPrompt(
   providerText?: string,
 ): Promise<{ stopReason: StopReason }> {
   const { session } = context;
-  const signal = session.beginPrompt();
   try {
-    return await runLoop({ ...context, signal }, promptText, providerText);
+    return await runLoop(context, promptText, providerText);
   } catch (error) {
     // Errored turns must still leave a terminal event, or replay/audit can't
     // tell a crashed turn from one still in flight.
