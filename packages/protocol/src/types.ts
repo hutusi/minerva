@@ -39,6 +39,8 @@ export const CLIENT_METHODS = {
   /** Notification. */
   sessionUpdate: "session/update",
   sessionRequestPermission: "session/request_permission",
+  /** Notification (minerva/* extension): token usage after each completed turn. */
+  sessionUsage: "minerva/session/usage",
 } as const;
 
 // --- Content -----------------------------------------------------------
@@ -235,6 +237,28 @@ export type SessionUpdate =
 export interface SessionUpdateParams {
   sessionId: string;
   update: SessionUpdate;
+}
+
+// --- minerva/session/usage ---------------------------------------------
+
+/**
+ * Token counts for one prompt turn or a whole session. Provider-truth
+ * numbers only — cost needs per-model pricing the open provider registry
+ * cannot bundle, so a cost field stays a future additive extension.
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number | undefined;
+  cacheWriteTokens?: number | undefined;
+}
+
+export interface SessionUsageParams {
+  sessionId: string;
+  /** The turn that just finished; absent when re-announcing totals on session/load. */
+  lastTurn?: TokenUsage | undefined;
+  /** Totals across every persisted turn of the session, including lastTurn. */
+  cumulative: TokenUsage;
 }
 
 // --- session/request_permission ----------------------------------------
