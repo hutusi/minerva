@@ -21,12 +21,14 @@ export interface ProviderChoice {
   /** Known model ids — offered as a select list at the model step; the
    *  trailing "other…" row still accepts any id as free text. */
   models?: string[] | undefined;
+  /** false = keyless endpoint; an empty key entry is fine, not a gap. */
+  requiresApiKey?: boolean | undefined;
 }
 
 export interface ConfigResult {
   modelRef: string;
   /** Present for newly defined custom providers. */
-  provider?: { name: string; baseUrl?: string | undefined };
+  provider?: { name: string; baseUrl?: string | undefined; requiresApiKey?: boolean };
   /** Omitted when the user kept the existing env/stored key. */
   apiKey?: string;
 }
@@ -184,9 +186,14 @@ export function ConfigPanel({
 
   const submitApiKey = (value: string) => {
     const trimmed = value.trim();
-    // Custom endpoints may be keyless (local servers); known providers need
-    // a key from somewhere.
-    if (!trimmed && !custom && selected?.keySource === "none") {
+    // Custom and keyless endpoints may go without; other known providers
+    // need a key from somewhere.
+    if (
+      !trimmed &&
+      !custom &&
+      selected?.keySource === "none" &&
+      selected.requiresApiKey !== false
+    ) {
       setError(`no existing key for ${selected.name} — enter one`);
       return;
     }
@@ -204,7 +211,11 @@ export function ConfigPanel({
     const providerName = custom ? name : (selected?.name ?? "anthropic");
     const result: ConfigResult = {
       modelRef: `${providerName}/${trimmed}`,
-      ...(custom ? { provider: { name: providerName, baseUrl } } : {}),
+      // Persist keylessness with the definition, or the next startup would
+      // demand the key this endpoint doesn't have.
+      ...(custom
+        ? { provider: { name: providerName, baseUrl, requiresApiKey: apiKey !== "" } }
+        : {}),
       ...(apiKey ? { apiKey } : {}),
     };
     setSaving(true);
@@ -342,12 +353,15 @@ function keyStatus(choice: ProviderChoice): string {
     case "settings":
       return "key: saved in settings";
     case "none":
-      return "no key";
+      return choice.requiresApiKey === false ? "no key required" : "no key";
   }
 }
 
 function apiKeyPlaceholder(custom: boolean, selected: ProviderChoice | undefined): string {
   if (custom) return "leave empty if the endpoint needs no key";
+  if (selected?.requiresApiKey === false && selected.keySource === "none") {
+    return "leave empty — this endpoint needs no key";
+  }
   if (selected && selected.keySource !== "none") {
     return selected.keySource === "env"
       ? `leave empty to keep using $${selected.keyVar}`

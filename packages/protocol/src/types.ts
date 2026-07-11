@@ -132,6 +132,8 @@ export interface ConfigSetModelParams {
     baseUrl?: string | undefined;
     apiKeyEnv?: string | undefined;
     defaultModel?: string | undefined;
+    /** false = keyless endpoint; hosts won't demand a key at startup. */
+    requiresApiKey?: boolean | undefined;
   };
   /** Stored in global settings only (file mode 0600). Omit to keep the env/stored key. */
   apiKey?: string;

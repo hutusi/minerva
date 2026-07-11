@@ -9,7 +9,9 @@ All notable changes to Minerva are documented here. The format follows
 ### Added
 - Alibaba Bailian (DashScope) provider preset (`bailian/qwen-plus`,
   `DASHSCOPE_API_KEY`) and settings-defined custom OpenAI-compatible
-  providers (any name + `baseUrl`), via `@ai-sdk/openai-compatible`.
+  providers (any name + `baseUrl`), via `@ai-sdk/openai-compatible`. Keyless
+  endpoints (e.g. local servers) persist `requiresApiKey: false`, so startup
+  and `minerva acp` don't demand a key they don't need.
 - Known-models lists on providers (`models` in the registry and settings):
   the bailian preset ships qwen-plus/-max/-turbo and GLM-5.2, offered as a
   select list at the `/config` panel's model step, with an `other…` row for

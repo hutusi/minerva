@@ -348,6 +348,9 @@ export class MinervaKernel {
         ...(provider?.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
         ...(provider?.apiKeyEnv !== undefined ? { apiKeyEnv: provider.apiKeyEnv } : {}),
         ...(provider?.defaultModel !== undefined ? { defaultModel: provider.defaultModel } : {}),
+        ...(provider?.requiresApiKey !== undefined
+          ? { requiresApiKey: provider.requiresApiKey }
+          : {}),
         ...(apiKey !== undefined ? { apiKey } : {}),
       };
       const touched = provider !== undefined || apiKey !== undefined;
@@ -367,7 +370,15 @@ export class MinervaKernel {
       await updateGlobalSettings(this.#runtime, this.#dataDir, (current) => ({
         ...current,
         model: previousModel,
-      })).catch(() => {});
+      })).catch((rollbackError) => {
+        // Settings now point at the rejected model — surface it, since the
+        // next startup will hit it with no other trace of why.
+        process.stderr.write(
+          `minerva: failed to roll back model after rejected switch: ${
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          }\n`,
+        );
+      });
       throw new RpcError(
         JSON_RPC_ERROR_CODES.INVALID_PARAMS,
         error instanceof Error ? error.message : String(error),

@@ -110,8 +110,41 @@ describe("ConfigPanel", () => {
     await waitFor(() => results.length === 1, "submit");
     expect(results[0]).toEqual({
       modelRef: "deepseek/deepseek-chat",
-      provider: { name: "deepseek", baseUrl: "https://api.deepseek.com/v1" },
+      // No key entered → keylessness persists so startup won't demand one.
+      provider: {
+        name: "deepseek",
+        baseUrl: "https://api.deepseek.com/v1",
+        requiresApiKey: false,
+      },
     });
+    ui.unmount();
+  });
+
+  test("a keyless known provider accepts an empty key and says so", async () => {
+    const results: ConfigResult[] = [];
+    const ui = renderPanel({
+      choices: [
+        {
+          name: "ollama",
+          defaultModel: "llama4",
+          keyVar: "OLLAMA_API_KEY",
+          keySource: "none",
+          requiresApiKey: false,
+        },
+      ],
+      onSubmit: async (result) => {
+        results.push(result);
+      },
+    });
+    await waitFor(() => (ui.lastFrame() ?? "").includes("no key required"), "panel");
+    await press(ui, "\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("API key"), "key step");
+    expect(ui.lastFrame()).toContain("this endpoint needs no key");
+    await submitText(ui, ""); // empty is fine here, not an error
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Model id"), "model step");
+    await submitText(ui, "");
+    await waitFor(() => results.length === 1, "submit");
+    expect(results[0]?.modelRef).toBe("ollama/llama4");
     ui.unmount();
   });
 

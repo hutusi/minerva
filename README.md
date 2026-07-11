@@ -110,9 +110,11 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
 `model` picks the default model ref (`--model` and `MINERVA_MODEL` override
 it). `providers` overrides a built-in (e.g. Bailian's endpoint) or defines a
 new OpenAI-compatible one — a new name needs `baseUrl`, and its key env var
-defaults to `<NAME>_API_KEY`. **API keys are honored from the global file
-only** (never the shareable project file), and any file that may hold keys is
-written with mode `0600`.
+defaults to `<NAME>_API_KEY`. Keyless endpoints (e.g. a local Ollama) set
+`"requiresApiKey": false` so startup doesn't demand a key — the `/config`
+panel writes this automatically when you save a custom provider without one.
+**API keys are honored from the global file only** (never the shareable
+project file), and any file that may hold keys is written with mode `0600`.
 
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:

@@ -74,6 +74,9 @@ const apiKey = resolveApiKey(providerName, registry, {
   env: process.env,
   storedKeys: storedKeys(settings),
 });
+// Keyless endpoints (requiresApiKey: false, e.g. local servers) must not be
+// forced into setup — only gate on a missing key when one is actually needed.
+const missingRequiredKey = !apiKey && registry[providerName]?.requiresApiKey !== false;
 
 /**
  * Host-injected factory for minerva/config/set_model. Re-reads settings so
@@ -101,7 +104,7 @@ const kernelOptions = {
 
 if (command === "acp") {
   // stdout carries the protocol — no UI, so a missing key stays a hard exit.
-  if (!apiKey) {
+  if (missingRequiredKey) {
     const keyVar = apiKeyEnvVar(providerName, registry);
     console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
     console.error(`  export ${keyVar}="..."`);
@@ -118,13 +121,16 @@ const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, d
   name,
   defaultModel: def.defaultModel,
   keyVar: def.apiKeyEnv,
-  keySource: process.env[def.apiKeyEnv]
+  // Blank-aware, matching resolveApiKey — an exported-but-empty env var
+  // must not display as a usable key.
+  keySource: process.env[def.apiKeyEnv]?.trim()
     ? ("env" as const)
-    : settings.providers[name]?.apiKey
+    : settings.providers[name]?.apiKey?.trim()
       ? ("settings" as const)
       : ("none" as const),
   baseUrl: def.baseURL,
   models: def.models,
+  requiresApiKey: def.requiresApiKey,
 }));
 
 // The CLI embeds the kernel, but only across the protocol's in-proc
@@ -145,7 +151,7 @@ const app = render(
     cwd={cwd}
     resume={resume}
     providers={providerChoices}
-    needsConfig={!apiKey}
+    needsConfig={missingRequiredKey}
   />,
 );
 await app.waitUntilExit();

@@ -121,6 +121,32 @@ describe("provider registry", () => {
     );
   });
 
+  test("blank keys count as absent — an empty env var must not mask a stored key", () => {
+    const providers = buildProviderRegistry();
+    const storedKeys = { bailian: "from-settings" };
+    expect(
+      resolveApiKey("bailian", providers, { env: { DASHSCOPE_API_KEY: "" }, storedKeys }),
+    ).toBe("from-settings");
+    expect(
+      resolveApiKey("bailian", providers, { env: { DASHSCOPE_API_KEY: "   " }, storedKeys }),
+    ).toBe("from-settings");
+    expect(
+      resolveApiKey("bailian", providers, { explicit: "", env: { DASHSCOPE_API_KEY: "from-env" } }),
+    ).toBe("from-env");
+    expect(
+      resolveApiKey("bailian", providers, { env: {}, storedKeys: { bailian: "" } }),
+    ).toBeUndefined();
+  });
+
+  test("custom providers can declare keyless endpoints", () => {
+    const providers = buildProviderRegistry({
+      ollama: { baseUrl: "http://localhost:11434/v1", requiresApiKey: false },
+    });
+    expect(providers.ollama?.requiresApiKey).toBe(false);
+    // Unset means required — the safe default.
+    expect(buildProviderRegistry().bailian?.requiresApiKey).toBeUndefined();
+  });
+
   test("resolveApiKey precedence: explicit > env > stored", () => {
     const providers = buildProviderRegistry();
     const env = { DASHSCOPE_API_KEY: "from-env" };

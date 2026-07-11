@@ -26,6 +26,8 @@ export interface ProviderSettings {
   baseUrl?: string | undefined;
   apiKeyEnv?: string | undefined;
   defaultModel?: string | undefined;
+  /** false = keyless endpoint (e.g. a local server); startup won't demand a key. */
+  requiresApiKey?: boolean | undefined;
   /** Only honored in the GLOBAL layer; project-layer keys are ignored. */
   apiKey?: string | undefined;
 }

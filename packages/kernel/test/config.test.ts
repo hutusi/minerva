@@ -123,6 +123,24 @@ describe("minerva/config/set_model", () => {
     expect(settings.model).toBeUndefined();
   });
 
+  test("a keyless custom provider definition persists requiresApiKey", async () => {
+    const h = await setup({
+      provider: scripted("scripted", [textTurn("hello")]),
+      resolveProvider: (ref) => scripted(ref, []),
+    });
+    await h.client.request(MINERVA_METHODS.configSetModel, {
+      modelRef: "ollama/llama4",
+      provider: { name: "ollama", baseUrl: "http://localhost:11434/v1", requiresApiKey: false },
+    });
+    const settings = JSON.parse(
+      readFileSync(globalSettingsPath(h.dataDir), "utf8"),
+    ) as MinervaSettings;
+    expect(settings.providers?.ollama).toEqual({
+      baseUrl: "http://localhost:11434/v1",
+      requiresApiKey: false,
+    });
+  });
+
   test("modelRef is required", async () => {
     const h = await setup({
       provider: scripted("scripted", [textTurn("hello")]),

@@ -26,6 +26,8 @@ export interface ProviderDef {
   defaultModel?: string | undefined;
   /** Known model ids — config-panel suggestions, never a restriction. */
   models?: string[] | undefined;
+  /** false = the endpoint needs no key (e.g. a local server). Default true. */
+  requiresApiKey?: boolean | undefined;
 }
 
 export type ProviderRegistry = Record<string, ProviderDef>;
@@ -59,6 +61,7 @@ export interface CustomProviderConfig {
   apiKeyEnv?: string | undefined;
   defaultModel?: string | undefined;
   models?: string[] | undefined;
+  requiresApiKey?: boolean | undefined;
 }
 
 // Names must survive ref parsing ("name/model") and env-var derivation.
@@ -82,6 +85,7 @@ export function buildProviderRegistry(
         ...(config.apiKeyEnv !== undefined ? { apiKeyEnv: config.apiKeyEnv } : {}),
         ...(config.defaultModel !== undefined ? { defaultModel: config.defaultModel } : {}),
         ...(config.models !== undefined ? { models: config.models } : {}),
+        ...(config.requiresApiKey !== undefined ? { requiresApiKey: config.requiresApiKey } : {}),
       };
       continue;
     }
@@ -99,6 +103,7 @@ export function buildProviderRegistry(
       baseURL: config.baseUrl,
       ...(config.defaultModel !== undefined ? { defaultModel: config.defaultModel } : {}),
       ...(config.models !== undefined ? { models: config.models } : {}),
+      ...(config.requiresApiKey !== undefined ? { requiresApiKey: config.requiresApiKey } : {}),
     };
   }
   return registry;
@@ -161,7 +166,11 @@ export interface ResolveApiKeyOptions {
   storedKeys?: Record<string, string | undefined>;
 }
 
-/** Precedence: explicit > provider's env var > key stored in settings. */
+/**
+ * Precedence: explicit > provider's env var > key stored in settings.
+ * Blank (empty/whitespace) values count as absent at every level — an
+ * exported-but-empty env var must not mask a stored key.
+ */
 export function resolveApiKey(
   provider: string,
   providers: ProviderRegistry,
@@ -169,7 +178,15 @@ export function resolveApiKey(
 ): string | undefined {
   const def = providerDef(provider, providers);
   const env = options.env ?? process.env;
-  return options.explicit ?? env[def.apiKeyEnv] ?? options.storedKeys?.[provider];
+  return (
+    nonBlank(options.explicit) ??
+    nonBlank(env[def.apiKeyEnv]) ??
+    nonBlank(options.storedKeys?.[provider])
+  );
+}
+
+function nonBlank(value: string | undefined): string | undefined {
+  return value && value.trim() !== "" ? value : undefined;
 }
 
 export interface ProviderFromRefOptions {
@@ -211,8 +228,8 @@ export function createProviderFromRef(
       const modelId = model || DEFAULT_ANTHROPIC_MODEL;
       return createAnthropicProvider({
         model: modelId,
-        ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
-        ...(def.baseURL !== undefined ? { baseURL: def.baseURL } : {}),
+        ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+        ...(def.baseURL ? { baseURL: def.baseURL } : {}),
       });
     }
   }
