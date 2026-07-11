@@ -1,5 +1,6 @@
 export * from "./compact";
 export * from "./events";
+export * from "./instructions";
 export * from "./kernel";
 export * from "./mcp";
 export * from "./permissions";

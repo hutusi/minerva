@@ -1,4 +1,5 @@
 import type { MinervaClient, SessionStore, SessionViewModel, ViewItem } from "@minerva/client";
+import type { InstructionsInfo } from "@minerva/protocol";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
@@ -48,7 +49,10 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
       return client.newSession(cwd);
     };
     establish()
-      .then(({ sessionId, store }) => setSession({ id: sessionId, store }))
+      .then(({ sessionId, store, instructions }) => {
+        announceInstructions(store, instructions);
+        setSession({ id: sessionId, store });
+      })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     return () => {
       bridge.handler = null;
@@ -64,7 +68,10 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
   const startNewSession = () => {
     client
       .newSession(cwd)
-      .then(({ sessionId, store }) => setSession({ id: sessionId, store }))
+      .then(({ sessionId, store, instructions }) => {
+        announceInstructions(store, instructions);
+        setSession({ id: sessionId, store });
+      })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
   return (
@@ -84,6 +91,13 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
         initialConfigOpen={needsConfig}
       />
     </Box>
+  );
+}
+
+function announceInstructions(store: SessionStore, instructions?: InstructionsInfo) {
+  if (!instructions || instructions.files.length === 0) return;
+  store.addInfo(
+    `project instructions loaded: ${instructions.files.map((file) => file.path).join(", ")}`,
   );
 }
 

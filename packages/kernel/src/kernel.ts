@@ -7,6 +7,7 @@ import {
   Connection,
   type InitializeParams,
   type InitializeResult,
+  type InstructionsInfo,
   JSON_RPC_ERROR_CODES,
   MINERVA_METHODS,
   PROTOCOL_VERSION,
@@ -26,6 +27,7 @@ import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
 import { runPrompt } from "./agent-loop";
 import { runCompact } from "./compact";
 import { now } from "./events";
+import { loadProjectInstructions, type ProjectInstructions } from "./instructions";
 import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
 import { defaultRuntime, isNotFoundError, type Runtime } from "./runtime";
@@ -108,6 +110,7 @@ export class MinervaKernel {
   #connection: Connection;
   #sessions = new Map<string, Session>();
   #mcp = new Map<string, McpConnection>();
+  #instructions = new Map<string, ProjectInstructions>();
   #provider: ModelProvider;
   #resolveProvider: KernelOptions["resolveProvider"];
   #runtime: Runtime;
@@ -190,8 +193,31 @@ export class MinervaKernel {
       runtime: this.#runtime,
     });
     this.#sessions.set(session.id, session);
-    await this.#connectMcp(session.id, cwd);
-    return { sessionId: session.id, modes: modeState(session) };
+    const instructions = await this.#prepareSession(session.id, cwd);
+    return {
+      sessionId: session.id,
+      modes: modeState(session),
+      ...(instructions ? { instructions } : {}),
+    };
+  }
+
+  /**
+   * Per-session context beyond the transcript: MCP connections and AGENTS.md
+   * instructions, established on session/new and re-established on
+   * session/load. Every failure degrades to a stderr warning — a broken
+   * config file must not brick sessions.
+   */
+  async #prepareSession(sessionId: string, cwd: string): Promise<InstructionsInfo | undefined> {
+    await this.#connectMcp(sessionId, cwd);
+    const instructions = await loadProjectInstructions(this.#runtime, this.#dataDir, cwd);
+    for (const warning of instructions.warnings) {
+      process.stderr.write(`minerva: ${warning}\n`);
+    }
+    this.#instructions.set(sessionId, instructions);
+    if (instructions.files.length === 0) return undefined;
+    return {
+      files: instructions.files.map(({ path, scope, truncated }) => ({ path, scope, truncated })),
+    };
   }
 
   /**
@@ -262,7 +288,7 @@ export class MinervaKernel {
       );
     }
     this.#sessions.set(sessionId, loaded.session);
-    await this.#connectMcp(sessionId, cwd);
+    const instructions = await this.#prepareSession(sessionId, cwd);
     // Replay the conversation so the frontend can rebuild its transcript. A
     // client that advertised batch support gets it in one message (one
     // apply+render instead of the O(n²) per-update path); a generic ACP client
@@ -287,7 +313,7 @@ export class MinervaKernel {
       };
       this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
     }
-    return { modes: modeState(loaded.session) };
+    return { modes: modeState(loaded.session), ...(instructions ? { instructions } : {}) };
   }
 
   async #sessionSetMode(params: unknown): Promise<SessionSetModeResult> {
@@ -401,13 +427,18 @@ export class MinervaKernel {
     // picker doesn't have to read the log to show it.
     void session.recordPreview(text).catch(() => {});
 
+    // AGENTS.md instructions append to the host's base prompt rather than
+    // replacing it; loaded at session establish, so edits need a new/reloaded
+    // session to take effect.
+    const instructions = this.#instructions.get(session.id)?.text;
+    const base = this.#systemPrompt(session.cwd);
     return runPrompt(
       {
         session,
         connection: this.#connection,
         provider: this.#provider,
         tools: this.#toolsFor(session.id),
-        system: this.#systemPrompt(session.cwd),
+        system: instructions ? `${base}\n\n${instructions}` : base,
         runtime: this.#runtime,
       },
       text,

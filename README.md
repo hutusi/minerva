@@ -165,6 +165,16 @@ Every session is an append-only JSONL event log under
 `~/.minerva/projects/<project>/` — the audit trail and the source of truth for
 `--resume`.
 
+## Project instructions (AGENTS.md)
+
+Put per-project guidance in an `AGENTS.md` at the project root (the
+[agents.md](https://agents.md) convention) and per-user guidance in
+`~/.minerva/AGENTS.md`; both are appended to the system prompt — global
+first, then project — when a session starts, and the CLI notes which files
+loaded. Only those two locations are read (no per-subdirectory files), each
+capped at 24k characters, and edits take effect on the next new or resumed
+session.
+
 ## Editors (ACP)
 
 `minerva acp` hosts the kernel on stdio with ACP framing. For Zed, add an

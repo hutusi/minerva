@@ -96,9 +96,19 @@ export interface SessionNewParams {
   cwd: string;
 }
 
+/**
+ * minerva/* extension: which AGENTS.md instruction files the kernel folded
+ * into the system prompt at session establish. Additive — generic ACP
+ * clients ignore it.
+ */
+export interface InstructionsInfo {
+  files: Array<{ path: string; scope: "global" | "project"; truncated: boolean }>;
+}
+
 export interface SessionNewResult {
   sessionId: string;
   modes?: SessionModeState;
+  instructions?: InstructionsInfo;
 }
 
 // --- session/load ------------------------------------------------------
@@ -114,6 +124,7 @@ export interface SessionLoadParams {
 
 export interface SessionLoadResult {
   modes?: SessionModeState;
+  instructions?: InstructionsInfo;
 }
 
 // --- minerva/session/compact -------------------------------------------

@@ -34,15 +34,20 @@ stream transport is skipped (it carries no id to answer).
 Params `{ protocolVersion }` → `{ protocolVersion, agentCapabilities: { loadSession: true } }`.
 
 ### `session/new`
-Params `{ cwd }` → `{ sessionId, modes }` where `modes` is
+Params `{ cwd }` → `{ sessionId, modes, instructions? }` where `modes` is
 `{ currentModeId, availableModes: [{ id, name, description }] }`. Mode ids:
-`plan | default | acceptEdits | auto`.
+`plan | default | acceptEdits | auto`. `instructions` (minerva/* extension
+field, absent when no AGENTS.md was found) is
+`{ files: [{ path, scope: "global" | "project", truncated }] }` — the
+AGENTS.md instruction files the kernel folded into the system prompt at
+session establish. Generic ACP clients can ignore it.
 
 ### `session/load`
-Params `{ sessionId, cwd }` → `{ modes }`. Before responding, the kernel
-replays the persisted conversation to the frontend as `session/update`
-notifications (transcript rebuild). Fails if the session belongs to a
-different cwd or a prompt is running in it.
+Params `{ sessionId, cwd }` → `{ modes, instructions? }` (same `instructions`
+shape as `session/new`; instruction files are re-read on load). Before
+responding, the kernel replays the persisted conversation to the frontend as
+`session/update` notifications (transcript rebuild). Fails if the session
+belongs to a different cwd or a prompt is running in it.
 
 ### `session/prompt`
 Params `{ sessionId, prompt: [{ type: "text", text }] }` → `{ stopReason }`.

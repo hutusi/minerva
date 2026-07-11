@@ -64,6 +64,21 @@ describe("MinervaClient against a real kernel", () => {
     ]);
   });
 
+  test("newSession surfaces AGENTS.md instructions from the kernel result", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(cwd, "AGENTS.md"), "Be terse.");
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    const client = new MinervaClient(clientTransport);
+    await client.initialize();
+    const { instructions } = await client.newSession(cwd);
+    expect(instructions?.files).toEqual([
+      { path: join(cwd, "AGENTS.md"), scope: "project", truncated: false },
+    ]);
+  });
+
   test("default permission handler cancels the turn (ACP cancelled outcome)", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));

@@ -24,6 +24,7 @@ must be protocol-fronted and out-of-process from day one.
 | 9 | Runtime & dist | **Bun-first, Node-tolerant**: Bun is the blessed runtime; kernel core accesses spawn/fs through a thin runtime-adapter seam so a Node build stays cheap. CLI ships as `bun build --compile` single binaries; Tauri bundles the same binary as sidecar |
 | 10 | v0.1 scope | **Full CLI feature set as the single public milestone.** No intermediate releases; integration risk managed via internal vertical slices |
 | 11 | License | Private repo for now; open/closed + license decided at v0.1 (Apache-2.0 + CLA is the default candidate if opened) |
+| 12 | Project instructions | **AGENTS.md open standard**: `<dataDir>/AGENTS.md` (global) + project-root `AGENTS.md` only — nested per-directory files deferred. Appended to the base system prompt (host override stays the base), loaded at session establish, never persisted (the system prompt isn't in the event log). Repo-controlled text entering the prompt matches the existing trust posture — project settings already inject allow rules |
 
 Explicitly **not** in v1: subagents, PTY shells, OS sandboxing, auto-compaction,
 WS/remote transport (designed-for, not built), web frontend.

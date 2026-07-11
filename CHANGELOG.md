@@ -7,6 +7,14 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- AGENTS.md project instructions: a project-root `AGENTS.md` (and a global
+  `~/.minerva/AGENTS.md`) is appended to the system prompt at session
+  establish, so per-project guidance no longer requires forking the host's
+  system prompt. `session/new`/`session/load` report which files loaded via a
+  new optional `instructions` result field (generic ACP clients ignore it),
+  and the CLI prints a dimmed "project instructions loaded" line. Root +
+  global only, 24k chars per file with a truncation marker; instructions are
+  never persisted to the transcript, so resumed sessions pick up edits.
 - Remote MCP servers over Streamable HTTP: an `mcpServers` entry with
   `"type": "http"` and a `url` (plus optional `headers` for bearer tokens)
   connects to a hosted server, falling back to SSE once for pre-2025-03
