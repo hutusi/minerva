@@ -48,6 +48,26 @@ export interface AiSdkProviderOptions {
   providerOptions?: ProviderOptions | undefined;
 }
 
+/**
+ * Force enable_thinking false in every namespace that sets it, for a single
+ * call. Only rewrites namespaces that already carry the key — a provider with
+ * no thinking toggle is left untouched (nothing to suppress).
+ */
+function suppressThinking(options: ProviderOptions | undefined): ProviderOptions | undefined {
+  if (options === undefined) return undefined;
+  let changed = false;
+  const next: ProviderOptions = {};
+  for (const [namespace, values] of Object.entries(options)) {
+    if ("enable_thinking" in values && values.enable_thinking !== false) {
+      next[namespace] = { ...values, enable_thinking: false };
+      changed = true;
+    } else {
+      next[namespace] = values;
+    }
+  }
+  return changed ? next : options;
+}
+
 /** Wrap any AI SDK language model (including mocks in tests). */
 export function createAiSdkProvider(
   model: LanguageModel,
@@ -57,15 +77,17 @@ export function createAiSdkProvider(
   return {
     id,
     async *streamTurn(request) {
+      const providerOptions =
+        request.thinking === "off"
+          ? suppressThinking(options.providerOptions)
+          : options.providerOptions;
       const result = streamText({
         model,
         messages: request.messages.map(toModelMessage),
         tools: toToolSet(request.tools),
         ...(request.system !== undefined ? { instructions: request.system } : {}),
         ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
-        ...(options.providerOptions !== undefined
-          ? { providerOptions: options.providerOptions }
-          : {}),
+        ...(providerOptions !== undefined ? { providerOptions } : {}),
       });
 
       for await (const part of result.stream) {

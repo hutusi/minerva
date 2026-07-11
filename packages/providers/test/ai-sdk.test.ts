@@ -108,6 +108,66 @@ describe("AI SDK provider adapter", () => {
     expect(seenProviderOptions).toEqual({ bailian: { enable_thinking: true } });
   });
 
+  test("thinking:'off' suppresses enable_thinking for that call, keeping other options", async () => {
+    const seen: unknown[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        seen.push(options.providerOptions);
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+            ],
+          }),
+        };
+      },
+    });
+    const provider = createAiSdkProvider(model, "mock", {
+      providerOptions: { bailian: { enable_thinking: true, other: "keep" } },
+    });
+
+    // A normal call keeps the configured thinking flag…
+    await collect(provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }));
+    // …a thinking:"off" call flips only enable_thinking, leaving other intact.
+    await collect(
+      provider.streamTurn({
+        messages: [{ role: "user", content: "summarize" }],
+        tools: [],
+        thinking: "off",
+      }),
+    );
+
+    expect(seen[0]).toEqual({ bailian: { enable_thinking: true, other: "keep" } });
+    expect(seen[1]).toEqual({ bailian: { enable_thinking: false, other: "keep" } });
+  });
+
+  test("thinking:'off' leaves a provider with no thinking toggle untouched", async () => {
+    let seen: unknown;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        seen = options.providerOptions;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+            ],
+          }),
+        };
+      },
+    });
+    const provider = createAiSdkProvider(model, "mock");
+
+    await collect(
+      provider.streamTurn({
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+        thinking: "off",
+      }),
+    );
+
+    expect(seen).toBeUndefined();
+  });
+
   test("an empty assistant message (thought-only turn) survives into the prompt", async () => {
     let seenPrompt: unknown;
     const model = new MockLanguageModelV4({

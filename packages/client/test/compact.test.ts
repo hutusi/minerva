@@ -4,10 +4,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKernel, type MinervaKernel } from "@minerva/kernel";
 import { createInProcTransportPair } from "@minerva/protocol";
+import type { ModelProvider, TurnRequest } from "@minerva/providers";
 import { createScriptedProvider, type TurnEvent } from "@minerva/providers";
 import { MinervaClient } from "../src";
 
 const FINISH_STOP: TurnEvent = { type: "finish", finishReason: "stop", usage: {} };
+
+/** Wrap a provider to record every request that reaches streamTurn. */
+function recordingProvider(inner: ModelProvider): {
+  provider: ModelProvider;
+  requests: TurnRequest[];
+} {
+  const requests: TurnRequest[] = [];
+  return {
+    requests,
+    provider: {
+      id: inner.id,
+      streamTurn(request) {
+        requests.push(request);
+        return inner.streamTurn(request);
+      },
+    },
+  };
+}
 
 function boot(dataDir: string, turns: TurnEvent[][]) {
   const [clientTransport, kernelTransport] = createInProcTransportPair();
@@ -94,6 +113,29 @@ describe("/compact", () => {
     await expect(client.compact(sessionId)).rejects.toThrow("already running");
     expect(store.snapshot.busy).toBe(true);
     await running;
+  });
+
+  test("the compaction turn requests thinking:'off'; the prompt turn does not", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-compact4-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-compact4-data-"));
+    const { provider, requests } = recordingProvider(
+      createScriptedProvider([
+        [{ type: "text-delta", text: "Did the work." }, FINISH_STOP],
+        [{ type: "text-delta", text: "Summary of the work." }, FINISH_STOP],
+      ]),
+    );
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, { dataDir, provider });
+    const client = new MinervaClient(clientTransport);
+    await client.initialize();
+    const { sessionId } = await client.newSession(cwd);
+
+    await client.prompt(sessionId, "do the work");
+    await client.compact(sessionId);
+
+    // Two turns reached the provider: the prompt (no thinking override) and
+    // the compaction summary (thinking suppressed so it isn't billed/stalled).
+    expect(requests.map((r) => r.thinking)).toEqual([undefined, "off"]);
   });
 
   test("compacting an empty session is rejected", async () => {

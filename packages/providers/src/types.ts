@@ -34,6 +34,12 @@ export interface TurnRequest {
   messages: ProviderMessage[];
   tools: ToolDefinition[];
   abortSignal?: AbortSignal | undefined;
+  /**
+   * "off" suppresses reasoning for this call even if the provider was
+   * configured to think — used by /compact, whose summary discards reasoning.
+   * Providers without a thinking toggle ignore it.
+   */
+  thinking?: "off" | undefined;
 }
 
 export interface TurnUsage {

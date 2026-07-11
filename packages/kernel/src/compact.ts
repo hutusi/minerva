@@ -36,6 +36,9 @@ export async function runCompact(session: Session, provider: ModelProvider): Pro
       messages: [...session.messages, { role: "user", content: SUMMARIZE_PROMPT }],
       tools: [],
       abortSignal: signal,
+      // The summary discards reasoning; don't pay for (or stall on) a thinking
+      // phase the endpoint would otherwise run when the provider enables it.
+      thinking: "off",
     });
     for await (const event of stream) {
       if (event.type === "text-delta") summary += event.text;
