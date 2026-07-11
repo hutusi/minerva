@@ -125,6 +125,8 @@ function toTurnEvent(part: StreamPart): TurnEvent | null {
         usage: {
           inputTokens: part.totalUsage.inputTokens,
           outputTokens: part.totalUsage.outputTokens,
+          cacheReadTokens: part.totalUsage.inputTokenDetails.cacheReadTokens,
+          cacheWriteTokens: part.totalUsage.inputTokenDetails.cacheWriteTokens,
         },
       };
     case "error":
