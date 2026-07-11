@@ -213,16 +213,35 @@ function Chat({
     onModelChanged(providerId);
     setConfigOpen(false);
     // Reflect the just-saved config: setup is done, and the provider now has a
-    // stored key, so reopening /config won't mislabel it "no key".
+    // stored key, so reopening /config won't mislabel it "no key" — and a
+    // newly defined custom provider becomes selectable without a restart.
     setFirstRun(false);
-    if (result.apiKey) {
-      const configured = result.provider?.name ?? providerId.split("/")[0];
-      setProviderChoices((choices) =>
-        choices.map((choice) =>
-          choice.name === configured ? { ...choice, keySource: "settings" } : choice,
-        ),
-      );
-    }
+    const configured = result.provider?.name ?? providerId.split("/")[0] ?? providerId;
+    setProviderChoices((choices) => {
+      if (choices.some((choice) => choice.name === configured)) {
+        return result.apiKey
+          ? choices.map((choice) =>
+              choice.name === configured ? { ...choice, keySource: "settings" } : choice,
+            )
+          : choices;
+      }
+      if (!result.provider) return choices; // built-in ref we don't know — leave it
+      const slash = result.modelRef.indexOf("/");
+      const defaultModel = slash === -1 ? undefined : result.modelRef.slice(slash + 1);
+      return [
+        ...choices,
+        {
+          name: configured,
+          keyVar: `${configured.toUpperCase().replaceAll("-", "_")}_API_KEY`,
+          keySource: result.apiKey ? "settings" : "none",
+          ...(result.provider.baseUrl ? { baseUrl: result.provider.baseUrl } : {}),
+          ...(result.provider.requiresApiKey !== undefined
+            ? { requiresApiKey: result.provider.requiresApiKey }
+            : {}),
+          ...(defaultModel ? { defaultModel } : {}),
+        },
+      ];
+    });
     info(`model set to ${providerId} (saved to global settings)`);
   };
 

@@ -147,7 +147,9 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
 
       case "session.compacted":
         // The model context restarts from the summary; the UI transcript
-        // (already emitted above) keeps the full history.
+        // (already emitted above) keeps the full history. Restore the
+        // summarization turn's spend so the session total survives resume.
+        usage = addUsage(usage, event.usage);
         flushToolBatch();
         messages.length = 0;
         messages.push(compactedContextMessage(event.summary));
@@ -162,6 +164,11 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
 
       case "turn.failed":
         flushToolBatch();
+        // Mirror the live loop (agent-loop dropUnansweredUser): a turn that
+        // failed with no assistant output leaves the user prompt trailing;
+        // drop it from provider context so a retry after resume doesn't send
+        // two consecutive user messages. The UI transcript keeps the prompt.
+        if (messages.at(-1)?.role === "user") messages.pop();
         break;
 
       default:

@@ -33,12 +33,12 @@ export const globTool: KernelTool = {
       context.cwd,
       typeof record.path === "string" ? record.path : ".",
     );
-    // `rg --files` lists files without following symlinks (no -L), honoring the
-    // same node_modules/.git exclusions as before. Spawned by argv, so the
-    // pattern is never shell-interpreted.
+    // `rg --files` lists files without following symlinks (no -L). Exclude
+    // node_modules/.git at any depth, after the include pattern so the
+    // exclusions win. Spawned by argv, so the pattern is never shell-interpreted.
     const result = await context.runtime.runProcess(
       rgPath,
-      ["--files", "--no-ignore", "-g", "!node_modules", "-g", "!.git", "-g", pattern],
+      ["--files", "--no-ignore", "-g", pattern, "-g", "!**/node_modules/**", "-g", "!**/.git/**"],
       { cwd: base, timeoutMs: GLOB_TIMEOUT_MS, signal: context.signal },
     );
     if (result.aborted) return { output: "Search cancelled by user.", isError: true };

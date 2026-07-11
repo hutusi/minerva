@@ -39,22 +39,14 @@ export const grepTool: KernelTool = {
       context.cwd,
       typeof record.path === "string" ? record.path : ".",
     );
-    const args = [
-      "--json",
-      "--max-filesize",
-      MAX_FILESIZE,
-      // Preserve the previous visibility: search everything except node_modules
-      // and .git (don't defer to .gitignore, which would silently shrink
-      // results). ripgrep does not follow symlinks unless -L is passed.
-      "--no-ignore",
-      "-g",
-      "!node_modules",
-      "-g",
-      "!.git",
-    ];
+    const args = ["--json", "--max-filesize", MAX_FILESIZE, "--no-ignore"];
     if (typeof record.include === "string") {
       args.push("-g", ensureConfinedPattern(record.include));
     }
+    // Exclude node_modules/.git at any depth (the `**/` form, not just the root
+    // name) and place these AFTER the include so they always take precedence.
+    // ripgrep does not follow symlinks unless -L is passed.
+    args.push("-g", "!**/node_modules/**", "-g", "!**/.git/**");
     // -e takes the pattern as a value (never a flag, even if it starts with -);
     // spawning by argv means it is never interpreted by a shell.
     args.push("-e", pattern, "--", ".");

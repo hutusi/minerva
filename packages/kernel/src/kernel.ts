@@ -5,6 +5,7 @@ import {
   type ConfigSetModelParams,
   type ConfigSetModelResult,
   Connection,
+  type InitializeParams,
   type InitializeResult,
   JSON_RPC_ERROR_CODES,
   MINERVA_METHODS,
@@ -82,6 +83,9 @@ export class MinervaKernel {
   #inFlight = new Set<Promise<unknown>>();
   #closed = false;
   #shutdownDrainMs: number;
+  /** Set from the initialize handshake; gates the minerva batch-replay
+   * extension so generic ACP clients still get standard notifications. */
+  #clientSupportsBatch = false;
 
   constructor(transport: Transport, options: KernelOptions) {
     this.#provider = options.provider;
@@ -96,7 +100,7 @@ export class MinervaKernel {
     void migrateDataDirPermissions(this.#runtime, this.#dataDir).catch(() => {});
 
     this.#connection = new Connection(transport);
-    this.#register(AGENT_METHODS.initialize, () => this.#initialize());
+    this.#register(AGENT_METHODS.initialize, (params) => this.#initialize(params));
     this.#register(AGENT_METHODS.sessionNew, (params) => this.#sessionNew(params));
     this.#register(AGENT_METHODS.sessionLoad, (params) => this.#sessionLoad(params));
     this.#register(AGENT_METHODS.sessionPrompt, (params) => this.#sessionPrompt(params));
@@ -126,7 +130,12 @@ export class MinervaKernel {
     });
   }
 
-  #initialize(): InitializeResult {
+  #initialize(params: unknown): InitializeResult {
+    // Only clients that advertise the minerva batch extension get batched
+    // replay; a generic ACP client (Zed) gets standard session/update
+    // notifications so it can rebuild the transcript.
+    const capabilities = (params as InitializeParams | undefined)?.clientCapabilities;
+    this.#clientSupportsBatch = capabilities?.batchReplay === true;
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: { loadSession: true },
@@ -218,14 +227,21 @@ export class MinervaKernel {
     }
     this.#sessions.set(sessionId, loaded.session);
     await this.#connectMcp(sessionId, cwd);
-    // Replay the whole conversation in a single batch so the frontend rebuilds
-    // its transcript in one pass instead of one apply+render per update (which
-    // is quadratic over a long session).
+    // Replay the conversation so the frontend can rebuild its transcript. A
+    // client that advertised batch support gets it in one message (one
+    // apply+render instead of the O(n²) per-update path); a generic ACP client
+    // gets standard session/update notifications.
     if (loaded.replay.updates.length > 0) {
-      this.#connection.notify(CLIENT_METHODS.sessionUpdateBatch, {
-        sessionId,
-        updates: loaded.replay.updates,
-      });
+      if (this.#clientSupportsBatch) {
+        this.#connection.notify(CLIENT_METHODS.sessionUpdateBatch, {
+          sessionId,
+          updates: loaded.replay.updates,
+        });
+      } else {
+        for (const update of loaded.replay.updates) {
+          this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });
+        }
+      }
     }
     // Session-lifetime spend lives only in the log; without this a resumed
     // frontend would show totals starting from zero.
@@ -393,7 +409,16 @@ export class MinervaKernel {
     if (session.messages.length === 0) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, "nothing to compact yet");
     }
-    const summary = await runCompact(session, this.#provider);
+    const { summary, usage } = await runCompact(session, this.#provider);
+    // Reflect the summarization spend immediately, like a completed turn does.
+    if (usage && hasUsage(usage)) {
+      const params: SessionUsageParams = {
+        sessionId: session.id,
+        lastTurn: toTokenUsage(usage),
+        cumulative: toTokenUsage(session.usage),
+      };
+      this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
+    }
     return { summary };
   }
 

@@ -91,6 +91,22 @@ describe("stream transport (ACP stdio framing)", () => {
     expect(closed).toBe(true);
   });
 
+  test("an oversized *framed* message is rejected before it is parsed", async () => {
+    const input = new PassThrough();
+    const transport = createStreamTransport(input, new PassThrough());
+    const received: JsonRpcMessage[] = [];
+    let closed = false;
+    transport.onMessage((m) => received.push(m));
+    transport.onClose(() => {
+      closed = true;
+    });
+    // A complete 20MB line (has a trailing newline) still exceeds the cap.
+    input.write(`${"x".repeat(20 * 1024 * 1024)}\n`);
+    await Bun.sleep(1);
+    expect(closed).toBe(true);
+    expect(received).toHaveLength(0);
+  });
+
   test("input end closes the transport and rejects pending requests", async () => {
     const input = new PassThrough();
     const transport = createStreamTransport(input, new PassThrough());

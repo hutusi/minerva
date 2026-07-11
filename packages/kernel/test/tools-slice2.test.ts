@@ -107,6 +107,19 @@ describe("grep", () => {
     expect(result.isError).toBeUndefined();
   });
 
+  test("grep excludes nested node_modules and .git, not just root-level", async () => {
+    const cwd = tempProject();
+    mkdirSync(join(cwd, "nested", "node_modules"), { recursive: true });
+    mkdirSync(join(cwd, "nested", ".git"), { recursive: true });
+    writeFileSync(join(cwd, "nested", "node_modules", "dep.ts"), "MARKER here\n");
+    writeFileSync(join(cwd, "nested", ".git", "config.ts"), "MARKER here\n");
+    writeFileSync(join(cwd, "src.ts"), "MARKER here\n");
+    const result = await grepTool.execute({ pattern: "MARKER" }, ctx(cwd));
+    expect(result.output).toContain("src.ts");
+    expect(result.output).not.toContain("node_modules");
+    expect(result.output).not.toContain(".git");
+  });
+
   test("grep does not follow a symlink that escapes the workspace", async () => {
     const cwd = tempProject();
     const outside = tempProject();

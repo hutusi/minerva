@@ -70,6 +70,9 @@ export class MinervaClient {
   initialize(): Promise<InitializeResult> {
     return this.#connection.request<InitializeResult>(AGENT_METHODS.initialize, {
       protocolVersion: PROTOCOL_VERSION,
+      // Opt into batched session replay; the kernel falls back to standard
+      // session/update notifications for clients that don't advertise this.
+      clientCapabilities: { batchReplay: true },
     });
   }
 

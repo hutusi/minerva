@@ -237,6 +237,43 @@ describe("sessions/list edges", () => {
   });
 });
 
+describe("ACP replay compatibility", () => {
+  test("a generic client (no batch capability) gets standard session/update replay", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-acp-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-acp-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([[{ type: "text-delta", text: "hi there" }, FINISH_STOP]]),
+    });
+    const client = new Connection(clientTransport);
+    const individual: string[] = [];
+    let batches = 0;
+    client.handleNotification(CLIENT_METHODS.sessionUpdate, (p) => {
+      individual.push((p as SessionUpdateParams).update.sessionUpdate);
+    });
+    client.handleNotification("minerva/session/update_batch", () => {
+      batches += 1;
+    });
+    // Initialize WITHOUT advertising batchReplay — a stock ACP client.
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "hello" }],
+    });
+
+    individual.length = 0;
+    await client.request(AGENT_METHODS.sessionLoad, { sessionId, cwd });
+    // Replay arrived as standard notifications, not the custom batch.
+    expect(batches).toBe(0);
+    expect(individual).toContain("user_message_chunk");
+    expect(individual).toContain("agent_message_chunk");
+  });
+});
+
 describe("session store hardening", () => {
   test("a traversal session id is rejected before touching the filesystem", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "gaps-trav-proj-"));
@@ -863,6 +900,29 @@ describe("replay edges", () => {
     expect(toolStart).toMatchObject({ title: "gone_tool" });
   });
 
+  test("a failed turn's unanswered user is dropped on replay (no [user,user] retry)", () => {
+    const events = [
+      { type: "session.created", sessionId: "ses_x", cwd: "/x", provider: "p", at: "t" },
+      { type: "user.message", text: "boom", at: "t" },
+      { type: "turn.failed", error: "rate limited", at: "t" },
+    ] as SessionEvent[];
+    const replay = replayEvents(events, []);
+    // Provider context has no trailing user (a retry would send a single user).
+    expect(replay.messages).toHaveLength(0);
+    // The UI transcript still shows the prompt.
+    expect(replay.updates.some((u) => u.sessionUpdate === "user_message_chunk")).toBe(true);
+  });
+
+  test("a partial-output failed turn keeps its assistant message on replay", () => {
+    const events = [
+      { type: "user.message", text: "hi", at: "t" },
+      { type: "assistant.message", text: "partial", toolCalls: [], at: "t" },
+      { type: "turn.failed", error: "dropped mid-stream", at: "t" },
+    ] as SessionEvent[];
+    const replay = replayEvents(events, []);
+    expect(replay.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
   test("cumulative usage sums completed turns and survives compaction", () => {
     const events = [
       { type: "user.message", text: "hi", at: "t" },
@@ -874,8 +934,14 @@ describe("replay edges", () => {
       },
       // Old logs predate usage on turn.completed — they contribute nothing.
       { type: "turn.completed", stopReason: "end_turn", at: "t" },
-      // Compaction resets the model context, not the session's spend.
-      { type: "session.compacted", summary: "so far", at: "t" },
+      // Compaction resets the model context, not the session's spend, and its
+      // own summarization turn's tokens survive resume.
+      {
+        type: "session.compacted",
+        summary: "so far",
+        usage: { inputTokens: 7, outputTokens: 3 },
+        at: "t",
+      },
       { type: "user.message", text: "more", at: "t" },
       {
         type: "turn.completed",
@@ -886,9 +952,10 @@ describe("replay edges", () => {
     ] as SessionEvent[];
 
     const replay = replayEvents(events, []);
+    // 10+20 from the two turns, plus 7 from the compaction turn.
     expect(replay.usage).toEqual({
-      inputTokens: 30,
-      outputTokens: 13,
+      inputTokens: 37,
+      outputTokens: 16,
       cacheReadTokens: 100,
       cacheWriteTokens: undefined,
     });
