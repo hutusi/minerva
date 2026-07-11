@@ -117,13 +117,54 @@ describe("SessionStore reducer", () => {
     expect(store.snapshot.items[0]).toEqual({ kind: "info", text: "welcome" });
   });
 
-  test("current_mode_update and agent_thought_chunk are handled", () => {
+  test("current_mode_update is handled", () => {
     const store = new SessionStore();
     store.apply({ sessionUpdate: "current_mode_update", currentModeId: "auto" });
     expect(store.snapshot.currentModeId).toBe("auto");
-    // Thoughts are not surfaced in slice scope — must not throw or render.
-    store.apply({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } });
-    expect(store.snapshot.items).toHaveLength(0);
+  });
+
+  test("thought chunks coalesce and finalize when the answer starts", () => {
+    const store = new SessionStore();
+    store.apply({
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "Consider " },
+    });
+    store.apply({
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "carefully." },
+    });
+    expect(store.snapshot.items).toEqual([
+      { kind: "thought", text: "Consider carefully.", streaming: true },
+    ]);
+
+    // The first answer chunk collapses the thought and opens a new item.
+    store.apply({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } });
+    expect(store.snapshot.items).toEqual([
+      { kind: "thought", text: "Consider carefully.", streaming: false },
+      { kind: "assistant", text: "Done.", streaming: true },
+    ]);
+  });
+
+  test("tool calls and setBusy(false) finalize a streaming thought", () => {
+    const store = new SessionStore();
+    store.apply({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hm" } });
+    store.apply({
+      sessionUpdate: "tool_call",
+      toolCallId: "c1",
+      title: "ls",
+      kind: "execute",
+      status: "pending",
+    });
+    expect(store.snapshot.items[0]).toEqual({ kind: "thought", text: "hm", streaming: false });
+
+    // Cancel path: nothing follows the thought except the busy flip.
+    store.apply({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "more" } });
+    store.setBusy(false);
+    expect(store.snapshot.items.at(-1)).toEqual({
+      kind: "thought",
+      text: "more",
+      streaming: false,
+    });
   });
 
   test("notifies subscribers on every change and snapshots are immutable", () => {
