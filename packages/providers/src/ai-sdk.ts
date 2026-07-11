@@ -38,8 +38,22 @@ export function createAnthropicProvider(options: AnthropicProviderOptions = {}):
   return createAiSdkProvider(anthropic(modelId), `anthropic/${modelId}`);
 }
 
+// Mirrors the AI SDK's ProviderOptions shape (`ai` doesn't export the type):
+// a JSON object per provider-options namespace.
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+export type ProviderOptions = Record<string, Record<string, JsonValue>>;
+
+export interface AiSdkProviderOptions {
+  /** Passed through to every streamText call, e.g. a thinking toggle. */
+  providerOptions?: ProviderOptions | undefined;
+}
+
 /** Wrap any AI SDK language model (including mocks in tests). */
-export function createAiSdkProvider(model: LanguageModel, id: string): ModelProvider {
+export function createAiSdkProvider(
+  model: LanguageModel,
+  id: string,
+  options: AiSdkProviderOptions = {},
+): ModelProvider {
   return {
     id,
     async *streamTurn(request) {
@@ -49,6 +63,9 @@ export function createAiSdkProvider(model: LanguageModel, id: string): ModelProv
         tools: toToolSet(request.tools),
         ...(request.system !== undefined ? { instructions: request.system } : {}),
         ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+        ...(options.providerOptions !== undefined
+          ? { providerOptions: options.providerOptions }
+          : {}),
       });
 
       for await (const part of result.stream) {
@@ -111,6 +128,11 @@ function toTurnEvent(part: StreamPart): TurnEvent | null {
   switch (part.type) {
     case "text-delta":
       return { type: "text-delta", text: part.text };
+    // reasoning-start/-end are dropped: they exist to carry provider
+    // metadata (Anthropic signatures) that the kernel doesn't consume;
+    // the boundary is derivable from the next text/tool event.
+    case "reasoning-delta":
+      return { type: "reasoning-delta", text: part.text };
     case "tool-call":
       return {
         type: "tool-call",

@@ -30,6 +30,11 @@ export interface ProviderSettings {
   requiresApiKey?: boolean | undefined;
   /** Only honored in the GLOBAL layer; project-layer keys are ignored. */
   apiKey?: string | undefined;
+  /**
+   * Request (true) or suppress (false) model thinking; unset sends nothing.
+   * OpenAI-compatible providers only.
+   */
+  thinking?: boolean | undefined;
 }
 
 export interface MinervaSettings {

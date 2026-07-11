@@ -47,6 +47,7 @@ export type TurnFinishReason = "stop" | "tool-calls" | "length" | "other";
 
 export type TurnEvent =
   | { type: "text-delta"; text: string }
+  | { type: "reasoning-delta"; text: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "finish"; finishReason: TurnFinishReason; usage: TurnUsage }
   | { type: "error"; error: unknown };
