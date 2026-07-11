@@ -23,6 +23,15 @@ export type SessionEvent =
   | { type: "session.model_changed"; provider: string; at: string }
   | { type: "user.message"; text: string; at: string }
   | {
+      /**
+       * Reasoning the model streamed before answering. Display-only: replay
+       * re-renders it but never feeds it back into provider messages.
+       */
+      type: "assistant.thought";
+      text: string;
+      at: string;
+    }
+  | {
       type: "assistant.message";
       text: string;
       /**

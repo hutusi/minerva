@@ -73,6 +73,15 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         });
         break;
 
+      case "assistant.thought":
+        // Display-only: re-render the thought, never rebuild it into
+        // provider messages. Log order keeps it ahead of its turn's text.
+        updates.push({
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: event.text },
+        });
+        break;
+
       case "assistant.message": {
         flushToolBatch();
         const toolCalls = event.toolCalls ?? [];

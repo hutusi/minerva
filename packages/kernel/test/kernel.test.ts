@@ -176,6 +176,79 @@ describe("kernel over in-proc transport", () => {
     ]);
   });
 
+  test("reasoning streams as thought chunks, persists, and replays before the answer", async () => {
+    const harness = await setup({
+      turns: [
+        [
+          { type: "reasoning-delta", text: "Consider " },
+          { type: "reasoning-delta", text: "carefully." },
+          { type: "text-delta", text: "Answer." },
+          FINISH_STOP,
+        ],
+      ],
+    });
+
+    const result = await prompt(harness, "think about it");
+    expect(result.stopReason).toBe("end_turn");
+
+    expect(harness.updates.map((u) => u.update.sessionUpdate)).toEqual([
+      "agent_thought_chunk",
+      "agent_thought_chunk",
+      "agent_message_chunk",
+    ]);
+    expect(harness.logEvents().map((event) => event.type)).toEqual([
+      "session.created",
+      "user.message",
+      "assistant.thought",
+      "assistant.message",
+      "turn.completed",
+    ]);
+    expect(harness.logEvents()[2]).toMatchObject({
+      type: "assistant.thought",
+      text: "Consider carefully.",
+    });
+    // Thoughts are display-only — provider history must not include them.
+    expect(harness.sessionMessages().map((m) => (m as { role: string }).role)).toEqual([
+      "user",
+      "assistant",
+    ]);
+
+    // Resume re-renders the thought ahead of the turn's message text.
+    harness.updates.length = 0;
+    await harness.client.request(AGENT_METHODS.sessionLoad, {
+      sessionId: harness.sessionId,
+      cwd: harness.cwd,
+    });
+    expect(harness.updates.map((u) => u.update.sessionUpdate)).toEqual([
+      "user_message_chunk",
+      "agent_thought_chunk",
+      "agent_message_chunk",
+    ]);
+  });
+
+  test("a thought before a cancelled tool call still lands in the log", async () => {
+    const harness = await setup({
+      permission: "cancel",
+      turns: [
+        [
+          { type: "reasoning-delta", text: "Should I run it?" },
+          { type: "tool-call", toolCallId: "c1", toolName: "bash", input: { command: "echo hi" } },
+          FINISH_TOOLS,
+        ],
+      ],
+    });
+
+    const result = await prompt(harness, "run something");
+    expect(result.stopReason).toBe("cancelled");
+
+    const types = harness.logEvents().map((event) => event.type);
+    expect(types.indexOf("assistant.thought")).toBeGreaterThan(-1);
+    expect(types.indexOf("assistant.thought")).toBeLessThan(types.indexOf("assistant.message"));
+    expect(harness.logEvents().find((event) => event.type === "assistant.thought")).toMatchObject({
+      text: "Should I run it?",
+    });
+  });
+
   test("usage accumulates across prompts and is re-announced on resume", async () => {
     const harness = await setup({
       turns: [

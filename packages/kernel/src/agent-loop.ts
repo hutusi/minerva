@@ -79,9 +79,19 @@ async function runLoop(
 
   for (let turn = 0; turn < MAX_MODEL_TURNS; turn++) {
     let text = "";
+    let thought = "";
     const toolCalls: ProviderToolCall[] = [];
     let finishReason: TurnFinishReason = "other";
     let streamError: unknown;
+
+    // Thoughts are display-only: persisted so replay re-renders what the
+    // user saw, but never pushed into provider messages (openai-compatible
+    // endpoints don't want reasoning echoed back).
+    const flushThought = () => {
+      if (!thought) return;
+      session.append({ type: "assistant.thought", text: thought, at: now() });
+      thought = "";
+    };
 
     // Everything streamed to the UI must also be recorded, even when the
     // turn is cancelled mid-stream — the event log has to be able to
@@ -115,13 +125,24 @@ async function runLoop(
       for await (const event of stream) {
         switch (event.type) {
           case "text-delta":
+            // A text or tool event ends the thought segment, keeping log
+            // order faithful for hypothetical thought→text→thought turns.
+            flushThought();
             text += event.text;
             sendUpdate(context, {
               sessionUpdate: "agent_message_chunk",
               content: { type: "text", text: event.text },
             });
             break;
+          case "reasoning-delta":
+            thought += event.text;
+            sendUpdate(context, {
+              sessionUpdate: "agent_thought_chunk",
+              content: { type: "text", text: event.text },
+            });
+            break;
           case "tool-call":
+            flushThought();
             toolCalls.push(event);
             break;
           case "finish":
@@ -136,6 +157,9 @@ async function runLoop(
     } catch (error) {
       if (!session.cancelled) throw error;
     }
+    // Covers every exit: cancellation mid-thought and thought-only turns
+    // must still land in the log (the event log re-renders what streamed).
+    flushThought();
     if (session.cancelled) {
       recordAssistantMessage();
       cancelToolBatch();
