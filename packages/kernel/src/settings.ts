@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { ThinkingConfig } from "@minerva/providers";
-import type { Runtime } from "./runtime";
+import { withFileLock } from "./file-lock";
+import { isNotFoundError, type Runtime } from "./runtime";
 
 /**
  * Settings live in two layers (design record: Config): global
@@ -102,18 +104,50 @@ function mergeProviders(
   return merged;
 }
 
+/**
+ * Write settings atomically: a plain overwrite can be truncated by a crash
+ * mid-write, corrupting the file. Write a sibling temp (same directory, so the
+ * rename stays on one filesystem) then rename over the destination.
+ *
+ * The temp name is randomized and created with writeNewFile (O_EXCL|O_NOFOLLOW):
+ * a malicious repo could otherwise pre-plant `.minerva/settings.json.tmp` as a
+ * symlink and redirect the write outside the project. rename over the final
+ * path replaces a planted symlink there rather than following it. The temp
+ * carries the final mode, so the renamed inode is already correct.
+ */
+async function writeSettingsAtomic(
+  runtime: Runtime,
+  path: string,
+  content: string,
+  mode?: number,
+): Promise<void> {
+  await runtime.mkdirp(dirname(path));
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  try {
+    await runtime.writeNewFile(tmp, content, mode !== undefined ? { mode } : {});
+    await runtime.rename(tmp, path);
+  } catch (error) {
+    // Don't leave a randomly-named orphan behind on failure.
+    await runtime.unlink(tmp).catch(() => {});
+    throw error;
+  }
+}
+
 /** Persist an "always allow" decision into the project settings file. */
 export async function persistAllowRule(runtime: Runtime, cwd: string, rule: string): Promise<void> {
   const path = projectSettingsPath(cwd);
-  const settings = await readSettingsFile(runtime, path);
-  const allow = settings.permissions?.allow ?? [];
-  if (allow.includes(rule)) return;
-  const next: MinervaSettings = {
-    ...settings,
-    permissions: { ...settings.permissions, allow: [...allow, rule] },
-  };
-  await runtime.mkdirp(dirname(path));
-  await runtime.writeTextFile(path, `${JSON.stringify(next, null, 2)}\n`);
+  // Serialize with any concurrent approval on the same file: two sessions
+  // approving at once must not read the same base and clobber each other.
+  await withFileLock(path, async () => {
+    const settings = await readSettingsFile(runtime, path);
+    const allow = settings.permissions?.allow ?? [];
+    if (allow.includes(rule)) return;
+    const next: MinervaSettings = {
+      ...settings,
+      permissions: { ...settings.permissions, allow: [...allow, rule] },
+    };
+    await writeSettingsAtomic(runtime, path, `${JSON.stringify(next, null, 2)}\n`);
+  });
 }
 
 /**
@@ -126,10 +160,13 @@ export async function updateGlobalSettings(
   update: (current: MinervaSettings) => MinervaSettings,
 ): Promise<void> {
   const path = globalSettingsPath(dataDir);
-  const current = await readSettingsFile(runtime, path);
-  const next = update(current);
-  await runtime.mkdirp(dirname(path));
-  await runtime.writeTextFile(path, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  // Same serialization as persistAllowRule: two config/set_model calls racing
+  // this read-modify-write must not lose one update.
+  await withFileLock(path, async () => {
+    const current = await readSettingsFile(runtime, path);
+    const next = update(current);
+    await writeSettingsAtomic(runtime, path, `${JSON.stringify(next, null, 2)}\n`, 0o600);
+  });
 }
 
 /** The default config/session root, shared by the kernel and its hosts. */
@@ -141,17 +178,47 @@ async function readSettingsFile(runtime: Runtime, path: string): Promise<Minerva
   let raw: string;
   try {
     raw = await runtime.readTextFile(path);
-  } catch {
-    return {};
+  } catch (error) {
+    // No settings file is the normal case; a read that fails for any other
+    // reason (permissions, I/O, a directory in the way) must not be treated
+    // as "no rules" — that would silently drop the user's deny list.
+    if (isNotFoundError(error)) return {};
+    throw new Error(
+      `cannot read settings ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== "object" || parsed === null) return {};
-    return parsed as MinervaSettings;
+    parsed = JSON.parse(raw) as unknown;
   } catch (error) {
     // A corrupt settings file must not silently grant or drop permissions.
     throw new Error(
       `invalid JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  validatePermissions(parsed as Record<string, unknown>, path);
+  return parsed as MinervaSettings;
+}
+
+/**
+ * Reject malformed permission fields rather than coerce them. Without this a
+ * string `"deny": "bash"` spreads character-by-character into `["b","a",...]`
+ * in loadSettings, silently dropping the intended rule — a fail-open.
+ */
+function validatePermissions(settings: Record<string, unknown>, path: string): void {
+  if (!("permissions" in settings)) return;
+  const permissions = settings.permissions;
+  if (typeof permissions !== "object" || permissions === null || Array.isArray(permissions)) {
+    throw new Error(`invalid settings in ${path}: permissions must be an object`);
+  }
+  for (const key of ["allow", "deny", "ask"] as const) {
+    const value = (permissions as Record<string, unknown>)[key];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+      throw new Error(
+        `invalid settings in ${path}: permissions.${key} must be an array of strings`,
+      );
+    }
   }
 }
