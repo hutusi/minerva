@@ -19,8 +19,13 @@ import {
   globTool,
   grepTool,
   loadSettings,
+  parseEventLog,
+  persistAllowRule,
+  projectDir,
+  type Runtime,
   readFileTool,
   replayEvents,
+  Session,
   type SessionEvent,
   todoTool,
   writeFileTool,
@@ -87,6 +92,434 @@ describe("runtime + settings edges", () => {
     await expect(
       loadSettings(defaultRuntime, mkdtempSync(join(tmpdir(), "gaps-data-")), cwd),
     ).rejects.toThrow("invalid JSON");
+  });
+
+  test("an unreadable settings file fails loudly instead of dropping the deny list", async () => {
+    // A permissions/IO error (not a missing file) must not be mistaken for
+    // "no settings" — that would silently run with an empty deny list.
+    const eaccesRuntime: Runtime = {
+      ...defaultRuntime,
+      readTextFile: () => Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" })),
+    };
+    await expect(
+      loadSettings(
+        eaccesRuntime,
+        mkdtempSync(join(tmpdir(), "gaps-data-")),
+        mkdtempSync(join(tmpdir(), "gaps-cwd-")),
+      ),
+    ).rejects.toThrow("cannot read settings");
+  });
+
+  test("a missing settings file still yields defaults (ENOENT is normal)", async () => {
+    const settings = await loadSettings(
+      defaultRuntime,
+      mkdtempSync(join(tmpdir(), "gaps-data-")),
+      mkdtempSync(join(tmpdir(), "gaps-empty-")),
+    );
+    expect(settings.rules).toEqual({ allow: [], deny: [], ask: [] });
+  });
+
+  test("a string permission field fails closed instead of spreading into chars", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-badperm-"));
+    mkdirSync(join(cwd, ".minerva"));
+    writeFileSync(
+      join(cwd, ".minerva", "settings.json"),
+      JSON.stringify({ permissions: { deny: "bash" } }),
+    );
+    await expect(
+      loadSettings(defaultRuntime, mkdtempSync(join(tmpdir(), "gaps-data-")), cwd),
+    ).rejects.toThrow("permissions.deny must be an array of strings");
+  });
+
+  test("a non-string element in a permission array fails closed", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-badperm2-"));
+    mkdirSync(join(cwd, ".minerva"));
+    writeFileSync(
+      join(cwd, ".minerva", "settings.json"),
+      JSON.stringify({ permissions: { allow: [1, 2] } }),
+    );
+    await expect(
+      loadSettings(defaultRuntime, mkdtempSync(join(tmpdir(), "gaps-data-")), cwd),
+    ).rejects.toThrow("permissions.allow must be an array of strings");
+  });
+
+  test("well-formed permission arrays still load", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-goodperm-"));
+    mkdirSync(join(cwd, ".minerva"));
+    writeFileSync(
+      join(cwd, ".minerva", "settings.json"),
+      JSON.stringify({ permissions: { deny: ["bash(rm -rf *)"] } }),
+    );
+    const settings = await loadSettings(
+      defaultRuntime,
+      mkdtempSync(join(tmpdir(), "gaps-data-")),
+      cwd,
+    );
+    expect(settings.rules.deny).toContain("bash(rm -rf *)");
+  });
+});
+
+describe("sessions/list edges", () => {
+  test("an unreadable session index surfaces instead of reporting no sessions", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-list-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-list-data-"));
+    // Fail only the index read; everything else (settings, logs) is normal.
+    const flakyRuntime: Runtime = {
+      ...defaultRuntime,
+      readTextFile: (path) =>
+        path.endsWith("index.jsonl")
+          ? Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+          : defaultRuntime.readTextFile(path),
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([]),
+      runtime: flakyRuntime,
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+
+    await expect(client.request("minerva/sessions/list", { cwd })).rejects.toThrow(
+      "cannot read session index",
+    );
+  });
+
+  test("a missing session index lists nothing (ENOENT is normal)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-list2-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-list2-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+
+    const result = await client.request<{ sessions: unknown[] }>("minerva/sessions/list", { cwd });
+    expect(result.sessions).toEqual([]);
+  });
+});
+
+describe("session reload durability", () => {
+  test("a failed pending write surfaces on reload instead of a silent stale rebuild", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-reload-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-reload-data-"));
+    let failAppends = false;
+    const flakyRuntime: Runtime = {
+      ...defaultRuntime,
+      appendTextFile: (path, content) =>
+        failAppends && path.endsWith(".jsonl") && !path.endsWith("index.jsonl")
+          ? Promise.reject(new Error("disk full"))
+          : defaultRuntime.appendTextFile(path, content),
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([]),
+      runtime: flakyRuntime,
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+
+    // Queue an append that will fail, without flushing it, then reload.
+    failAppends = true;
+    kernel.getSession(sessionId)?.append({ type: "user.message", text: "lost?", at: "t" });
+
+    await expect(client.request(AGENT_METHODS.sessionLoad, { sessionId, cwd })).rejects.toThrow(
+      "pending writes failed",
+    );
+  });
+
+  test("close() flushes a session's pending appends to disk", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-close-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-close-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+
+    // A fire-and-forget append with no explicit flush (as happens for a model
+    // switch right before quitting).
+    const session = kernel.getSession(sessionId);
+    session?.append({ type: "session.model_changed", provider: "other", at: "t" });
+
+    await kernel.close();
+
+    const logPath = session?.logPath as string;
+    const events = readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent);
+    expect(events.some((e) => e.type === "session.model_changed")).toBe(true);
+  });
+});
+
+describe("settings + index write hardening", () => {
+  test("concurrent allow-rule persists do not clobber each other", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-persist-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-persist-data-"));
+    // Fired concurrently, an unlocked read-modify-write would lose one rule.
+    await Promise.all([
+      persistAllowRule(defaultRuntime, cwd, "bash(git status)"),
+      persistAllowRule(defaultRuntime, cwd, "bash(ls)"),
+    ]);
+    const settings = await loadSettings(defaultRuntime, dataDir, cwd);
+    expect(settings.rules.allow).toContain("bash(git status)");
+    expect(settings.rules.allow).toContain("bash(ls)");
+  });
+
+  test("the session index compacts once it grows past the threshold", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-index-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-index-data-"));
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const session = await Session.create(opts);
+    await session.flush(); // ensure the session log exists for the reload
+
+    const indexPath = join(projectDir(dataDir, cwd), "index.jsonl");
+    const bloat = `${Array.from({ length: 600 }, () =>
+      JSON.stringify({ sessionId: session.id, cwd, createdAt: "t" }),
+    ).join("\n")}\n`;
+    writeFileSync(indexPath, bloat);
+
+    // A resume triggers the opportunistic compaction on the next index write.
+    await Session.load(session.id, opts, []);
+    const lines = readFileSync(indexPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter((line) => line.trim());
+    // All entries share one session id, so compaction collapses them to one.
+    expect(lines).toHaveLength(1);
+  });
+});
+
+describe("shutdown draining", () => {
+  test("close() cancels and drains an in-flight prompt, persisting its trailing events", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-drain-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-drain-data-"));
+    // Streams a chunk, then blocks until the turn is cancelled, then finishes.
+    const blockingProvider: ModelProvider = {
+      id: "blocking",
+      async *streamTurn(request) {
+        yield { type: "text-delta", text: "working" } as const;
+        await new Promise<void>((res) => {
+          if (request.abortSignal?.aborted) return res();
+          request.abortSignal?.addEventListener("abort", () => res(), { once: true });
+        });
+        yield { type: "finish", finishReason: "stop", usage: {} } as const;
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, { dataDir, provider: blockingProvider });
+    const client = new Connection(clientTransport);
+    const updates: SessionUpdateParams[] = [];
+    client.handleNotification(CLIENT_METHODS.sessionUpdate, (p) => {
+      updates.push(p as SessionUpdateParams);
+    });
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+
+    // Fire the prompt without awaiting; it will block mid-stream.
+    const pending = client
+      .request(AGENT_METHODS.sessionPrompt, { sessionId, prompt: [{ type: "text", text: "go" }] })
+      .catch(() => {});
+    // Wait until it has actually started streaming.
+    for (
+      let i = 0;
+      i < 100 && !updates.some((u) => u.update.sessionUpdate === "agent_message_chunk");
+      i++
+    ) {
+      await Bun.sleep(5);
+    }
+
+    await kernel.close();
+    await pending;
+
+    const session = kernel.getSession(sessionId);
+    expect(session?.promptActive).toBe(false);
+    const events = readFileSync(session?.logPath as string, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent);
+    // The partial answer and the terminal turn event survived shutdown.
+    expect(events.some((e) => e.type === "assistant.message")).toBe(true);
+    expect(events.some((e) => e.type === "turn.completed")).toBe(true);
+  });
+
+  test("a provider that ignores abort cannot hang shutdown; the timeout is reported", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-stuck-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-stuck-data-"));
+    const stuckProvider: ModelProvider = {
+      id: "stuck",
+      async *streamTurn() {
+        yield { type: "text-delta", text: "working" } as const;
+        await new Promise<void>(() => {}); // never resolves — ignores the abort
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: stuckProvider,
+      shutdownDrainMs: 20,
+    });
+    const client = new Connection(clientTransport);
+    const updates: SessionUpdateParams[] = [];
+    client.handleNotification(CLIENT_METHODS.sessionUpdate, (p) => {
+      updates.push(p as SessionUpdateParams);
+    });
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    const pending = client
+      .request(AGENT_METHODS.sessionPrompt, { sessionId, prompt: [{ type: "text", text: "go" }] })
+      .catch(() => {});
+    for (
+      let i = 0;
+      i < 100 && !updates.some((u) => u.update.sessionUpdate === "agent_message_chunk");
+      i++
+    ) {
+      await Bun.sleep(5);
+    }
+
+    const started = Date.now();
+    // Bounded by shutdownDrainMs, and the unfinished drain is reported.
+    await expect(kernel.close()).rejects.toThrow(/shutdown incomplete/);
+    expect(Date.now() - started).toBeLessThan(1000);
+    await pending;
+  });
+
+  test("a failed session flush makes close() reject with an aggregate durability error", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-durab-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-durab-data-"));
+    let failAppends = false;
+    const flakyRuntime: Runtime = {
+      ...defaultRuntime,
+      appendTextFile: (path, content) =>
+        failAppends && path.endsWith(".jsonl") && !path.endsWith("index.jsonl")
+          ? Promise.reject(new Error("disk full"))
+          : defaultRuntime.appendTextFile(path, content),
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([]),
+      runtime: flakyRuntime,
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+
+    failAppends = true;
+    kernel.getSession(sessionId)?.append({ type: "user.message", text: "lost?", at: "t" });
+
+    await expect(kernel.close()).rejects.toThrow(/shutdown incomplete/);
+  });
+});
+
+describe("shutdown handler gating", () => {
+  // A runtime whose first mkdirp blocks on a gate, so a session/new can be held
+  // inside Session.create while the test drives close() concurrently.
+  function gatedKernel() {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-gate-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-gate-data-"));
+    let release: () => void = () => {};
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    let firstMkdir = true;
+    const runtime: Runtime = {
+      ...defaultRuntime,
+      mkdirp: async (path) => {
+        if (firstMkdir) {
+          firstMkdir = false;
+          await gate;
+        }
+        return defaultRuntime.mkdirp(path);
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([]),
+      runtime,
+    });
+    const client = new Connection(clientTransport);
+    return { cwd, kernel, client, release };
+  }
+
+  test("a request arriving during shutdown is rejected", async () => {
+    const { cwd, kernel, client, release } = gatedKernel();
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+
+    // Hold one session/new inside Session.create so close() stays mid-drain
+    // (transport still open) while we send a second request.
+    const held = client.request(AGENT_METHODS.sessionNew, { cwd });
+    await Bun.sleep(10);
+    const closePromise = kernel.close(); // synchronously sets #closed = true
+
+    await expect(client.request(AGENT_METHODS.sessionNew, { cwd })).rejects.toThrow(
+      "shutting down",
+    );
+
+    release();
+    await closePromise;
+    await held.catch(() => {});
+  });
+
+  test("an in-flight session/new is drained and flushed before close() returns", async () => {
+    const { cwd, kernel, client, release } = gatedKernel();
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+
+    const newPromise = client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, { cwd });
+    await Bun.sleep(10); // ensure session/new is in-flight and blocked
+    const closePromise = kernel.close();
+    release(); // let session/new finish while close() drains it
+    await closePromise;
+
+    const { sessionId } = await newPromise;
+    const session = kernel.getSession(sessionId);
+    const events = readFileSync(session?.logPath as string, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent);
+    expect(events.some((e) => e.type === "session.created")).toBe(true);
+  });
+});
+
+describe("event log parsing", () => {
+  const line = (event: object) => JSON.stringify(event);
+  const userMsg = { type: "user.message", text: "hi", at: "t" };
+  const turnDone = { type: "turn.completed", stopReason: "end_turn", at: "t" };
+
+  test("a torn final line is tolerated (kill -9 mid-write)", () => {
+    const raw = `${line(userMsg)}\n${line(turnDone)}\n{"type":"assistant.mess`;
+    const events = parseEventLog(raw);
+    expect(events.map((e) => e.type)).toEqual(["user.message", "turn.completed"]);
+  });
+
+  test("corruption in the middle of the log fails loudly", () => {
+    const raw = `${line(userMsg)}\n{"type":"assistant.mess\n${line(turnDone)}`;
+    expect(() => parseEventLog(raw)).toThrow("corrupt session event log at line 2");
+  });
+
+  test("a clean log with a trailing newline parses fully", () => {
+    const raw = `${line(userMsg)}\n${line(turnDone)}\n`;
+    expect(parseEventLog(raw).map((e) => e.type)).toEqual(["user.message", "turn.completed"]);
+  });
+
+  test("a fully-written malformed final line is corruption, not a torn write", () => {
+    // Ends with a newline, so the bad line was completely flushed — that's
+    // real corruption, unlike an unterminated fragment.
+    const raw = `${line(userMsg)}\n${line(turnDone)}\n{bad\n`;
+    expect(() => parseEventLog(raw)).toThrow("corrupt session event log at line 3");
   });
 });
 

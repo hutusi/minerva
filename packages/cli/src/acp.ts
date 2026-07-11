@@ -12,5 +12,6 @@ export async function runAcpHost(options: KernelOptions): Promise<void> {
   await new Promise<void>((resolve) => {
     transport.onClose(resolve);
   });
-  kernel.close();
+  // Flush session logs before exiting on editor disconnect.
+  await kernel.close();
 }

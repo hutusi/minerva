@@ -27,7 +27,7 @@ import { runCompact } from "./compact";
 import { now } from "./events";
 import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
-import { defaultRuntime, type Runtime } from "./runtime";
+import { defaultRuntime, isNotFoundError, type Runtime } from "./runtime";
 import { parseEventLog, projectDir, Session } from "./session";
 import {
   defaultDataDir,
@@ -52,6 +52,8 @@ export interface KernelOptions {
   dataDir?: string | undefined;
   tools?: KernelTool[];
   systemPrompt?: (cwd: string) => string;
+  /** Max time close() waits for in-flight operations to drain (ms, default 5000). */
+  shutdownDrainMs?: number | undefined;
 }
 
 /**
@@ -69,6 +71,11 @@ export class MinervaKernel {
   #dataDir: string;
   #tools: KernelTool[];
   #systemPrompt: (cwd: string) => string;
+  /** Operations running now; drained on shutdown so their trailing events are
+   * flushed before the process exits. */
+  #inFlight = new Set<Promise<unknown>>();
+  #closed = false;
+  #shutdownDrainMs: number;
 
   constructor(transport: Transport, options: KernelOptions) {
     this.#provider = options.provider;
@@ -77,31 +84,36 @@ export class MinervaKernel {
     this.#dataDir = options.dataDir ?? defaultDataDir(this.#runtime);
     this.#tools = options.tools ?? builtinTools();
     this.#systemPrompt = options.systemPrompt ?? defaultSystemPrompt;
+    this.#shutdownDrainMs = options.shutdownDrainMs ?? 5000;
 
     this.#connection = new Connection(transport);
-    this.#connection.handleRequest(AGENT_METHODS.initialize, () => this.#initialize());
-    this.#connection.handleRequest(AGENT_METHODS.sessionNew, (params) => this.#sessionNew(params));
-    this.#connection.handleRequest(AGENT_METHODS.sessionLoad, (params) =>
-      this.#sessionLoad(params),
-    );
-    this.#connection.handleRequest(AGENT_METHODS.sessionPrompt, (params) =>
-      this.#sessionPrompt(params),
-    );
-    this.#connection.handleRequest(AGENT_METHODS.sessionSetMode, (params) =>
-      this.#sessionSetMode(params),
-    );
-    this.#connection.handleRequest(MINERVA_METHODS.sessionsList, (params) =>
-      this.#sessionsList(params),
-    );
-    this.#connection.handleRequest(MINERVA_METHODS.sessionCompact, (params) =>
-      this.#sessionCompact(params),
-    );
-    this.#connection.handleRequest(MINERVA_METHODS.configSetModel, (params) =>
-      this.#configSetModel(params),
-    );
+    this.#register(AGENT_METHODS.initialize, () => this.#initialize());
+    this.#register(AGENT_METHODS.sessionNew, (params) => this.#sessionNew(params));
+    this.#register(AGENT_METHODS.sessionLoad, (params) => this.#sessionLoad(params));
+    this.#register(AGENT_METHODS.sessionPrompt, (params) => this.#sessionPrompt(params));
+    this.#register(AGENT_METHODS.sessionSetMode, (params) => this.#sessionSetMode(params));
+    this.#register(MINERVA_METHODS.sessionsList, (params) => this.#sessionsList(params));
+    this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
+    this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
+    // Cancel is a notification, deliberately unwrapped: it carries no state to
+    // persist and must keep working during shutdown — close() relies on it.
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
       const { sessionId } = params as { sessionId?: string };
       if (sessionId) this.#sessions.get(sessionId)?.cancel();
+    });
+  }
+
+  /**
+   * Register a request handler that (1) refuses new work once shutdown has
+   * begun and (2) enrolls its promise in #inFlight so close() can drain it.
+   * Promise.resolve wraps the synchronous initialize handler.
+   */
+  #register<T>(method: string, handler: (params: unknown) => T | Promise<T>): void {
+    this.#connection.handleRequest(method, (params) => {
+      if (this.#closed) {
+        throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, "kernel is shutting down");
+      }
+      return this.#track(Promise.resolve(handler(params)));
     });
   }
 
@@ -168,8 +180,19 @@ export class MinervaKernel {
       );
     }
     // The live session's log writes are fire-and-forget; settle them before
-    // rebuilding from the file or the reload silently drops recent events.
-    await existing?.flush().catch(() => {});
+    // rebuilding from the file. A flush failure means the on-disk log is
+    // missing recent events, so rebuilding from it would silently lose data —
+    // fail the reload loudly instead of reporting success on a stale state.
+    if (existing) {
+      try {
+        await existing.flush();
+      } catch (error) {
+        throw new RpcError(
+          JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+          `cannot reload session: pending writes failed (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+    }
 
     let loaded: Awaited<ReturnType<typeof Session.load>>;
     try {
@@ -233,8 +256,14 @@ export class MinervaKernel {
     let raw: string;
     try {
       raw = await this.#runtime.readTextFile(join(dir, "index.jsonl"));
-    } catch {
-      return { sessions: [] };
+    } catch (error) {
+      // No index yet means no sessions; any other read failure is real and
+      // must not masquerade as an empty list.
+      if (isNotFoundError(error)) return { sessions: [] };
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        `cannot read session index: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     const entries = raw
       .split("\n")
@@ -313,6 +342,21 @@ export class MinervaKernel {
       },
       text,
     );
+  }
+
+  /**
+   * Enroll an in-flight operation so shutdown can drain it. #inFlight.add runs
+   * synchronously before the first await, so close()'s synchronous
+   * (#closed=true → snapshot) section can't miss an operation that passed the
+   * guard.
+   */
+  async #track<T>(promise: Promise<T>): Promise<T> {
+    this.#inFlight.add(promise);
+    try {
+      return await promise;
+    } finally {
+      this.#inFlight.delete(promise);
+    }
   }
 
   async #sessionCompact(params: unknown): Promise<SessionCompactResult> {
@@ -409,12 +453,67 @@ export class MinervaKernel {
     return this.#sessions.get(sessionId);
   }
 
-  close(): void {
-    for (const connection of this.#mcp.values()) {
-      void connection.close();
-    }
+  /**
+   * Cancel and drain in-flight operations, flush every session's log, and close
+   * MCP connections before tearing down the transport. Ordering is
+   * load-bearing: set #closed first so no new work slips in; cancel *before*
+   * awaiting, or a prompt blocked on a permission round-trip to a gone frontend
+   * would deadlock the drain (cancel rejects that pending request). No `await`
+   * between #closed=true and the #inFlight snapshot, so a handler that passed
+   * the shutdown guard is already enrolled and can't be missed.
+   *
+   * Draining lets each operation's own flush persist its trailing events
+   * (turn.completed, session.model_changed) that a plain exit would drop. Every
+   * teardown step runs regardless of the others; afterwards, the steps that
+   * actually mean "data may be lost" — a drain timeout or a failed session
+   * flush — are raised as an AggregateError so the host can exit nonzero. An
+   * ordinary in-flight rejection (a prompt erroring at shutdown already flushed
+   * and surfaced its error to its caller) and MCP/connection teardown errors
+   * are logged but not fatal.
+   */
+  async close(): Promise<void> {
+    this.#closed = true;
+    for (const session of this.#sessions.values()) session.cancel();
+    const drainTimedOut = await this.#drainInFlight();
+    const flushes = await Promise.allSettled([...this.#sessions.values()].map((s) => s.flush()));
+    const closes = await Promise.allSettled([...this.#mcp.values()].map((c) => c.close()));
     this.#mcp.clear();
     this.#connection.close();
+
+    const durabilityErrors: Error[] = [];
+    if (drainTimedOut) {
+      durabilityErrors.push(new Error(`shutdown drain timed out after ${this.#shutdownDrainMs}ms`));
+    }
+    for (const result of flushes) {
+      if (result.status === "rejected") durabilityErrors.push(asError(result.reason));
+    }
+    for (const result of closes) {
+      if (result.status === "rejected") {
+        process.stderr.write(`minerva: MCP teardown failed: ${String(result.reason)}\n`);
+      }
+    }
+    if (durabilityErrors.length > 0) {
+      throw new AggregateError(
+        durabilityErrors,
+        `kernel shutdown incomplete: ${durabilityErrors.length} step(s) failed`,
+      );
+    }
+  }
+
+  /** Await in-flight operations, bounded by shutdownDrainMs. Returns true if
+   * the deadline was hit (some operations may not have flushed). */
+  async #drainInFlight(): Promise<boolean> {
+    const inFlight = Promise.allSettled([...this.#inFlight]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), this.#shutdownDrainMs);
+      timer.unref?.(); // never keep the process alive just for the drain deadline
+    });
+    try {
+      return (await Promise.race([inFlight.then(() => "drained" as const), timeout])) === "timeout";
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -424,6 +523,10 @@ export function createKernel(transport: Transport, options: KernelOptions): Mine
 
 function modeState(session: Session): SessionModeState {
   return { currentModeId: session.mode, availableModes: SESSION_MODES };
+}
+
+function asError(reason: unknown): Error {
+  return reason instanceof Error ? reason : new Error(String(reason));
 }
 
 function defaultSystemPrompt(cwd: string): string {

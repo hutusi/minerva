@@ -18,8 +18,8 @@ const FINISH_STOP: TurnEvent = { type: "finish", finishReason: "stop", usage: {}
 const FINISH_TOOLS: TurnEvent = { type: "finish", finishReason: "tool-calls", usage: {} };
 
 const kernels: MinervaKernel[] = [];
-afterEach(() => {
-  for (const kernel of kernels.splice(0)) kernel.close();
+afterEach(async () => {
+  await Promise.all(kernels.splice(0).map((kernel) => kernel.close()));
 });
 
 describe("line clipping helpers", () => {

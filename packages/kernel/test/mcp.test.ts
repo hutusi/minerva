@@ -88,7 +88,7 @@ describe("MCP tools through the kernel", () => {
     const toolCall = events.find((event) => event.type === "tool.call");
     expect(toolCall).toMatchObject({ toolName: "mcp__calc__add", input: { a: 19, b: 23 } });
 
-    kernel.close();
+    await kernel.close();
   }, 30_000);
 
   test("a broken MCP server degrades to a warning, not a failed session", async () => {
