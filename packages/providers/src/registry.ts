@@ -24,6 +24,8 @@ export interface ProviderDef {
   baseURL?: string | undefined;
   /** Prefill for the config panel; never used to complete bare refs. */
   defaultModel?: string | undefined;
+  /** Known model ids — config-panel suggestions, never a restriction. */
+  models?: string[] | undefined;
 }
 
 export type ProviderRegistry = Record<string, ProviderDef>;
@@ -40,12 +42,14 @@ export const BUILTIN_PROVIDERS: ProviderRegistry = {
     defaultModel: DEFAULT_OPENAI_MODEL,
   },
   // Alibaba Bailian (DashScope), OpenAI-compatible mode. China endpoint;
-  // override baseUrl in settings for dashscope-intl.aliyuncs.com.
+  // override baseUrl in settings for dashscope-intl.aliyuncs.com. Bailian
+  // hosts third-party models too (e.g. Zhipu's GLM), hence the mixed list.
   bailian: {
     kind: "openai-compatible",
     apiKeyEnv: "DASHSCOPE_API_KEY",
     baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     defaultModel: "qwen-plus",
+    models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
   },
 };
 
@@ -54,6 +58,7 @@ export interface CustomProviderConfig {
   baseUrl?: string | undefined;
   apiKeyEnv?: string | undefined;
   defaultModel?: string | undefined;
+  models?: string[] | undefined;
 }
 
 // Names must survive ref parsing ("name/model") and env-var derivation.
@@ -76,6 +81,7 @@ export function buildProviderRegistry(
         ...(config.baseUrl !== undefined ? { baseURL: config.baseUrl } : {}),
         ...(config.apiKeyEnv !== undefined ? { apiKeyEnv: config.apiKeyEnv } : {}),
         ...(config.defaultModel !== undefined ? { defaultModel: config.defaultModel } : {}),
+        ...(config.models !== undefined ? { models: config.models } : {}),
       };
       continue;
     }
@@ -92,6 +98,7 @@ export function buildProviderRegistry(
       apiKeyEnv: config.apiKeyEnv ?? `${name.toUpperCase().replaceAll("-", "_")}_API_KEY`,
       baseURL: config.baseUrl,
       ...(config.defaultModel !== undefined ? { defaultModel: config.defaultModel } : {}),
+      ...(config.models !== undefined ? { models: config.models } : {}),
     };
   }
   return registry;

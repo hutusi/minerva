@@ -124,6 +124,7 @@ const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, d
       ? ("settings" as const)
       : ("none" as const),
   baseUrl: def.baseURL,
+  models: def.models,
 }));
 
 // The CLI embeds the kernel, but only across the protocol's in-proc

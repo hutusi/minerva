@@ -10,6 +10,9 @@ All notable changes to Minerva are documented here. The format follows
 - Alibaba Bailian (DashScope) provider preset (`bailian/qwen-plus`,
   `DASHSCOPE_API_KEY`) and settings-defined custom OpenAI-compatible
   providers (any name + `baseUrl`), via `@ai-sdk/openai-compatible`.
+- Known-models lists on providers (`models` in the registry and settings):
+  the bailian preset ships qwen-plus/-max/-turbo and GLM-5.2, cyclable with
+  ↑/↓ at the `/config` panel's model step; free-text ids still work.
 - Interactive `/config` panel in the TUI: pick a provider, enter an API key
   (masked), choose a model. Runs automatically on first launch when no key is
   found — replacing the old print-error-and-exit behavior — and applies live

@@ -91,7 +91,21 @@ describe("provider registry", () => {
       apiKeyEnv: "DASHSCOPE_API_KEY",
       baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       defaultModel: "qwen-plus",
+      models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
     });
+  });
+
+  test("bailian lists glm-5.2 among known models, and refs to it resolve", () => {
+    const providers = buildProviderRegistry();
+    expect(providers.bailian?.models).toContain("glm-5.2");
+    expect(createProviderFromRef("bailian/glm-5.2", { providers, apiKey: "sk-test" }).id).toBe(
+      "bailian/glm-5.2",
+    );
+  });
+
+  test("settings can replace a builtin's known-models list", () => {
+    const providers = buildProviderRegistry({ bailian: { models: ["glm-5.2"] } });
+    expect(providers.bailian?.models).toEqual(["glm-5.2"]);
   });
 
   test("a custom provider without a baseUrl is rejected", () => {

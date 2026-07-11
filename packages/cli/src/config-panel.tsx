@@ -18,6 +18,8 @@ export interface ProviderChoice {
   /** Where a usable key was found, if anywhere. */
   keySource: "env" | "settings" | "none";
   baseUrl?: string | undefined;
+  /** Known model ids — cycled with ↑/↓ at the model step; free text still wins. */
+  models?: string[] | undefined;
 }
 
 export interface ConfigResult {
@@ -61,6 +63,10 @@ export function ConfigPanel({
 
   const rows = providers.length + 1; // trailing "custom…" row
   const selected = custom ? undefined : providers[index];
+  const suggestions = selected?.models ?? [];
+  // Position within `suggestions` while cycling; -1 = free text. A ref for
+  // the same batching reason as indexRef.
+  const suggestionRef = useRef(-1);
 
   const chooseProvider = (i: number) => {
     setError(null);
@@ -77,8 +83,22 @@ export function ConfigPanel({
     const slash = currentModel.indexOf("/");
     const currentProvider = slash === -1 ? "anthropic" : currentModel.slice(0, slash);
     const currentModelId = slash === -1 ? currentModel : currentModel.slice(slash + 1);
-    setModel(currentProvider === choice.name ? currentModelId : (choice.defaultModel ?? ""));
+    const prefill = currentProvider === choice.name ? currentModelId : (choice.defaultModel ?? "");
+    setModel(prefill);
+    suggestionRef.current = (choice.models ?? []).indexOf(prefill);
     setStep("apiKey");
+  };
+
+  const cycleSuggestion = (delta: number) => {
+    if (suggestions.length === 0) return;
+    suggestionRef.current =
+      suggestionRef.current === -1
+        ? delta > 0
+          ? 0
+          : suggestions.length - 1
+        : (suggestionRef.current + suggestions.length + delta) % suggestions.length;
+    const next = suggestions[suggestionRef.current];
+    if (next !== undefined) setModel(next);
   };
 
   const stepBack = () => {
@@ -102,6 +122,10 @@ export function ConfigPanel({
       else if (key.return) chooseProvider(indexRef.current);
       else if (key.escape) onCancel();
       return;
+    }
+    if (step === "model") {
+      if (key.upArrow) cycleSuggestion(-1);
+      else if (key.downArrow) cycleSuggestion(1);
     }
     if (key.escape) stepBack();
   });
@@ -229,14 +253,19 @@ export function ConfigPanel({
       ) : null}
 
       {step === "model" ? (
-        <Box>
-          <Text>Model id: </Text>
-          <TextInput
-            value={model}
-            onChange={setModel}
-            onSubmit={submitModel}
-            placeholder={selected?.defaultModel ?? "model-id"}
-          />
+        <Box flexDirection="column">
+          <Box>
+            <Text>Model id: </Text>
+            <TextInput
+              value={model}
+              onChange={setModel}
+              onSubmit={submitModel}
+              placeholder={selected?.defaultModel ?? "model-id"}
+            />
+          </Box>
+          {suggestions.length > 0 ? (
+            <Text dimColor>known: {suggestions.join(" · ")} (↑/↓ cycle, or type any id)</Text>
+          ) : null}
         </Box>
       ) : null}
 

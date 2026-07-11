@@ -140,6 +140,41 @@ describe("ConfigPanel", () => {
     ui.unmount();
   });
 
+  test("↑/↓ cycles the provider's known models at the model step", async () => {
+    const results: ConfigResult[] = [];
+    const ui = renderPanel({
+      choices: [
+        {
+          name: "bailian",
+          defaultModel: "qwen-plus",
+          keyVar: "DASHSCOPE_API_KEY",
+          keySource: "none",
+          models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
+        },
+      ],
+      onSubmit: async (result) => {
+        results.push(result);
+      },
+    });
+    await waitFor(() => (ui.lastFrame() ?? "").includes("bailian"), "panel");
+    await press(ui, "\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("API key"), "key step");
+    await submitText(ui, "sk-x");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Model id"), "model step");
+    expect(ui.lastFrame()).toContain("known: qwen-plus · qwen-max · qwen-turbo · glm-5.2");
+
+    await press(ui, "[A"); // ↑ from the qwen-plus prefill wraps to glm-5.2
+    // Twice in the frame: once in the hint line, once as the input value.
+    await waitFor(
+      () => ((ui.lastFrame() ?? "").match(/glm-5\.2/g) ?? []).length >= 2,
+      "cycled model",
+    );
+    await press(ui, "\r");
+    await waitFor(() => results.length === 1, "submit");
+    expect(results[0]?.modelRef).toBe("bailian/glm-5.2");
+    ui.unmount();
+  });
+
   test("an empty key is rejected when the provider has none anywhere", async () => {
     const ui = renderPanel({
       choices: [
