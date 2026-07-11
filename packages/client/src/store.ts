@@ -136,11 +136,9 @@ export class SessionStore {
       this.#set({ ...this.#viewModel, items });
       return;
     }
-    const items = [
-      ...this.#viewModel.items.map(finalizeStreamingItem),
-      { kind, text, streaming: true },
-    ];
-    this.#set({ ...this.#viewModel, items });
+    // A chunk of the other kind starts a fresh streaming item; #push already
+    // finalizes any in-flight streaming item before appending.
+    this.#push({ kind, text, streaming: true });
   }
 
   #updateToolCall(
