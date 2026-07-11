@@ -47,7 +47,11 @@ minerva/
 ```
 
 Config: `~/.minerva/settings.json` (global) + `.minerva/settings.json`
-(project) — provider/model selection, permission rules, MCP server definitions.
+(project) — provider/model selection (`model`, `providers`; API keys
+global-only, file written `0600`), permission rules, MCP server definitions.
+The config extension method is `minerva/config/set_model` (persist + live
+provider swap); provider construction is host-injected via
+`KernelOptions.resolveProvider` so the kernel never imports the AI SDK.
 
 ## v0.1 internal slices (checkpoints, not releases)
 

@@ -103,6 +103,17 @@ Params `{ sessionId }` → `{ summary }`. Runs one summarization turn, appends a
 `session.compacted` event, and resets the model context to the summary. The
 event log — and therefore the replayed transcript — keeps the full history.
 
+### `minerva/config/set_model`
+Params `{ modelRef, provider?, apiKey? }` → `{ providerId }`. Persists the
+model ref — and optionally a provider definition (`{ name, baseUrl?,
+apiKeyEnv?, defaultModel?, requiresApiKey? }`) plus API key — to global
+settings (written `0600`), then swaps the kernel's live provider; the next
+prompt in any session uses it. `requiresApiKey: false` marks a keyless
+endpoint so hosts don't demand a key at startup. Provider construction is host-injected (`KernelOptions.
+resolveProvider`), keeping the kernel free of AI SDK knowledge; hosts without
+a resolver reject the method. Open sessions log a `session.model_changed`
+audit event, which replay ignores.
+
 ## Versioning
 
 `PROTOCOL_VERSION` is exchanged in `initialize`. Additive changes (new

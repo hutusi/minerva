@@ -7,6 +7,21 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Alibaba Bailian (DashScope) provider preset (`bailian/qwen-plus`,
+  `DASHSCOPE_API_KEY`) and settings-defined custom OpenAI-compatible
+  providers (any name + `baseUrl`), via `@ai-sdk/openai-compatible`. Keyless
+  endpoints (e.g. local servers) persist `requiresApiKey: false`, so startup
+  and `minerva acp` don't demand a key they don't need.
+- Known-models lists on providers (`models` in the registry and settings):
+  the bailian preset ships qwen-plus/-max/-turbo and GLM-5.2, offered as a
+  select list at the `/config` panel's model step, with an `other…` row for
+  free-text ids.
+- Interactive `/config` panel in the TUI: pick a provider, enter an API key
+  (masked), choose a model. Runs automatically on first launch when no key is
+  found — replacing the old print-error-and-exit behavior — and applies live
+  to the next prompt via the new `minerva/config/set_model` extension method.
+- Settings: `model` (default model ref) and per-provider `providers` entries;
+  API keys are honored from the global file only, always written mode `0600`.
 - CI (GitHub Actions): verify matrix on ubuntu/macOS, per-file coverage
   thresholds, knip, PTY smoke + e2e for the TUI, compiled-binary smoke, and a
   secret-gated live-model smoke on main pushes; Dependabot.

@@ -5,3 +5,6 @@ coverage/
 .env
 .env.*
 .DS_Store
+# Project-layer settings written by running the minerva TUI inside this repo
+# (persisted "always allow" rules) — local dev state, not shared config.
+.minerva/

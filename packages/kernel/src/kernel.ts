@@ -2,6 +2,8 @@ import { join } from "node:path";
 import {
   AGENT_METHODS,
   CLIENT_METHODS,
+  type ConfigSetModelParams,
+  type ConfigSetModelResult,
   Connection,
   type InitializeResult,
   JSON_RPC_ERROR_CODES,
@@ -26,11 +28,23 @@ import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
 import { defaultRuntime, type Runtime } from "./runtime";
 import { parseEventLog, projectDir, Session } from "./session";
-import { loadSettings } from "./settings";
+import {
+  defaultDataDir,
+  loadSettings,
+  type ProviderSettings,
+  updateGlobalSettings,
+} from "./settings";
 import { builtinTools, type KernelTool } from "./tools";
 
 export interface KernelOptions {
   provider: ModelProvider;
+  /**
+   * Host-supplied factory for switching models at runtime
+   * (minerva/config/set_model). Injected rather than built in so the kernel
+   * never sees provider construction (or the AI SDK); hosts that omit it
+   * simply reject the method.
+   */
+  resolveProvider?: (modelRef: string) => ModelProvider | Promise<ModelProvider>;
   runtime?: Runtime;
   /** Root for session logs and config; defaults to ~/.minerva. */
   dataDir?: string | undefined;
@@ -48,6 +62,7 @@ export class MinervaKernel {
   #sessions = new Map<string, Session>();
   #mcp = new Map<string, McpConnection>();
   #provider: ModelProvider;
+  #resolveProvider: KernelOptions["resolveProvider"];
   #runtime: Runtime;
   #dataDir: string;
   #tools: KernelTool[];
@@ -55,8 +70,9 @@ export class MinervaKernel {
 
   constructor(transport: Transport, options: KernelOptions) {
     this.#provider = options.provider;
+    this.#resolveProvider = options.resolveProvider;
     this.#runtime = options.runtime ?? defaultRuntime;
-    this.#dataDir = options.dataDir ?? join(this.#runtime.homedir(), ".minerva");
+    this.#dataDir = options.dataDir ?? defaultDataDir(this.#runtime);
     this.#tools = options.tools ?? builtinTools();
     this.#systemPrompt = options.systemPrompt ?? defaultSystemPrompt;
 
@@ -77,6 +93,9 @@ export class MinervaKernel {
     );
     this.#connection.handleRequest(MINERVA_METHODS.sessionCompact, (params) =>
       this.#sessionCompact(params),
+    );
+    this.#connection.handleRequest(MINERVA_METHODS.configSetModel, (params) =>
+      this.#configSetModel(params),
     );
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
       const { sessionId } = params as { sessionId?: string };
@@ -302,6 +321,76 @@ export class MinervaKernel {
     }
     const summary = await runCompact(session, this.#provider);
     return { summary };
+  }
+
+  async #configSetModel(params: unknown): Promise<ConfigSetModelResult> {
+    const { modelRef, provider, apiKey } = (params ?? {}) as Partial<ConfigSetModelParams>;
+    if (typeof modelRef !== "string" || modelRef.length === 0) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "config/set_model requires modelRef");
+    }
+    const resolve = this.#resolveProvider;
+    if (!resolve) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        "model configuration is not supported by this host",
+      );
+    }
+
+    // Persist before resolving: the host's resolver re-reads settings, so a
+    // key entered alongside the switch must already be on disk.
+    const slash = modelRef.indexOf("/");
+    const providerName = provider?.name ?? (slash === -1 ? "anthropic" : modelRef.slice(0, slash));
+    let previousModel: string | undefined;
+    await updateGlobalSettings(this.#runtime, this.#dataDir, (current) => {
+      previousModel = current.model;
+      const entry: ProviderSettings = {
+        ...current.providers?.[providerName],
+        ...(provider?.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
+        ...(provider?.apiKeyEnv !== undefined ? { apiKeyEnv: provider.apiKeyEnv } : {}),
+        ...(provider?.defaultModel !== undefined ? { defaultModel: provider.defaultModel } : {}),
+        ...(provider?.requiresApiKey !== undefined
+          ? { requiresApiKey: provider.requiresApiKey }
+          : {}),
+        ...(apiKey !== undefined ? { apiKey } : {}),
+      };
+      const touched = provider !== undefined || apiKey !== undefined;
+      return {
+        ...current,
+        model: modelRef,
+        ...(touched ? { providers: { ...current.providers, [providerName]: entry } } : {}),
+      };
+    });
+
+    let next: ModelProvider;
+    try {
+      next = await resolve(modelRef);
+    } catch (error) {
+      // Roll back the model ref so a rejected switch can't brick the next
+      // startup; the provider entry/key stays — it's valid on its own.
+      await updateGlobalSettings(this.#runtime, this.#dataDir, (current) => ({
+        ...current,
+        model: previousModel,
+      })).catch((rollbackError) => {
+        // Settings now point at the rejected model — surface it, since the
+        // next startup will hit it with no other trace of why.
+        process.stderr.write(
+          `minerva: failed to roll back model after rejected switch: ${
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+          }\n`,
+        );
+      });
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    this.#provider = next;
+    const at = now();
+    for (const session of this.#sessions.values()) {
+      session.append({ type: "session.model_changed", provider: next.id, at });
+    }
+    return { providerId: next.id };
   }
 
   /** For tests and diagnostics. */

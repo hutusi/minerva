@@ -30,6 +30,8 @@ export const MINERVA_METHODS = {
   sessionsList: "minerva/sessions/list",
   /** Frontend → kernel: summarize the conversation and reset model context. */
   sessionCompact: "minerva/session/compact",
+  /** Frontend → kernel: persist model/provider config and swap the live provider. */
+  configSetModel: "minerva/config/set_model",
 } as const;
 
 /** Kernel → frontend. */
@@ -117,6 +119,28 @@ export interface SessionCompactParams {
 
 export interface SessionCompactResult {
   summary: string;
+}
+
+// --- minerva/config/set_model ------------------------------------------
+
+export interface ConfigSetModelParams {
+  /** Model reference, e.g. "bailian/qwen-plus". */
+  modelRef: string;
+  /** Upsert this provider definition into global settings before switching. */
+  provider?: {
+    name: string;
+    baseUrl?: string | undefined;
+    apiKeyEnv?: string | undefined;
+    defaultModel?: string | undefined;
+    /** false = keyless endpoint; hosts won't demand a key at startup. */
+    requiresApiKey?: boolean | undefined;
+  };
+  /** Stored in global settings only (file mode 0600). Omit to keep the env/stored key. */
+  apiKey?: string;
+}
+
+export interface ConfigSetModelResult {
+  providerId: string;
 }
 
 // --- minerva/sessions/list ---------------------------------------------

@@ -24,7 +24,15 @@ const client = new MinervaClient(clientTransport, {
 });
 
 const app = render(
-  <App client={client} bridge={bridge} model="scripted" cwd={process.cwd()} resume={null} />,
+  <App
+    client={client}
+    bridge={bridge}
+    model="scripted"
+    cwd={process.cwd()}
+    resume={null}
+    providers={[]}
+    needsConfig={false}
+  />,
 );
 await app.waitUntilExit();
 process.exit(0);
