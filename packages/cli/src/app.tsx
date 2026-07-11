@@ -1,4 +1,4 @@
-import type { MinervaClient, SessionStore, ViewItem } from "@minerva/client";
+import type { MinervaClient, SessionStore, SessionViewModel, ViewItem } from "@minerva/client";
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
@@ -243,8 +243,36 @@ function Chat({
           <TextInput value={draft} onChange={setDraft} onSubmit={submit} />
         </Box>
       )}
+      {viewModel.usage ? <UsageFooter usage={viewModel.usage} /> : null}
     </Box>
   );
+}
+
+function UsageFooter({ usage }: { usage: NonNullable<SessionViewModel["usage"]> }) {
+  const { lastTurn, cumulative } = usage;
+  const cached =
+    cumulative.cacheReadTokens && cumulative.cacheReadTokens > 0
+      ? ` (${formatTokens(cumulative.cacheReadTokens)} cached)`
+      : "";
+  const parts = [
+    ...(lastTurn
+      ? [
+          `last ${formatTokens(lastTurn.inputTokens)} in / ${formatTokens(lastTurn.outputTokens)} out`,
+        ]
+      : []),
+    `session ${formatTokens(cumulative.inputTokens)} in / ${formatTokens(cumulative.outputTokens)} out${cached}`,
+  ];
+  return <Text dimColor>tokens · {parts.join(" · ")}</Text>;
+}
+
+function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${trimDecimal(count / 1_000_000)}M`;
+  if (count >= 1_000) return `${trimDecimal(count / 1_000)}k`;
+  return String(count);
+}
+
+function trimDecimal(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, "");
 }
 
 function itemKey(item: ViewItem, index: number): string {

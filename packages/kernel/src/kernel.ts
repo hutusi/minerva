@@ -18,6 +18,7 @@ import {
   type SessionSetModeResult,
   type SessionSummary,
   type SessionsListResult,
+  type SessionUsageParams,
   type Transport,
 } from "@minerva/protocol";
 import type { ModelProvider } from "@minerva/providers";
@@ -35,6 +36,7 @@ import {
   updateGlobalSettings,
 } from "./settings";
 import { builtinTools, type KernelTool } from "./tools";
+import { hasUsage, toTokenUsage } from "./usage";
 
 export interface KernelOptions {
   provider: ModelProvider;
@@ -188,6 +190,15 @@ export class MinervaKernel {
     // answering, so the frontend can rebuild its transcript.
     for (const update of loaded.replay.updates) {
       this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });
+    }
+    // Session-lifetime spend lives only in the log; without this a resumed
+    // frontend would show totals starting from zero.
+    if (hasUsage(loaded.session.usage)) {
+      const params: SessionUsageParams = {
+        sessionId,
+        cumulative: toTokenUsage(loaded.session.usage),
+      };
+      this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
     }
     return { modes: modeState(loaded.session) };
   }

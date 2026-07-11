@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { PlanEntry } from "@minerva/protocol";
-import type { ProviderMessage } from "@minerva/providers";
+import type { ProviderMessage, TurnUsage } from "@minerva/providers";
 import { now, type SessionEvent } from "./events";
 import { DEFAULT_MODE, isSessionModeId, PermissionEngine, type SessionModeId } from "./permissions";
 import { type ReplayResult, replayEvents } from "./replay";
 import type { Runtime } from "./runtime";
 import { loadSettings } from "./settings";
 import type { KernelTool } from "./tools";
+import { addUsage } from "./usage";
 
 export interface SessionOptions {
   cwd: string;
@@ -28,6 +29,8 @@ export class Session {
   readonly permissions: PermissionEngine;
   mode: SessionModeId;
   todos: PlanEntry[] = [];
+  /** Token spend across every completed turn, incl. pre-resume history. */
+  usage: TurnUsage = {};
   promptActive = false;
 
   #logPath: string;
@@ -110,6 +113,7 @@ export class Session {
     const session = new Session(sessionId, options, new PermissionEngine(settings.rules), mode);
     session.messages.push(...replay.messages);
     session.todos = replay.todos;
+    session.usage = replay.usage;
     // Re-append to the index so "latest session" means most recently used,
     // not most recently created; the list handler dedupes by id.
     await options.runtime.appendTextFile(
@@ -133,6 +137,10 @@ export class Session {
       .catch((error) => {
         this.#logError ??= error;
       });
+  }
+
+  addTurnUsage(turn: TurnUsage): void {
+    this.usage = addUsage(this.usage, turn);
   }
 
   async flush(): Promise<void> {

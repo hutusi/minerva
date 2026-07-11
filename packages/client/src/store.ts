@@ -1,6 +1,7 @@
 import type {
   PlanEntry,
   SessionUpdate,
+  TokenUsage,
   ToolCallContent,
   ToolCallStatus,
   ToolKind,
@@ -30,6 +31,8 @@ export interface SessionViewModel {
   items: ViewItem[];
   busy: boolean;
   currentModeId?: string;
+  /** Persistent status like currentModeId — not a transcript item. */
+  usage?: { lastTurn?: TokenUsage | undefined; cumulative: TokenUsage };
 }
 
 const EMPTY: SessionViewModel = { items: [], busy: false };
@@ -58,7 +61,9 @@ export class SessionStore {
 
   setBusy(busy: boolean): void {
     const items = busy ? this.#viewModel.items : this.#viewModel.items.map(finalizeStreamingItem);
-    this.#set({ items, busy });
+    // Spread, don't rebuild: status state (currentModeId, usage) set while
+    // the prompt was running must survive the busy flip at its end.
+    this.#set({ ...this.#viewModel, items, busy });
   }
 
   apply(update: SessionUpdate): void {
@@ -100,6 +105,11 @@ export class SessionStore {
 
   setMode(modeId: string): void {
     this.#set({ ...this.#viewModel, currentModeId: modeId });
+  }
+
+  /** Latest wins; a resume announcement carries no lastTurn and clears it. */
+  setUsage(lastTurn: TokenUsage | undefined, cumulative: TokenUsage): void {
+    this.#set({ ...this.#viewModel, usage: { lastTurn, cumulative } });
   }
 
   /** One live plan per session: the latest update replaces it in place. */

@@ -33,6 +33,44 @@ describe("SessionStore reducer", () => {
     ]);
   });
 
+  test("setUsage keeps the latest report; a resume announcement clears lastTurn", () => {
+    const store = new SessionStore();
+    store.setUsage({ inputTokens: 10, outputTokens: 5 }, { inputTokens: 10, outputTokens: 5 });
+    expect(store.snapshot.usage).toEqual({
+      lastTurn: { inputTokens: 10, outputTokens: 5 },
+      cumulative: { inputTokens: 10, outputTokens: 5 },
+    });
+
+    store.setUsage(
+      { inputTokens: 20, outputTokens: 8, cacheReadTokens: 100 },
+      { inputTokens: 30, outputTokens: 13, cacheReadTokens: 100 },
+    );
+    expect(store.snapshot.usage?.cumulative).toEqual({
+      inputTokens: 30,
+      outputTokens: 13,
+      cacheReadTokens: 100,
+    });
+
+    store.setUsage(undefined, { inputTokens: 30, outputTokens: 13 });
+    expect(store.snapshot.usage).toEqual({
+      lastTurn: undefined,
+      cumulative: { inputTokens: 30, outputTokens: 13 },
+    });
+    // Usage is status state, never a transcript item.
+    expect(store.snapshot.items).toEqual([]);
+  });
+
+  test("setBusy preserves status state set while the prompt ran", () => {
+    const store = new SessionStore();
+    store.setBusy(true);
+    store.setMode("plan");
+    store.setUsage({ inputTokens: 1, outputTokens: 2 }, { inputTokens: 1, outputTokens: 2 });
+    store.setBusy(false);
+
+    expect(store.snapshot.currentModeId).toBe("plan");
+    expect(store.snapshot.usage?.cumulative).toEqual({ inputTokens: 1, outputTokens: 2 });
+  });
+
   test("tool_call_update merges status and text output", () => {
     const store = new SessionStore();
     store.apply({

@@ -10,6 +10,7 @@ import {
   PROTOCOL_VERSION,
   type RequestPermissionParams,
   type SessionUpdateParams,
+  type SessionUsageParams,
 } from "@minerva/protocol";
 import { createScriptedProvider, type TurnEvent } from "@minerva/providers";
 import { createKernel, type SessionEvent } from "../src";
@@ -28,6 +29,7 @@ const FINISH_STOP: TurnEvent = {
 interface Harness {
   client: Connection;
   updates: SessionUpdateParams[];
+  usageNotices: SessionUsageParams[];
   permissionRequests: RequestPermissionParams[];
   sessionId: string;
   cwd: string;
@@ -51,9 +53,13 @@ async function setup(options: {
 
   const client = new Connection(clientTransport);
   const updates: SessionUpdateParams[] = [];
+  const usageNotices: SessionUsageParams[] = [];
   const permissionRequests: RequestPermissionParams[] = [];
   client.handleNotification(CLIENT_METHODS.sessionUpdate, (params) => {
     updates.push(params as SessionUpdateParams);
+  });
+  client.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
+    usageNotices.push(params as SessionUsageParams);
   });
   client.handleRequest(CLIENT_METHODS.sessionRequestPermission, (params) => {
     permissionRequests.push(params as RequestPermissionParams);
@@ -77,6 +83,7 @@ async function setup(options: {
   return {
     client,
     updates,
+    usageNotices,
     permissionRequests,
     sessionId,
     cwd,
@@ -153,6 +160,47 @@ describe("kernel over in-proc transport", () => {
     ]);
     const decision = harness.logEvents()[4];
     expect(decision).toMatchObject({ decision: "allowed", source: "user", toolName: "bash" });
+
+    // Usage must be summed across both model turns (tool round-trip + final
+    // answer), not just the last one.
+    expect(harness.logEvents().at(-1)).toMatchObject({
+      type: "turn.completed",
+      usage: { inputTokens: 30, outputTokens: 13 },
+    });
+    expect(harness.usageNotices).toEqual([
+      {
+        sessionId: harness.sessionId,
+        lastTurn: { inputTokens: 30, outputTokens: 13 },
+        cumulative: { inputTokens: 30, outputTokens: 13 },
+      },
+    ]);
+  });
+
+  test("usage accumulates across prompts and is re-announced on resume", async () => {
+    const harness = await setup({
+      turns: [
+        [{ type: "text-delta", text: "one" }, FINISH_STOP],
+        [{ type: "text-delta", text: "two" }, FINISH_STOP],
+      ],
+    });
+
+    await prompt(harness, "first");
+    await prompt(harness, "second");
+    expect(harness.usageNotices.map((n) => n.cumulative)).toEqual([
+      { inputTokens: 20, outputTokens: 8 },
+      { inputTokens: 40, outputTokens: 16 },
+    ]);
+
+    // Resume rebuilds session-lifetime totals from the log and re-announces
+    // them without a lastTurn.
+    harness.usageNotices.length = 0;
+    await harness.client.request(AGENT_METHODS.sessionLoad, {
+      sessionId: harness.sessionId,
+      cwd: harness.cwd,
+    });
+    expect(harness.usageNotices).toEqual([
+      { sessionId: harness.sessionId, cumulative: { inputTokens: 40, outputTokens: 16 } },
+    ]);
   });
 
   test("denied permission becomes an error tool result and the loop continues", async () => {

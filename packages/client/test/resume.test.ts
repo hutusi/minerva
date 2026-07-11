@@ -7,8 +7,16 @@ import { createInProcTransportPair } from "@minerva/protocol";
 import { createScriptedProvider, type TurnEvent } from "@minerva/providers";
 import { MinervaClient } from "../src";
 
-const FINISH_TOOLS: TurnEvent = { type: "finish", finishReason: "tool-calls", usage: {} };
-const FINISH_STOP: TurnEvent = { type: "finish", finishReason: "stop", usage: {} };
+const FINISH_TOOLS: TurnEvent = {
+  type: "finish",
+  finishReason: "tool-calls",
+  usage: { inputTokens: 10, outputTokens: 5 },
+};
+const FINISH_STOP: TurnEvent = {
+  type: "finish",
+  finishReason: "stop",
+  usage: { inputTokens: 20, outputTokens: 8 },
+};
 
 function boot(
   dataDir: string,
@@ -72,6 +80,13 @@ describe("session resume across kernel restarts", () => {
       { kind: "assistant", text: "Done.", streaming: false },
     ]);
 
+    // Session-lifetime usage is rebuilt from the log: both model turns of
+    // the first lifetime, announced without a lastTurn.
+    expect(store.snapshot.usage).toEqual({
+      lastTurn: undefined,
+      cumulative: { inputTokens: 30, outputTokens: 13 },
+    });
+
     // The resumed session carries the prior context into the next turn.
     const resumed = second.kernel.getSession(sessionId);
     expect(resumed?.messages.map((message) => message.role)).toEqual([
@@ -86,6 +101,11 @@ describe("session resume across kernel restarts", () => {
       kind: "assistant",
       text: "Welcome back.",
       streaming: false,
+    });
+    // The post-resume turn keeps counting on top of the rebuilt total.
+    expect(store.snapshot.usage).toEqual({
+      lastTurn: { inputTokens: 20, outputTokens: 8 },
+      cumulative: { inputTokens: 50, outputTokens: 21 },
     });
   });
 

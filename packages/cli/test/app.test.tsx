@@ -263,6 +263,37 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.unmount();
   }, 20_000);
 
+  test("token usage footer shows last-turn and session totals", async () => {
+    const ui = renderTui([
+      [
+        { type: "text-delta", text: "First answer." },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: { inputTokens: 1000, outputTokens: 5, cacheReadTokens: 100 },
+        },
+      ],
+      [
+        { type: "text-delta", text: "Second answer." },
+        { type: "finish", finishReason: "stop", usage: { inputTokens: 250, outputTokens: 8 } },
+      ],
+    ]);
+    await ready(ui);
+    // Nothing reported yet — no footer.
+    expect(ui.lastFrame()).not.toContain("tokens ·");
+
+    await type(ui, "first");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("tokens ·"), "usage footer");
+    expect(ui.lastFrame()).toContain("last 1k in / 5 out");
+    expect(ui.lastFrame()).toContain("session 1k in / 5 out (100 cached)");
+
+    await type(ui, "second");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Second answer."), "second turn");
+    expect(ui.lastFrame()).toContain("last 250 in / 8 out");
+    expect(ui.lastFrame()).toContain("session 1.3k in / 13 out (100 cached)");
+    ui.unmount();
+  }, 20_000);
+
   test("todo_write renders the plan checklist and /mode shows the indicator", async () => {
     const ui = renderTui([
       [

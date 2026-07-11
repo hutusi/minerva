@@ -4,7 +4,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { createAiSdkProvider, type TurnEvent } from "../src";
 
 const USAGE = {
-  inputTokens: { total: 3, noCache: 3, cacheRead: undefined, cacheWrite: undefined },
+  inputTokens: { total: 3, noCache: 1, cacheRead: 2, cacheWrite: 5 },
   outputTokens: { total: 10, text: 10, reasoning: undefined },
 };
 
@@ -38,7 +38,11 @@ describe("AI SDK provider adapter", () => {
     expect(events).toEqual([
       { type: "text-delta", text: "Hello" },
       { type: "text-delta", text: " world" },
-      { type: "finish", finishReason: "stop", usage: { inputTokens: 3, outputTokens: 10 } },
+      {
+        type: "finish",
+        finishReason: "stop",
+        usage: { inputTokens: 3, outputTokens: 10, cacheReadTokens: 2, cacheWriteTokens: 5 },
+      },
     ]);
   });
 

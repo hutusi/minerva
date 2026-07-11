@@ -39,6 +39,8 @@ export interface TurnRequest {
 export interface TurnUsage {
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
+  cacheReadTokens?: number | undefined;
+  cacheWriteTokens?: number | undefined;
 }
 
 export type TurnFinishReason = "stop" | "tool-calls" | "length" | "other";

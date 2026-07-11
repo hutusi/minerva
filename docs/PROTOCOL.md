@@ -76,6 +76,19 @@ Params `{ sessionId, update }`. `update.sessionUpdate` variants:
 `kind ∈ read | edit | delete | move | search | execute | think | fetch | other`;
 `content` entries are `{ type: "content", content: { type: "text", text } }`.
 
+### `minerva/session/usage` *(notification)*
+Params `{ sessionId, lastTurn?, cumulative }`, where both usage shapes are
+`{ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens? }`.
+
+Emitted after each completed prompt turn whose provider reported any usage
+(including cancelled turns), and once after a `session/load` replay when the
+rebuilt cumulative total is non-zero — that re-announcement omits `lastTurn`.
+`cumulative` sums every persisted `turn.completed` of the session and is not
+reset by compaction (it is spend telemetry, not context size). Token counts
+are provider-truth; there is no cost field — pricing for the open provider
+registry can't be bundled truthfully, so cost stays a future additive
+extension (`cost?: { amount, currency }`, mirroring ACP's session-usage RFD).
+
 ### `session/request_permission` *(kernel → frontend request)*
 Params `{ sessionId, toolCall: { toolCallId, title, kind, rawInput }, options }`
 where `options` are `{ optionId, name, kind }`, kinds
@@ -120,3 +133,12 @@ audit event, which replay ignores.
 `minerva/*` methods, new update variants frontends may ignore) don't bump it;
 breaking changes to existing shapes do, with a migration note in CHANGELOG.
 The ACP-shaped subset tracks ACP v1; divergences must be recorded here.
+
+Recorded divergences:
+- **Usage telemetry.** ACP's session-usage RFD added a `usage_update` variant
+  to `session/update` carrying context-window utilization (`used`/`size`,
+  optional `cost`). Minerva instead emits the richer per-turn/cumulative
+  token counts as the separate `minerva/session/usage` notification: emitting
+  a truthful `used`/`size` needs per-model context-window metadata the open
+  provider registry doesn't carry. ACP `usage_update` alignment is deferred
+  until providers declare a context window.
