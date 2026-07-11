@@ -8,5 +8,6 @@ export * from "./replay";
 export * from "./runtime";
 export * from "./session";
 export * from "./settings";
+export * from "./skills";
 export * from "./tools";
 export * from "./usage";

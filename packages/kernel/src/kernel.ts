@@ -44,7 +44,8 @@ import {
   type ProviderSettings,
   updateGlobalSettings,
 } from "./settings";
-import { builtinTools, type KernelTool } from "./tools";
+import { loadSkills, type SkillRegistry } from "./skills";
+import { builtinTools, createSkillTool, type KernelTool } from "./tools";
 import { hasUsage, toTokenUsage } from "./usage";
 
 /**
@@ -111,6 +112,7 @@ export class MinervaKernel {
   #sessions = new Map<string, Session>();
   #mcp = new Map<string, McpConnection>();
   #instructions = new Map<string, ProjectInstructions>();
+  #skills = new Map<string, SkillRegistry>();
   #provider: ModelProvider;
   #resolveProvider: KernelOptions["resolveProvider"];
   #runtime: Runtime;
@@ -214,6 +216,11 @@ export class MinervaKernel {
       process.stderr.write(`minerva: ${warning}\n`);
     }
     this.#instructions.set(sessionId, instructions);
+    const skills = await loadSkills(this.#runtime, this.#dataDir, cwd);
+    for (const warning of skills.warnings) {
+      process.stderr.write(`minerva: ${warning}\n`);
+    }
+    this.#skills.set(sessionId, skills);
     if (instructions.files.length === 0) return undefined;
     return {
       files: instructions.files.map(({ path, scope, truncated }) => ({ path, scope, truncated })),
@@ -241,7 +248,12 @@ export class MinervaKernel {
 
   #toolsFor(sessionId: string): KernelTool[] {
     const mcpTools = this.#mcp.get(sessionId)?.tools ?? [];
-    return mcpTools.length > 0 ? [...this.#tools, ...mcpTools] : this.#tools;
+    const skills = this.#skills.get(sessionId);
+    // The skill tool only exists when the session has skills: an empty
+    // listing would just burn prompt tokens and invite bogus calls.
+    const skillTools = skills && skills.skills.length > 0 ? [createSkillTool(skills)] : [];
+    if (mcpTools.length === 0 && skillTools.length === 0) return this.#tools;
+    return [...this.#tools, ...skillTools, ...mcpTools];
   }
 
   async #sessionLoad(params: unknown): Promise<SessionLoadResult> {

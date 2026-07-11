@@ -8,6 +8,7 @@ import type { KernelTool } from "./types";
 import { writeFileTool } from "./write-file";
 
 export { locateRg, type RgEnv, resolveRgPath } from "./ripgrep";
+export { createSkillTool } from "./skill";
 export * from "./types";
 export { bashTool, editFileTool, globTool, grepTool, readFileTool, todoTool, writeFileTool };
 
