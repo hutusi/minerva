@@ -654,6 +654,36 @@ describe("agent loop edges", () => {
     expect(events.at(-1)).toMatchObject({ type: "turn.failed", error: "model exploded" });
   });
 
+  test("a first-token failure leaves no dangling user message (retry alternates)", async () => {
+    const h = harness(
+      createScriptedProvider([
+        [{ type: "error", error: new Error("rate limited") } as TurnEvent],
+        [{ type: "text-delta", text: "recovered" }, FINISH_STOP],
+      ]),
+    );
+    await h.client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await h.client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd: h.cwd,
+    });
+    await expect(
+      h.client.request(AGENT_METHODS.sessionPrompt, {
+        sessionId,
+        prompt: [{ type: "text", text: "go" }],
+      }),
+    ).rejects.toThrow("rate limited");
+
+    const session = h.kernel.getSession(sessionId);
+    // The failed turn's user prompt was rolled out of provider context.
+    expect(session?.messages.at(-1)?.role).not.toBe("user");
+
+    // A retry sends a single user message, not [user, user].
+    await h.client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "go again" }],
+    });
+    expect(session?.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
   test("a stream that throws after streaming persists the partial output", async () => {
     const throwingProvider: ModelProvider = {
       id: "throwing",

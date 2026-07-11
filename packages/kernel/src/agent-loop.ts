@@ -197,13 +197,22 @@ async function runLoop(
     // flushed at the first following text or tool event.
     recordAssistantMessage();
     flushThought();
+    // A turn that ends (cancel or error) having recorded no assistant message
+    // leaves the user prompt as the trailing provider message; drop it so a
+    // retry doesn't send two consecutive user messages that strict endpoints
+    // reject. Only fires when no assistant/tool followed the user this turn.
+    const dropUnansweredUser = () => {
+      if (session.messages.at(-1)?.role === "user") session.messages.pop();
+    };
     if (session.cancelled) {
+      dropUnansweredUser();
       resolveToolBatch("Tool call cancelled by user.");
       return finish(context, "cancelled", promptUsage);
     }
     if (streamError !== undefined) {
       // The recorded assistant message may carry tool calls that will never
       // execute; resolve them so the history has no dangling tool use.
+      dropUnansweredUser();
       resolveToolBatch("Tool call was interrupted by a model stream error.");
       throw streamError instanceof Error ? streamError : new Error(String(streamError));
     }

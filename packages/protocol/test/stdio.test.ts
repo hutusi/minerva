@@ -61,6 +61,36 @@ describe("stream transport (ACP stdio framing)", () => {
     expect(received).toEqual([{ jsonrpc: "2.0", method: "ok" }]);
   });
 
+  test("a multibyte char split across chunks decodes intact", async () => {
+    const input = new PassThrough();
+    const transport = createStreamTransport(input, new PassThrough());
+    const received: JsonRpcMessage[] = [];
+    transport.onMessage((message) => received.push(message));
+
+    // "中文" is 6 UTF-8 bytes; split the first char across two writes.
+    const frame = Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", method: "中文" })}\n`, "utf8");
+    const cut = frame.indexOf(Buffer.from("中", "utf8")[0] as number) + 1;
+    input.write(frame.subarray(0, cut));
+    await Bun.sleep(1);
+    input.write(frame.subarray(cut));
+    await Bun.sleep(1);
+
+    expect(received).toEqual([{ jsonrpc: "2.0", method: "中文" }]);
+  });
+
+  test("a runaway unframed line closes the transport instead of buffering forever", async () => {
+    const input = new PassThrough();
+    const transport = createStreamTransport(input, new PassThrough());
+    let closed = false;
+    transport.onClose(() => {
+      closed = true;
+    });
+    // 20MB with no newline exceeds the 16MB frame cap.
+    input.write("x".repeat(20 * 1024 * 1024));
+    await Bun.sleep(1);
+    expect(closed).toBe(true);
+  });
+
   test("input end closes the transport and rejects pending requests", async () => {
     const input = new PassThrough();
     const transport = createStreamTransport(input, new PassThrough());

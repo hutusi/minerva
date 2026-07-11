@@ -18,4 +18,10 @@ server.registerTool(
   }),
 );
 
+server.registerTool(
+  "pwd",
+  { description: "Report the server's working directory", inputSchema: {} },
+  async () => ({ content: [{ type: "text", text: process.cwd() }] }),
+);
+
 await server.connect(new StdioServerTransport());

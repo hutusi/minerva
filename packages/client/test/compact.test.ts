@@ -138,6 +138,27 @@ describe("/compact", () => {
     expect(requests.map((r) => r.thinking)).toEqual([undefined, "off"]);
   });
 
+  test("compaction records the summarization turn's token usage", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-compact5-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-compact5-data-"));
+    const first = boot(dataDir, [
+      [{ type: "text-delta", text: "Did the work." }, FINISH_STOP],
+      // The compaction turn spends tokens the finish event reports.
+      [
+        { type: "text-delta", text: "Summary of the work." },
+        { type: "finish", finishReason: "stop", usage: { inputTokens: 100, outputTokens: 10 } },
+      ],
+    ]);
+    await first.client.initialize();
+    const { sessionId } = await first.client.newSession(cwd);
+    await first.client.prompt(sessionId, "do the work");
+    await first.client.compact(sessionId);
+
+    const usage = first.kernel.getSession(sessionId)?.usage;
+    expect(usage?.inputTokens).toBe(100);
+    expect(usage?.outputTokens).toBe(10);
+  });
+
   test("compacting an empty session is rejected", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-compact2-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-compact2-data-"));

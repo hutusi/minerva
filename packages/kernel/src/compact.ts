@@ -43,6 +43,9 @@ export async function runCompact(session: Session, provider: ModelProvider): Pro
     for await (const event of stream) {
       if (event.type === "text-delta") summary += event.text;
       if (event.type === "error") streamError = event.error;
+      // The summarization turn spends tokens too; account for them so session
+      // usage isn't understated after a compaction.
+      if (event.type === "finish") session.addTurnUsage(event.usage);
     }
     if (streamError !== undefined) {
       throw streamError instanceof Error ? streamError : new Error(String(streamError));

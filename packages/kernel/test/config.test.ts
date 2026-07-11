@@ -12,7 +12,7 @@ import {
   type SessionUpdateParams,
 } from "@minerva/protocol";
 import type { ModelProvider, TurnEvent } from "@minerva/providers";
-import { createScriptedProvider } from "@minerva/providers";
+import { buildProviderRegistry, createScriptedProvider } from "@minerva/providers";
 import {
   createKernel,
   globalSettingsPath,
@@ -121,6 +121,32 @@ describe("minerva/config/set_model", () => {
       readFileSync(globalSettingsPath(h.dataDir), "utf8"),
     ) as MinervaSettings;
     expect(settings.model).toBeUndefined();
+  });
+
+  test("an invalid provider name is rejected without persisting (no startup brick)", async () => {
+    const h = await setup({
+      provider: scripted("scripted", [textTurn("hello")]),
+      resolveProvider: (ref) => scripted(ref, []),
+    });
+    await expect(
+      h.client.request(MINERVA_METHODS.configSetModel, {
+        modelRef: "BAD!/model",
+        provider: { name: "BAD!", baseUrl: "https://example.com/v1" },
+      }),
+    ).rejects.toThrow();
+
+    // Nothing was persisted, so the next startup's buildProviderRegistry
+    // (which the CLI runs unguarded) still succeeds.
+    let providers: Record<string, unknown> = {};
+    try {
+      providers =
+        (JSON.parse(readFileSync(globalSettingsPath(h.dataDir), "utf8")) as MinervaSettings)
+          .providers ?? {};
+    } catch {
+      // settings.json may not exist at all — also fine.
+    }
+    expect(providers["BAD!"]).toBeUndefined();
+    expect(() => buildProviderRegistry(providers as Record<string, never>)).not.toThrow();
   });
 
   test("a keyless custom provider definition persists requiresApiKey", async () => {

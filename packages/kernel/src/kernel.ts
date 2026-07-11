@@ -21,7 +21,7 @@ import {
   type SessionUsageParams,
   type Transport,
 } from "@minerva/protocol";
-import type { ModelProvider } from "@minerva/providers";
+import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
 import { runPrompt } from "./agent-loop";
 import { runCompact } from "./compact";
 import { now } from "./events";
@@ -155,7 +155,7 @@ export class MinervaKernel {
 
     const settings = await loadSettings(this.#runtime, this.#dataDir, cwd);
     if (Object.keys(settings.mcpServers).length === 0) return;
-    const connection = await connectMcpServers(settings.mcpServers);
+    const connection = await connectMcpServers(settings.mcpServers, cwd);
     for (const warning of connection.warnings) {
       process.stderr.write(`minerva: ${warning}\n`);
     }
@@ -399,25 +399,37 @@ export class MinervaKernel {
     const slash = modelRef.indexOf("/");
     const providerName = provider?.name ?? (slash === -1 ? "anthropic" : modelRef.slice(0, slash));
     let previousModel: string | undefined;
-    await updateGlobalSettings(this.#runtime, this.#dataDir, (current) => {
-      previousModel = current.model;
-      const entry: ProviderSettings = {
-        ...current.providers?.[providerName],
-        ...(provider?.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
-        ...(provider?.apiKeyEnv !== undefined ? { apiKeyEnv: provider.apiKeyEnv } : {}),
-        ...(provider?.defaultModel !== undefined ? { defaultModel: provider.defaultModel } : {}),
-        ...(provider?.requiresApiKey !== undefined
-          ? { requiresApiKey: provider.requiresApiKey }
-          : {}),
-        ...(apiKey !== undefined ? { apiKey } : {}),
-      };
-      const touched = provider !== undefined || apiKey !== undefined;
-      return {
-        ...current,
-        model: modelRef,
-        ...(touched ? { providers: { ...current.providers, [providerName]: entry } } : {}),
-      };
-    });
+    try {
+      await updateGlobalSettings(this.#runtime, this.#dataDir, (current) => {
+        previousModel = current.model;
+        const entry: ProviderSettings = {
+          ...current.providers?.[providerName],
+          ...(provider?.baseUrl !== undefined ? { baseUrl: provider.baseUrl } : {}),
+          ...(provider?.apiKeyEnv !== undefined ? { apiKeyEnv: provider.apiKeyEnv } : {}),
+          ...(provider?.defaultModel !== undefined ? { defaultModel: provider.defaultModel } : {}),
+          ...(provider?.requiresApiKey !== undefined
+            ? { requiresApiKey: provider.requiresApiKey }
+            : {}),
+          ...(apiKey !== undefined ? { apiKey } : {}),
+        };
+        const touched = provider !== undefined || apiKey !== undefined;
+        const next = {
+          ...current,
+          model: modelRef,
+          ...(touched ? { providers: { ...current.providers, [providerName]: entry } } : {}),
+        };
+        // Validate the candidate registry in memory before it reaches disk. An
+        // invalid provider (bad name, missing baseUrl) would otherwise persist
+        // and brick the next startup, which builds the registry unguarded.
+        if (touched) buildProviderRegistry(next.providers);
+        return next;
+      });
+    } catch (error) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
     let next: ModelProvider;
     try {

@@ -1,4 +1,9 @@
+import { StringDecoder } from "node:string_decoder";
 import type { JsonRpcMessage, Transport } from "./jsonrpc";
+
+/** Drop the connection if a single unframed line grows past this — a peer that
+ * never sends a newline must not buffer without bound. */
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 /**
  * Stream-based transport with ACP stdio framing: one JSON-RPC message per
@@ -12,6 +17,9 @@ export function createStreamTransport(
 ): Transport {
   const messageHandlers: Array<(message: JsonRpcMessage) => void> = [];
   const closeHandlers: Array<() => void> = [];
+  // Decode across chunk boundaries: a multibyte UTF-8 char split between two
+  // reads would otherwise be corrupted by a per-chunk toString.
+  const decoder = new StringDecoder("utf8");
   let buffer = "";
   let closed = false;
 
@@ -22,7 +30,7 @@ export function createStreamTransport(
   };
 
   const onData = (chunk: Buffer | string) => {
-    buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
     // Everything before the last newline is complete messages; the remainder
     // stays buffered until the peer sends the rest of the line.
     let newline = buffer.indexOf("\n");
@@ -43,6 +51,26 @@ export function createStreamTransport(
       }
       newline = buffer.indexOf("\n");
     }
+    if (buffer.length > MAX_FRAME_BYTES) emitClose(); // runaway unframed input
+  };
+
+  // Backpressure-aware writer: queue frames and pause when the sink is full,
+  // resuming on drain, so a slow reader can't grow the write buffer unbounded.
+  const outQueue: string[] = [];
+  let draining = false;
+  const flush = () => {
+    if (draining) return;
+    while (outQueue.length > 0) {
+      const frame = outQueue.shift() as string;
+      if (!output.write(frame)) {
+        draining = true;
+        output.once("drain", () => {
+          draining = false;
+          flush();
+        });
+        return;
+      }
+    }
   };
 
   input.on("data", onData);
@@ -54,7 +82,8 @@ export function createStreamTransport(
   return {
     send(message) {
       if (closed) return;
-      output.write(`${JSON.stringify(message)}\n`);
+      outQueue.push(`${JSON.stringify(message)}\n`);
+      flush();
     },
     onMessage(handler) {
       messageHandlers.push(handler);
