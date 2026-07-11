@@ -1,8 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import {
   getDefaultEnvironment,
   StdioClientTransport,
 } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerConfig } from "./settings";
 import type { KernelTool } from "./tools";
 import { asRecord } from "./tools";
@@ -34,20 +37,7 @@ export async function connectMcpServers(
     Object.entries(servers).map(async ([serverName, config]) => {
       try {
         const client = new Client({ name: "minerva", version: "0.1.0" });
-        await client.connect(
-          new StdioClientTransport({
-            command: config.command,
-            ...(config.args ? { args: config.args } : {}),
-            // Launch the server in the session's working directory so relative
-            // paths and project detection match the user's project, not the
-            // Minerva host's cwd.
-            cwd,
-            // Merge with the SDK's safe defaults: passing env alone REPLACES
-            // the environment, and a config that sets one variable would
-            // otherwise strip PATH/HOME and break the server's spawn.
-            ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
-          }),
-        );
+        await connectClient(client, config, cwd);
         clients.push(client);
         const listed = await client.listTools();
         for (const tool of listed.tools) {
@@ -70,6 +60,51 @@ export async function connectMcpServers(
       await Promise.allSettled(clients.map((client) => client.close()));
     },
   };
+}
+
+/**
+ * Pick a transport from the config shape: `url` = remote Streamable HTTP
+ * (with a one-shot SSE fallback for pre-2025-03 servers), `command` = local
+ * stdio child. Throws into the caller's warning path — a bad entry degrades,
+ * it never fails the session.
+ */
+async function connectClient(client: Client, config: McpServerConfig, cwd: string): Promise<void> {
+  if (config.type === "http") {
+    const url = new URL(config.url); // malformed URL → descriptive TypeError
+    const options = config.headers ? { requestInit: { headers: config.headers } } : {};
+    try {
+      // Cast: the transport's `sessionId: string | undefined` doesn't unify
+      // with the interface's `sessionId?: string` under
+      // exactOptionalPropertyTypes — an SDK-internal mismatch, not ours.
+      await client.connect(new StreamableHTTPClientTransport(url, options) as Transport);
+    } catch (streamableError) {
+      try {
+        await client.connect(new SSEClientTransport(url, options));
+      } catch {
+        // The SSE attempt was only a courtesy; the streamable error names
+        // the real problem (auth, DNS, protocol), so surface that one.
+        throw streamableError;
+      }
+    }
+    return;
+  }
+  if (!config.command) {
+    throw new Error('config needs a "command" (stdio) or "type": "http" with a "url"');
+  }
+  await client.connect(
+    new StdioClientTransport({
+      command: config.command,
+      ...(config.args ? { args: config.args } : {}),
+      // Launch the server in the session's working directory so relative
+      // paths and project detection match the user's project, not the
+      // Minerva host's cwd.
+      cwd,
+      // Merge with the SDK's safe defaults: passing env alone REPLACES
+      // the environment, and a config that sets one variable would
+      // otherwise strip PATH/HOME and break the server's spawn.
+      ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
+    }),
+  );
 }
 
 interface McpToolInfo {

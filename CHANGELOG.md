@@ -7,6 +7,13 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Remote MCP servers over Streamable HTTP: an `mcpServers` entry with
+  `"type": "http"` and a `url` (plus optional `headers` for bearer tokens)
+  connects to a hosted server, falling back to SSE once for pre-2025-03
+  servers; entries with a `command` remain stdio, so existing configs are
+  untouched. Remote tools flow through the same `mcp__server__tool`
+  permission gating, and an unreachable server still degrades to a startup
+  warning instead of failing the session.
 - Streamed model reasoning end-to-end: `agent_thought_chunk` (reserved since
   v0.1) is now emitted live and on `session/load` replay, backed by a new
   `assistant.thought` session event; the CLI shows the thought dimmed while

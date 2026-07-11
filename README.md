@@ -103,7 +103,12 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
     "ask": ["bash(git push*)"]
   },
   "mcpServers": {
-    "calc": { "command": "bun", "args": ["run", "./tools/mcp-calc.ts"] }
+    "calc": { "command": "bun", "args": ["run", "./tools/mcp-calc.ts"] },
+    "remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." }
+    }
   }
 }
 ```
@@ -134,6 +139,14 @@ rejected at startup (Anthropic extended thinking needs reasoning replayed into
 tool loops, which Minerva doesn't do yet). Reasoning the model streams is shown
 dimmed while it thinks and collapses to a one-line summary once the answer
 starts; either way it is display-only and never re-sent to the model.
+
+`mcpServers` entries are stdio by default (`command` + optional `args`/`env`,
+launched in the project directory); `"type": "http"` entries connect to a
+remote server over Streamable HTTP (with an SSE fallback for older servers)
+and may carry extra request `headers`. Header values often hold tokens —
+unlike provider API keys they are honored from both settings layers, so keep
+tokened servers in the **global** file, not a shared project one. A server
+that fails to connect degrades to a startup warning; the session still opens.
 
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:
