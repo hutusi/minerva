@@ -3,6 +3,7 @@ import {
   type Connection,
   type RequestPermissionResult,
   type SessionUpdate,
+  type SessionUsageParams,
   type StopReason,
 } from "@minerva/protocol";
 import type {
@@ -18,7 +19,7 @@ import type { Runtime } from "./runtime";
 import type { Session } from "./session";
 import { persistAllowRule } from "./settings";
 import type { KernelTool } from "./tools";
-import { addUsage } from "./usage";
+import { addUsage, hasUsage, toTokenUsage } from "./usage";
 
 /** Backstop against runaway loops; becomes configurable with modes in slice 2. */
 const MAX_MODEL_TURNS = 40;
@@ -138,7 +139,7 @@ async function runLoop(
     if (session.cancelled) {
       recordAssistantMessage();
       cancelToolBatch();
-      return finish(session, "cancelled", promptUsage);
+      return finish(context, "cancelled", promptUsage);
     }
     if (streamError !== undefined) {
       throw streamError instanceof Error ? streamError : new Error(String(streamError));
@@ -147,7 +148,7 @@ async function runLoop(
     recordAssistantMessage();
 
     if (toolCalls.length === 0) {
-      return finish(session, finishReason === "length" ? "max_tokens" : "end_turn", promptUsage);
+      return finish(context, finishReason === "length" ? "max_tokens" : "end_turn", promptUsage);
     }
 
     const results: ProviderToolResult[] = [];
@@ -159,9 +160,9 @@ async function runLoop(
       );
     }
     session.messages.push({ role: "tool", results });
-    if (session.cancelled) return finish(session, "cancelled", promptUsage);
+    if (session.cancelled) return finish(context, "cancelled", promptUsage);
   }
-  return finish(session, "max_turn_requests", promptUsage);
+  return finish(context, "max_turn_requests", promptUsage);
 }
 
 async function executeToolCall(
@@ -392,10 +393,22 @@ function sendUpdate(context: LoopContext, update: SessionUpdate): void {
 }
 
 function finish(
-  session: Session,
+  context: LoopContext,
   stopReason: StopReason,
   usage?: TurnUsage,
 ): { stopReason: StopReason } {
+  const { session } = context;
   session.append({ type: "turn.completed", stopReason, usage, at: now() });
+  // Providers that report nothing (scripted fixtures, some proxies) get no
+  // notification rather than a misleading all-zero one.
+  if (hasUsage(usage)) {
+    session.addTurnUsage(usage);
+    const params: SessionUsageParams = {
+      sessionId: session.id,
+      lastTurn: toTokenUsage(usage),
+      cumulative: toTokenUsage(session.usage),
+    };
+    context.connection.notify(CLIENT_METHODS.sessionUsage, params);
+  }
   return { stopReason };
 }

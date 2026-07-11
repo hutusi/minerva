@@ -1,8 +1,14 @@
 import type { PlanEntry, SessionUpdate } from "@minerva/protocol";
-import type { ProviderMessage, ProviderToolCall, ProviderToolResult } from "@minerva/providers";
+import type {
+  ProviderMessage,
+  ProviderToolCall,
+  ProviderToolResult,
+  TurnUsage,
+} from "@minerva/providers";
 import { compactedContextMessage } from "./compact";
 import type { SessionEvent } from "./events";
 import type { KernelTool } from "./tools";
+import { addUsage } from "./usage";
 
 export interface ReplayResult {
   /** Provider messages, ready to continue the conversation. */
@@ -12,6 +18,8 @@ export interface ReplayResult {
   todos: PlanEntry[];
   /** Last mode recorded in the log, if any. */
   modeId?: string | undefined;
+  /** Token spend summed over every completed turn in the log. */
+  usage: TurnUsage;
 }
 
 /**
@@ -26,6 +34,7 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   const updates: SessionUpdate[] = [];
   let todos: PlanEntry[] = [];
   let modeId: string | undefined;
+  let usage: TurnUsage = {};
 
   let expected: ProviderToolCall[] = [];
   let results: ProviderToolResult[] = [];
@@ -135,6 +144,12 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         break;
 
       case "turn.completed":
+        // Spend telemetry survives compaction: session.compacted resets the
+        // model context above, but not what the session has already cost.
+        usage = addUsage(usage, event.usage);
+        flushToolBatch();
+        break;
+
       case "turn.failed":
         flushToolBatch();
         break;
@@ -146,7 +161,7 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   flushToolBatch();
 
   if (modeId) updates.push({ sessionUpdate: "current_mode_update", currentModeId: modeId });
-  return { messages, updates, todos, modeId };
+  return { messages, updates, todos, modeId, usage };
 }
 
 function titleFor(tool: KernelTool | undefined, toolName: string, input: unknown): string {

@@ -1,3 +1,4 @@
+import type { TokenUsage } from "@minerva/protocol";
 import type { TurnUsage } from "@minerva/providers";
 
 function addField(a: number | undefined, b: number | undefined): number | undefined {
@@ -20,7 +21,7 @@ export function addUsage(total: TurnUsage, turn: TurnUsage | undefined): TurnUsa
 }
 
 /** True when the report carries at least one concrete number. */
-export function hasUsage(usage: TurnUsage | undefined): boolean {
+export function hasUsage(usage: TurnUsage | undefined): usage is TurnUsage {
   return (
     usage !== undefined &&
     (usage.inputTokens !== undefined ||
@@ -28,4 +29,14 @@ export function hasUsage(usage: TurnUsage | undefined): boolean {
       usage.cacheReadTokens !== undefined ||
       usage.cacheWriteTokens !== undefined)
   );
+}
+
+/** Normalize for the wire: in/out default to 0, cache fields stay optional. */
+export function toTokenUsage(usage: TurnUsage): TokenUsage {
+  return {
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+    ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+  };
 }

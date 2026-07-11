@@ -234,4 +234,35 @@ describe("replay edges", () => {
     const toolStart = replay.updates.find((u) => u.sessionUpdate === "tool_call");
     expect(toolStart).toMatchObject({ title: "gone_tool" });
   });
+
+  test("cumulative usage sums completed turns and survives compaction", () => {
+    const events = [
+      { type: "user.message", text: "hi", at: "t" },
+      {
+        type: "turn.completed",
+        stopReason: "end_turn",
+        usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 100 },
+        at: "t",
+      },
+      // Old logs predate usage on turn.completed — they contribute nothing.
+      { type: "turn.completed", stopReason: "end_turn", at: "t" },
+      // Compaction resets the model context, not the session's spend.
+      { type: "session.compacted", summary: "so far", at: "t" },
+      { type: "user.message", text: "more", at: "t" },
+      {
+        type: "turn.completed",
+        stopReason: "end_turn",
+        usage: { inputTokens: 20, outputTokens: 8 },
+        at: "t",
+      },
+    ] as SessionEvent[];
+
+    const replay = replayEvents(events, []);
+    expect(replay.usage).toEqual({
+      inputTokens: 30,
+      outputTokens: 13,
+      cacheReadTokens: 100,
+      cacheWriteTokens: undefined,
+    });
+  });
 });
