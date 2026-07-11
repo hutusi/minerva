@@ -9,8 +9,10 @@ export const globTool: KernelTool = {
   name: "glob",
   description:
     "Find files matching a glob pattern (e.g. src/**/*.ts), relative to the " +
-    "working directory or an optional subdirectory. Results are capped at 200 " +
-    "paths; node_modules and .git are ignored.",
+    "working directory or an optional subdirectory. A pattern without a slash " +
+    "(e.g. *.ts) matches that basename at ANY depth; use **/ or a path segment " +
+    "(e.g. src/*.ts) to scope it. Results are capped at 200 paths; node_modules " +
+    "and .git are ignored.",
   inputSchema: {
     type: "object",
     properties: {

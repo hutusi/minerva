@@ -13,6 +13,7 @@ import type { ModelProvider, TurnEvent } from "@minerva/providers";
 import { createScriptedProvider } from "@minerva/providers";
 import {
   bashTool,
+  chunkReplayUpdates,
   createKernel,
   defaultRuntime,
   editFileTool,
@@ -271,6 +272,30 @@ describe("ACP replay compatibility", () => {
     expect(batches).toBe(0);
     expect(individual).toContain("user_message_chunk");
     expect(individual).toContain("agent_message_chunk");
+  });
+
+  test("replay batches stay under the frame cap without dropping updates", () => {
+    // ~1 MB per update, so a handful crosses the 4 MB batch budget and must
+    // split — the failure mode is a stdio client disconnecting on one huge batch.
+    const big = "x".repeat(1024 * 1024);
+    const updates = Array.from({ length: 6 }, (_, i) => ({ n: i, payload: big }));
+    const chunks = chunkReplayUpdates(updates);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(Buffer.byteLength(JSON.stringify(chunk), "utf8")).toBeLessThanOrEqual(4 * 1024 * 1024);
+    }
+    // The batches are additive: concatenated, they reproduce the transcript
+    // exactly (same order, nothing lost or duplicated).
+    expect(chunks.flat()).toEqual(updates);
+  });
+
+  test("an update larger than the budget still ships alone", () => {
+    const huge = { payload: "y".repeat(5 * 1024 * 1024) };
+    const chunks = chunkReplayUpdates([{ small: 1 }, huge]);
+    expect(chunks.flat()).toEqual([{ small: 1 }, huge]);
+    // The oversized update can't be split, but it isn't dropped or merged.
+    expect(chunks.some((c) => c.length === 1 && c[0] === huge)).toBe(true);
   });
 });
 

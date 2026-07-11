@@ -45,6 +45,42 @@ import {
 import { builtinTools, type KernelTool } from "./tools";
 import { hasUsage, toTokenUsage } from "./usage";
 
+/**
+ * A whole transcript can be large; over stdio a client that negotiated batch
+ * replay would disconnect once one batch serialized past the transport frame
+ * cap (16 MB). Split replay into batches whose serialized size stays well under
+ * that, plus a count guard so a batch of tiny updates isn't unbounded work. The
+ * kernel stays transport-agnostic (in-proc has no frame limit) — this is a safe
+ * worst-case for stdio and harmless elsewhere. Batches are additive on the
+ * client, so N of them rebuild the same transcript as one.
+ */
+const REPLAY_BATCH_MAX_BYTES = 4 * 1024 * 1024;
+const REPLAY_BATCH_MAX_UPDATES = 1000;
+
+export function chunkReplayUpdates<T>(updates: T[]): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 0;
+  for (const update of updates) {
+    const bytes = Buffer.byteLength(JSON.stringify(update), "utf8");
+    // Start a fresh batch when adding this update would breach either bound —
+    // but never emit an empty batch, so a single oversized update still ships
+    // alone (nothing smaller can be done for it).
+    if (
+      current.length > 0 &&
+      (currentBytes + bytes > REPLAY_BATCH_MAX_BYTES || current.length >= REPLAY_BATCH_MAX_UPDATES)
+    ) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(update);
+    currentBytes += bytes;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
 export interface KernelOptions {
   provider: ModelProvider;
   /**
@@ -233,10 +269,9 @@ export class MinervaKernel {
     // gets standard session/update notifications.
     if (loaded.replay.updates.length > 0) {
       if (this.#clientSupportsBatch) {
-        this.#connection.notify(CLIENT_METHODS.sessionUpdateBatch, {
-          sessionId,
-          updates: loaded.replay.updates,
-        });
+        for (const updates of chunkReplayUpdates(loaded.replay.updates)) {
+          this.#connection.notify(CLIENT_METHODS.sessionUpdateBatch, { sessionId, updates });
+        }
       } else {
         for (const update of loaded.replay.updates) {
           this.#connection.notify(CLIENT_METHODS.sessionUpdate, { sessionId, update });

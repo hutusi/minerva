@@ -74,6 +74,11 @@ jobs:
           out="$(ANTHROPIC_API_KEY=fake ./dist/minerva --help)"
           echo "$out"
           echo "$out" | grep -q "Usage: minerva"
+      - name: ripgrep sidecar shipped and runs
+        # The release is the pair dist/{minerva, rg}; the glob/grep tools resolve
+        # the sidecar at runtime, so a missing or non-executable rg is a broken
+        # release even though --help still works.
+        run: ./dist/rg --version | grep -q "ripgrep"
 
   live-smoke:
     name: live model smoke (main only, needs secret)

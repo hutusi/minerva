@@ -107,6 +107,40 @@ describe("stream transport (ACP stdio framing)", () => {
     expect(received).toHaveLength(0);
   });
 
+  test("the frame cap counts UTF-8 bytes, not UTF-16 code units", async () => {
+    const input = new PassThrough();
+    // Small injected cap so the test needn't allocate megabytes.
+    const transport = createStreamTransport(input, new PassThrough(), { maxFrameBytes: 64 });
+    const received: JsonRpcMessage[] = [];
+    let closed = false;
+    transport.onMessage((m) => received.push(m));
+    transport.onClose(() => {
+      closed = true;
+    });
+
+    // 30 code units but 90 UTF-8 bytes: a `.length` check (30 < 64) would let
+    // this through; the byte check (90 > 64) must reject it.
+    const line = "中".repeat(30);
+    expect(line.length).toBeLessThan(64);
+    input.write(`${line}\n`);
+    await Bun.sleep(1);
+    expect(closed).toBe(true);
+    expect(received).toHaveLength(0);
+  });
+
+  test("a multibyte frame under the byte cap still delivers", async () => {
+    const input = new PassThrough();
+    const transport = createStreamTransport(input, new PassThrough(), { maxFrameBytes: 64 });
+    const received: JsonRpcMessage[] = [];
+    transport.onMessage((m) => received.push(m));
+
+    const frame = `${JSON.stringify({ jsonrpc: "2.0", method: "中文" })}\n`;
+    expect(Buffer.byteLength(frame, "utf8")).toBeLessThan(64);
+    input.write(frame);
+    await Bun.sleep(1);
+    expect(received).toEqual([{ jsonrpc: "2.0", method: "中文" }]);
+  });
+
   test("input end closes the transport and rejects pending requests", async () => {
     const input = new PassThrough();
     const transport = createStreamTransport(input, new PassThrough());

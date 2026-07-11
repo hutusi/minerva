@@ -13,7 +13,7 @@
     "lint:fix": "biome check --write .",
     "verify": "bun run typecheck && bun run lint && bun test",
     "knip": "knip",
-    "build:release": "bun build --compile --minify packages/cli/src/index.tsx --outfile dist/minerva && bun run scripts/copy-rg.ts",
+    "build:release": "bun run scripts/build-release.ts",
     "smoke:tui": "expect scripts/smoke-tui.exp",
     "e2e:tui": "expect scripts/e2e-tui.exp"
   },

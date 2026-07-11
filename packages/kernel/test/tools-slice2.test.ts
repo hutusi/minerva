@@ -15,6 +15,7 @@ import {
   editFileTool,
   globTool,
   grepTool,
+  locateRg,
   resolveRgPath,
   todoTool,
   writeFileTool,
@@ -65,6 +66,39 @@ describe("ripgrep resolution", () => {
     expect(existsSync(rg)).toBe(true);
     expect(rg.endsWith("rg") || rg.endsWith("rg.exe")).toBe(true);
   });
+
+  // locateRg's three branches are otherwise unreachable: a real release binary
+  // exits 137 locally, so the sidecar/not-found paths can only be driven via
+  // the injected env seam.
+  test("prefers a sidecar next to the executable", async () => {
+    const rg = await locateRg({
+      execPath: "/opt/minerva/minerva",
+      exists: (p) => p === "/opt/minerva/rg" || p === "/opt/minerva/rg.exe",
+      importRgPath: async () => {
+        throw new Error("sidecar should win before @vscode/ripgrep is consulted");
+      },
+    });
+    expect(rg).toBe(process.platform === "win32" ? "/opt/minerva/rg.exe" : "/opt/minerva/rg");
+  });
+
+  test("falls back to @vscode/ripgrep when there is no sidecar", async () => {
+    const rg = await locateRg({
+      execPath: "/opt/minerva/minerva",
+      exists: (p) => p === "/node_modules/rg",
+      importRgPath: async () => "/node_modules/rg",
+    });
+    expect(rg).toBe("/node_modules/rg");
+  });
+
+  test("throws when neither a sidecar nor @vscode/ripgrep is present", async () => {
+    await expect(
+      locateRg({
+        execPath: "/opt/minerva/minerva",
+        exists: () => false,
+        importRgPath: async () => undefined,
+      }),
+    ).rejects.toThrow("ripgrep (rg) was not found");
+  });
 });
 
 describe("glob", () => {
@@ -78,6 +112,18 @@ describe("glob", () => {
 
     const result = await globTool.execute({ pattern: "**/*.ts" }, ctx(cwd));
     expect(result.output).toBe("src/a.ts");
+  });
+
+  test("a slashless pattern matches its basename at any depth (ripgrep semantics)", async () => {
+    const cwd = tempProject();
+    mkdirSync(join(cwd, "src", "deep"), { recursive: true });
+    writeFileSync(join(cwd, "root.ts"), "");
+    writeFileSync(join(cwd, "src", "deep", "nested.ts"), "");
+
+    // Documented, intentional: `*.ts` is a basename match, so it reaches nested
+    // files too — unlike a shell glob. Scope with `**/` or a path segment.
+    const result = await globTool.execute({ pattern: "*.ts" }, ctx(cwd));
+    expect(result.output.split("\n").sort()).toEqual(["root.ts", "src/deep/nested.ts"]);
   });
 
   test("search base is confined to the workspace", async () => {
