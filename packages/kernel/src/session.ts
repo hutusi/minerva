@@ -18,6 +18,22 @@ import { addUsage } from "./usage";
  */
 const INDEX_COMPACT_THRESHOLD = 500;
 
+/** Data dir is owner-only (0700); logs/index may hold secrets, so 0600. */
+const DATA_DIR_MODE = 0o700;
+const LOG_FILE_MODE = 0o600;
+
+/** The shape `Session.create` mints: `ses_` + a v4 UUID. */
+const SESSION_ID_PATTERN = /^ses_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Session ids reach `load` from the frontend and are joined into a filesystem
+ * path, so an unvalidated id (`../../../x`) is a path-traversal / arbitrary
+ * append primitive. Only the generated shape is allowed.
+ */
+export function isValidSessionId(id: string): boolean {
+  return SESSION_ID_PATTERN.test(id);
+}
+
 export interface SessionOptions {
   cwd: string;
   dataDir: string;
@@ -64,7 +80,7 @@ export class Session {
   static async create(options: SessionOptions): Promise<Session> {
     const id = `ses_${randomUUID()}`;
     const dir = projectDir(options.dataDir, options.cwd);
-    await options.runtime.mkdirp(dir);
+    await options.runtime.mkdirp(dir, { mode: DATA_DIR_MODE });
     const settings = await loadSettings(options.runtime, options.dataDir, options.cwd);
     const mode = isSessionModeId(settings.defaultMode) ? settings.defaultMode : DEFAULT_MODE;
     const session = new Session(id, options, new PermissionEngine(settings.rules), mode);
@@ -91,6 +107,11 @@ export class Session {
     options: SessionOptions,
     tools: KernelTool[],
   ): Promise<{ session: Session; replay: ReplayResult }> {
+    // Reject a traversal id before it ever reaches join(); the frontend is not
+    // trusted to keep the path inside the data dir.
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`invalid session id: ${sessionId}`);
+    }
     const dir = projectDir(options.dataDir, options.cwd);
     const logPath = join(dir, `${sessionId}.jsonl`);
     let raw: string;
@@ -100,11 +121,13 @@ export class Session {
       throw new Error(`no persisted session ${sessionId} for ${options.cwd}`);
     }
     const events = parseEventLog(raw);
-    // Project slugs collapse punctuation (/a/b.c and /a/b-c share a dir), so
-    // the log's recorded cwd — not the file location — is authoritative.
+    // Require a session.created that names this exact session and cwd. Project
+    // slugs collapse punctuation (/a/b.c and /a/b-c share a dir), so the log's
+    // recorded identity — not the file location — is authoritative, and a log
+    // that doesn't claim this session must not be resumed into it.
     const created = events.find((event) => event.type === "session.created");
-    if (created && created.cwd !== options.cwd) {
-      throw new Error(`session ${sessionId} belongs to ${created.cwd}, not ${options.cwd}`);
+    if (!created || created.sessionId !== sessionId || created.cwd !== options.cwd) {
+      throw new Error(`session ${sessionId} does not belong to ${options.cwd}`);
     }
     const replay = replayEvents(events, tools);
 
@@ -139,7 +162,11 @@ export class Session {
    */
   append(event: SessionEvent): void {
     this.#logChain = this.#logChain
-      .then(() => this.#runtime.appendTextFile(this.#logPath, `${JSON.stringify(event)}\n`))
+      .then(() =>
+        this.#runtime.appendTextFile(this.#logPath, `${JSON.stringify(event)}\n`, {
+          mode: LOG_FILE_MODE,
+        }),
+      )
       .catch((error) => {
         this.#logError ??= error;
       });
@@ -188,6 +215,33 @@ export function projectDir(dataDir: string, cwd: string): string {
   return join(dataDir, "projects", projectSlug(cwd));
 }
 
+/**
+ * Tighten an existing data dir to owner-only: new files/dirs are already
+ * created 0700/0600, but installs that predate that leave session logs
+ * world-readable. Best-effort and idempotent — a missing dir or a chmod
+ * failure is skipped, never fatal to startup.
+ */
+export async function migrateDataDirPermissions(runtime: Runtime, dataDir: string): Promise<void> {
+  const chmodQuiet = (path: string, mode: number) => runtime.chmod(path, mode).catch(() => {});
+  const listQuiet = (path: string) =>
+    runtime.readdir(path).then(
+      (e) => e,
+      () => [] as string[],
+    );
+
+  await chmodQuiet(dataDir, DATA_DIR_MODE);
+  await chmodQuiet(join(dataDir, "settings.json"), LOG_FILE_MODE);
+  const projectsRoot = join(dataDir, "projects");
+  await chmodQuiet(projectsRoot, DATA_DIR_MODE);
+  for (const project of await listQuiet(projectsRoot)) {
+    const dir = join(projectsRoot, project);
+    await chmodQuiet(dir, DATA_DIR_MODE);
+    for (const file of await listQuiet(dir)) {
+      if (file.endsWith(".jsonl")) await chmodQuiet(join(dir, file), LOG_FILE_MODE);
+    }
+  }
+}
+
 /** Filesystem-safe project identifier derived from the working directory. */
 export function projectSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || "root";
@@ -208,7 +262,7 @@ interface IndexEntry {
 async function appendSessionIndex(runtime: Runtime, dir: string, entry: IndexEntry): Promise<void> {
   const path = join(dir, "index.jsonl");
   await withFileLock(path, async () => {
-    await runtime.appendTextFile(path, `${JSON.stringify(entry)}\n`);
+    await runtime.appendTextFile(path, `${JSON.stringify(entry)}\n`, { mode: LOG_FILE_MODE });
     let raw: string;
     try {
       raw = await runtime.readTextFile(path);
@@ -235,7 +289,9 @@ async function appendSessionIndex(runtime: Runtime, dir: string, entry: IndexEnt
     // isn't attacker-reachable — this is defense-in-depth and consistency.
     const tmp = `${path}.${randomUUID()}.tmp`;
     try {
-      await runtime.writeNewFile(tmp, `${[...bySession.values()].join("\n")}\n`);
+      await runtime.writeNewFile(tmp, `${[...bySession.values()].join("\n")}\n`, {
+        mode: LOG_FILE_MODE,
+      });
       await runtime.rename(tmp, path);
     } catch (error) {
       await runtime.unlink(tmp).catch(() => {});

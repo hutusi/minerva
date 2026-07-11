@@ -28,7 +28,7 @@ import { now } from "./events";
 import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
 import { defaultRuntime, isNotFoundError, type Runtime } from "./runtime";
-import { parseEventLog, projectDir, Session } from "./session";
+import { migrateDataDirPermissions, parseEventLog, projectDir, Session } from "./session";
 import {
   defaultDataDir,
   loadSettings,
@@ -85,6 +85,9 @@ export class MinervaKernel {
     this.#tools = options.tools ?? builtinTools();
     this.#systemPrompt = options.systemPrompt ?? defaultSystemPrompt;
     this.#shutdownDrainMs = options.shutdownDrainMs ?? 5000;
+    // Tighten any pre-existing data dir to owner-only; best-effort, never
+    // blocks startup.
+    void migrateDataDirPermissions(this.#runtime, this.#dataDir).catch(() => {});
 
     this.#connection = new Connection(transport);
     this.#register(AGENT_METHODS.initialize, () => this.#initialize());

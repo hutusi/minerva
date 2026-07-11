@@ -12,6 +12,7 @@ import {
   chmod,
   mkdir,
   open,
+  readdir,
   readFile,
   readlink,
   realpath,
@@ -49,8 +50,14 @@ export interface Runtime {
    * writes). Guards against a planted temp-name symlink redirecting the write.
    */
   writeNewFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
-  appendTextFile(path: string, content: string): Promise<void>;
-  mkdirp(path: string): Promise<void>;
+  /** `mode` is applied only when the append creates the file (0600 for logs). */
+  appendTextFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
+  /** `mode` applies to directories this call creates (0700 for the data dir). */
+  mkdirp(path: string, options?: WriteTextFileOptions): Promise<void>;
+  /** Tighten permissions on an existing path (data-dir migration). */
+  chmod(path: string, mode: number): Promise<void>;
+  /** List a directory's entry names (data-dir migration). */
+  readdir(path: string): Promise<string[]>;
   /** Resolve symlinks to the canonical path. Rejects (ENOENT) if absent. */
   realpath(path: string): Promise<string>;
   /** Read a symlink's target. Rejects EINVAL if the path is not a symlink. */
@@ -59,7 +66,10 @@ export interface Runtime {
   rename(from: string, to: string): Promise<void>;
   /** Remove a file. Used to clean up a temp file after a failed atomic write. */
   unlink(path: string): Promise<void>;
+  /** Run a shell command line (`bash -c`). Untrusted args must use runProcess. */
   exec(command: string, options: ExecOptions): Promise<ExecResult>;
+  /** Spawn a binary by argv — no shell, so arguments are never interpreted. */
+  runProcess(file: string, args: string[], options: ExecOptions): Promise<ExecResult>;
   homedir(): string;
 }
 
@@ -107,10 +117,19 @@ export const defaultRuntime: Runtime = {
       await handle.close();
     }
   },
-  appendTextFile: (path, content) => appendFile(path, content, "utf8"),
-  mkdirp: async (path) => {
-    await mkdir(path, { recursive: true });
+  appendTextFile: (path, content, options) =>
+    appendFile(path, content, {
+      encoding: "utf8",
+      ...(options?.mode !== undefined ? { mode: options.mode } : {}),
+    }),
+  mkdirp: async (path, options) => {
+    await mkdir(path, {
+      recursive: true,
+      ...(options?.mode !== undefined ? { mode: options.mode } : {}),
+    });
   },
+  chmod: (path, mode) => chmod(path, mode),
+  readdir: (path) => readdir(path),
   realpath: (path) => realpath(path),
   readlink: (path) => readlink(path),
   rename: (from, to) => rename(from, to),
@@ -118,82 +137,92 @@ export const defaultRuntime: Runtime = {
   homedir: () => homedir(),
 
   exec(command, options) {
-    return new Promise((resolve, reject) => {
-      // detached puts the child in its own process group so kills reach
-      // grandchildren, not just the bash wrapper.
-      const child = spawn("/bin/bash", ["-c", command], {
-        cwd: options.cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: true,
-      });
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      let aborted = false;
-      let exitCode: number | null = null;
-      let settled = false;
-      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    // Shell interpretation is the point for the bash tool; untrusted argv must
+    // use runProcess instead.
+    return spawnCaptured("/bin/bash", ["-c", command], options);
+  },
 
-      const killTree = () => {
-        if (child.pid === undefined) return;
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      };
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        killTree();
-      }, options.timeoutMs);
-
-      const onAbort = () => {
-        aborted = true;
-        killTree();
-      };
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-      if (options.signal?.aborted) onAbort();
-
-      const settle = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        clearTimeout(graceTimer);
-        options.signal?.removeEventListener("abort", onAbort);
-        resolve({ stdout, stderr, exitCode: exitCode ?? -1, timedOut, aborted });
-      };
-
-      // setEncoding decodes via StringDecoder, so multi-byte UTF-8 characters
-      // split across chunk boundaries survive intact.
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        if (stdout.length < MAX_STREAM_CHARS) stdout += chunk;
-      });
-      child.stderr.on("data", (chunk: string) => {
-        if (stderr.length < MAX_STREAM_CHARS) stderr += chunk;
-      });
-      child.on("error", (error) => {
-        clearTimeout(timer);
-        clearTimeout(graceTimer);
-        options.signal?.removeEventListener("abort", onAbort);
-        if (!settled) {
-          settled = true;
-          reject(error);
-        }
-      });
-      // 'close' waits for the pipes to drain — which never happens when the
-      // command backgrounds a process that inherits them. Settle on 'close'
-      // normally, but treat 'exit' + grace period as good enough.
-      child.on("exit", (code) => {
-        exitCode = code ?? -1;
-        graceTimer = setTimeout(settle, PIPE_GRACE_MS);
-      });
-      child.on("close", (code) => {
-        exitCode = exitCode ?? code ?? -1;
-        settle();
-      });
-    });
+  runProcess(file, args, options) {
+    return spawnCaptured(file, args, options);
   },
 };
+
+function spawnCaptured(file: string, args: string[], options: ExecOptions): Promise<ExecResult> {
+  return new Promise((resolve, reject) => {
+    // detached puts the child in its own process group so kills reach
+    // grandchildren, not just the wrapper.
+    const child = spawn(file, args, {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let aborted = false;
+    let exitCode: number | null = null;
+    let settled = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const killTree = () => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree();
+    }, options.timeoutMs);
+
+    const onAbort = () => {
+      aborted = true;
+      killTree();
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+      resolve({ stdout, stderr, exitCode: exitCode ?? -1, timedOut, aborted });
+    };
+
+    // setEncoding decodes via StringDecoder, so multi-byte UTF-8 characters
+    // split across chunk boundaries survive intact.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (stdout.length < MAX_STREAM_CHARS) stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      if (stderr.length < MAX_STREAM_CHARS) stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    // 'close' waits for the pipes to drain — which never happens when the
+    // command backgrounds a process that inherits them. Settle on 'close'
+    // normally, but treat 'exit' + grace period as good enough.
+    child.on("exit", (code) => {
+      exitCode = code ?? -1;
+      graceTimer = setTimeout(settle, PIPE_GRACE_MS);
+    });
+    child.on("close", (code) => {
+      exitCode = exitCode ?? code ?? -1;
+      settle();
+    });
+  });
+}

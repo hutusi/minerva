@@ -22,5 +22,8 @@
     "@types/bun": "^1.3.4",
     "knip": "^6.26.0",
     "typescript": "^7.0.2"
-  }
+  },
+  "trustedDependencies": [
+    "@vscode/ripgrep"
+  ]
 }

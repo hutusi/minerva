@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PlanEntry } from "@minerva/protocol";
@@ -94,7 +94,26 @@ describe("grep", () => {
   test("invalid regex is an error result, not a crash", async () => {
     const result = await grepTool.execute({ pattern: "([unclosed" }, ctx(tempProject()));
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("Invalid regular expression");
+    expect(result.output).toContain("Invalid search");
+  });
+
+  test("a catastrophic-backtracking pattern returns promptly (no ReDoS)", async () => {
+    const cwd = tempProject();
+    writeFileSync(join(cwd, "a.txt"), `${"a".repeat(60)}!\n`);
+    const started = Date.now();
+    // (a+)+$ hangs the JS engine on this input; ripgrep's linear engine can't.
+    const result = await grepTool.execute({ pattern: "(a+)+$" }, ctx(cwd));
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(result.isError).toBeUndefined();
+  });
+
+  test("grep does not follow a symlink that escapes the workspace", async () => {
+    const cwd = tempProject();
+    const outside = tempProject();
+    writeFileSync(join(outside, "secret.txt"), "TOPSECRET marker\n");
+    symlinkSync(join(outside, "secret.txt"), join(cwd, "link.txt"));
+    const result = await grepTool.execute({ pattern: "TOPSECRET" }, ctx(cwd));
+    expect(result.output).toBe("No matches found.");
   });
 });
 

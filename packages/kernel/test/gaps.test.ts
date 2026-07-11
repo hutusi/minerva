@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
   globTool,
   grepTool,
   loadSettings,
+  migrateDataDirPermissions,
   parseEventLog,
   persistAllowRule,
   projectDir,
@@ -195,6 +196,56 @@ describe("sessions/list edges", () => {
 
     const result = await client.request<{ sessions: unknown[] }>("minerva/sessions/list", { cwd });
     expect(result.sessions).toEqual([]);
+  });
+});
+
+describe("session store hardening", () => {
+  test("a traversal session id is rejected before touching the filesystem", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-trav-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-trav-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+
+    await expect(
+      client.request(AGENT_METHODS.sessionLoad, { sessionId: "../../../outside", cwd }),
+    ).rejects.toThrow("invalid session id");
+  });
+
+  test("new session logs and index are created owner-only (0600)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-mode-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-mode-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([]),
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    const session = kernel.getSession(sessionId);
+    await session?.flush();
+
+    const logPath = session?.logPath as string;
+    expect(statSync(logPath).mode & 0o777).toBe(0o600);
+    expect(statSync(join(projectDir(dataDir, cwd), "index.jsonl")).mode & 0o777).toBe(0o600);
+    expect(statSync(projectDir(dataDir, cwd)).mode & 0o777).toBe(0o700);
+  });
+
+  test("migration tightens a pre-existing world-readable log", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-mig-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-mig-data-"));
+    const dir = projectDir(dataDir, cwd);
+    mkdirSync(dir, { recursive: true });
+    const stale = join(dir, "ses_old.jsonl");
+    writeFileSync(stale, "{}\n");
+    chmodSync(stale, 0o644);
+
+    await migrateDataDirPermissions(defaultRuntime, dataDir);
+    expect(statSync(stale).mode & 0o777).toBe(0o600);
   });
 });
 
