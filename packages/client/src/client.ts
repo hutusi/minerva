@@ -16,6 +16,7 @@ import {
   type SessionSummary,
   type SessionsListResult,
   type SessionUpdateParams,
+  type SessionUsageParams,
   type StopReason,
   type Transport,
 } from "@minerva/protocol";
@@ -51,6 +52,10 @@ export class MinervaClient {
     this.#connection.handleNotification(CLIENT_METHODS.sessionUpdate, (params) => {
       const { sessionId, update } = params as SessionUpdateParams;
       this.#stores.get(sessionId)?.apply(update);
+    });
+    this.#connection.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
+      const { sessionId, lastTurn, cumulative } = params as SessionUsageParams;
+      this.#stores.get(sessionId)?.setUsage(lastTurn, cumulative);
     });
     this.#connection.handleRequest(CLIENT_METHODS.sessionRequestPermission, (params) =>
       this.#onPermissionRequest(params as RequestPermissionParams),
