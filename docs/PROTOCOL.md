@@ -67,7 +67,7 @@ Params `{ sessionId, update }`. `update.sessionUpdate` variants:
 |---|---|---|
 | `user_message_chunk` | `content` | User text (emitted during replay) |
 | `agent_message_chunk` | `content` | Streamed assistant text |
-| `agent_thought_chunk` | `content` | Streamed model reasoning; re-emitted on `session/load` replay before the turn's message text |
+| `agent_thought_chunk` | `content` | Streamed model reasoning; re-emitted on `session/load` replay in stream order relative to the turn's message text |
 | `tool_call` | `toolCallId, title, kind, status, rawInput` | Tool call started (`status: "pending"`) |
 | `tool_call_update` | `toolCallId, status?, title?, content?, rawOutput?` | Progress → `in_progress`, then `completed`/`failed` with output |
 | `plan` | `entries: [{ content, priority, status }]` | Todo list replaced |

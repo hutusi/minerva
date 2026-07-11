@@ -11,13 +11,15 @@ All notable changes to Minerva are documented here. The format follows
   v0.1) is now emitted live and on `session/load` replay, backed by a new
   `assistant.thought` session event; the CLI shows the thought dimmed while
   it streams and collapses it to a one-line summary when the answer starts.
-  A per-provider `thinking` setting sends `enable_thinking` to
-  OpenAI-compatible endpoints (`true` for Qwen-style opt-in, `false` to
-  suppress GLM's default thinking). Anthropic extended thinking is
-  deliberately deferred — it requires replaying signature-carrying reasoning
-  into tool loops — and the registry rejects the toggle on non-compatible
-  providers at startup. Thoughts are display-only and never re-sent to the
-  model.
+  A `thinking` setting sends `enable_thinking` to OpenAI-compatible endpoints
+  (`true` for Qwen-style opt-in, `false` to suppress GLM's default thinking);
+  it accepts either a boolean or a per-model map of `*`-wildcard patterns
+  (e.g. `{ "qwen-*": true, "glm-*": false }`) so one provider can host model
+  families with opposite defaults. Anthropic extended thinking is deliberately
+  deferred — it requires replaying signature-carrying reasoning into tool
+  loops — and the registry rejects the toggle on non-compatible providers at
+  startup. `/compact` suppresses thinking for its summarization turn. Thoughts
+  are display-only and never re-sent to the model.
 - Token usage telemetry end-to-end: new `minerva/session/usage` notification
   carrying last-turn and session-cumulative token counts (including cache
   read/write tokens, now captured from the AI SDK), session totals rebuilt
@@ -52,6 +54,20 @@ All notable changes to Minerva are documented here. The format follows
 - The client store's `setBusy` no longer drops status state (`currentModeId`,
   usage) that was set while a prompt was running or during a `session/load`
   replay.
+- Reasoning streaming now preserves what the user watched on every turn-loop
+  exit: a thought that streams after the answer text is logged (and replayed)
+  after it rather than before; a mid-stream provider error or thrown exception
+  persists the partial answer and thought instead of dropping them, resolving
+  any dangling tool calls so the history stays well-formed; and a thought-only
+  turn records an assistant message so the provider history keeps alternating
+  roles (strict endpoints rejected the consecutive user messages otherwise).
+- Consecutive reasoning blocks are separated by a blank line instead of
+  concatenating into one run-on thought.
+- The streaming thought tail is capped by terminal width, so a long reasoning
+  paragraph with no line breaks no longer floods the live region.
+- `enable_thinking` providerOptions are keyed by the camelCased provider name,
+  silencing the AI SDK deprecation warning (which corrupted the TUI) that dash-
+  named custom providers triggered on every model call.
 
 ### Changed
 - Upgraded Ink to v7 (`@minerva/cli`). Requires Node ≥22 and React ≥19.2, both

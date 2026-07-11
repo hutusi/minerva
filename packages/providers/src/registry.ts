@@ -16,6 +16,14 @@ export const DEFAULT_OPENAI_MODEL = "gpt-5.2";
 
 export type ProviderKind = "anthropic" | "openai" | "openai-compatible";
 
+/**
+ * Request (true) or suppress (false) model thinking. A single boolean applies
+ * to every model on the provider; a map lets one provider host model families
+ * with opposite defaults (e.g. bailian's Qwen wants true, its GLM wants false).
+ * Map keys are model-id patterns with `*` wildcards, e.g. `{ "qwen-*": true }`.
+ */
+export type ThinkingConfig = boolean | Record<string, boolean>;
+
 export interface ProviderDef {
   kind: ProviderKind;
   /** Environment variable consulted for the API key, e.g. DASHSCOPE_API_KEY. */
@@ -29,10 +37,10 @@ export interface ProviderDef {
   /** false = the endpoint needs no key (e.g. a local server). Default true. */
   requiresApiKey?: boolean | undefined;
   /**
-   * Request (true) or suppress (false) model thinking; unset sends nothing.
+   * Per-provider or per-model thinking toggle; unset sends nothing.
    * OpenAI-compatible endpoints only (enable_thinking in the request body).
    */
-  thinking?: boolean | undefined;
+  thinking?: ThinkingConfig | undefined;
 }
 
 export type ProviderRegistry = Record<string, ProviderDef>;
@@ -67,11 +75,45 @@ export interface CustomProviderConfig {
   defaultModel?: string | undefined;
   models?: string[] | undefined;
   requiresApiKey?: boolean | undefined;
-  thinking?: boolean | undefined;
+  thinking?: ThinkingConfig | undefined;
+}
+
+/**
+ * Resolve a per-model thinking decision. A boolean applies to every model; a
+ * map resolves by the most specific matching key — an exact model id wins,
+ * else the longest matching `*`-wildcard pattern (ties broken by insertion
+ * order). No match returns undefined, which sends nothing to the endpoint.
+ */
+export function resolveThinking(
+  thinking: ThinkingConfig | undefined,
+  model: string,
+): boolean | undefined {
+  if (thinking === undefined || typeof thinking === "boolean") return thinking;
+  if (Object.hasOwn(thinking, model)) return thinking[model];
+  let best: { length: number; value: boolean } | undefined;
+  for (const [pattern, value] of Object.entries(thinking)) {
+    if (!pattern.includes("*") || !matchesPattern(pattern, model)) continue;
+    // Specificity ≈ non-wildcard characters; longest wins, first on ties.
+    const length = pattern.replaceAll("*", "").length;
+    if (!best || length > best.length) best = { length, value };
+  }
+  return best?.value;
+}
+
+function matchesPattern(pattern: string, model: string): boolean {
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replaceAll("\\*", ".*");
+  return new RegExp(`^${escaped}$`).test(model);
 }
 
 // Names must survive ref parsing ("name/model") and env-var derivation.
 const PROVIDER_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+// The AI SDK's own providerOptions-namespace transform (copied — it isn't
+// exported). Keying options by the camelCased name avoids the deprecation
+// warning it logs for dash/underscore-containing raw keys.
+function toCamelCase(name: string): string {
+  return name.replace(/[_-]([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+}
 
 /**
  * Merge user-defined providers over the built-ins. Overriding a built-in
@@ -207,6 +249,8 @@ function nonBlank(value: string | undefined): string | undefined {
 export interface ProviderFromRefOptions {
   apiKey?: string;
   providers?: ProviderRegistry;
+  /** Override the HTTP client (openai-compatible only); for tests. */
+  fetch?: typeof globalThis.fetch;
 }
 
 export function createProviderFromRef(
@@ -236,15 +280,18 @@ export function createProviderFromRef(
         // on streams when explicitly asked (stream_options.include_usage).
         includeUsage: true,
         ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+        ...(options.fetch ? { fetch: options.fetch } : {}),
       });
       // Unknown providerOptions keys are spread verbatim into the request
       // body; enable_thinking asks DashScope-style servers to emit
       // reasoning_content (they require streaming for it, which we always
-      // do). The key is the provider name because createOpenAICompatible's
-      // `name` sets the providerOptions namespace.
+      // do). The namespace is the camelCased provider name: the AI SDK spreads
+      // both the raw and camelCased keys but warns (console.warn, which also
+      // corrupts the Ink TUI) when a dash/underscore raw key is present.
+      const thinking = resolveThinking(def.thinking, model);
       return createAiSdkProvider(compatible(model), `${provider}/${model}`, {
-        ...(def.thinking !== undefined
-          ? { providerOptions: { [provider]: { enable_thinking: def.thinking } } }
+        ...(thinking !== undefined
+          ? { providerOptions: { [toCamelCase(provider)]: { enable_thinking: thinking } } }
           : {}),
       });
     }

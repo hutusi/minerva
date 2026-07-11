@@ -75,7 +75,8 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
 
       case "assistant.thought":
         // Display-only: re-render the thought, never rebuild it into
-        // provider messages. Log order keeps it ahead of its turn's text.
+        // provider messages. Log order matches stream order, so replay
+        // re-renders thoughts exactly where the user watched them.
         updates.push({
           sessionUpdate: "agent_thought_chunk",
           content: { type: "text", text: event.text },

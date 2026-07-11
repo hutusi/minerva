@@ -1,5 +1,5 @@
 import type { MinervaClient, SessionStore, SessionViewModel, ViewItem } from "@minerva/client";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
@@ -342,30 +342,45 @@ function ToolView({ item }: { item: Extract<ViewItem, { kind: "tool" }> }) {
  * line once the answer starts.
  */
 function ThoughtView({ item }: { item: Extract<ViewItem, { kind: "thought" }> }) {
+  const { stdout } = useStdout();
   if (!item.streaming) {
     return (
       <Box marginTop={1}>
-        <Text dimColor>✻ thought · {formatTokens([...item.text].length)} chars</Text>
+        <Text dimColor>✻ thought · {formatTokens(item.text.length)} chars</Text>
       </Box>
     );
   }
   return (
     <Box marginTop={1}>
-      <Text dimColor>✻ {lastLines(item.text, 4)}</Text>
+      <Text dimColor>✻ {thoughtTail(item.text, stdout?.columns ?? 80)}</Text>
     </Box>
   );
 }
 
-function firstLines(text: string, count: number): string {
+/** Keep the first or last `count` lines, marking the truncation. */
+export function clipLines(text: string, count: number, keep: "first" | "last"): string {
   const lines = text.trimEnd().split("\n");
   if (lines.length <= count) return lines.join("\n");
-  return `${lines.slice(0, count).join("\n")}\n… (${lines.length - count} more lines)`;
+  return keep === "first"
+    ? `${lines.slice(0, count).join("\n")}\n… (${lines.length - count} more lines)`
+    : `… ${lines.slice(-count).join("\n")}`;
 }
 
-function lastLines(text: string, count: number): string {
-  const lines = text.trimEnd().split("\n");
-  if (lines.length <= count) return lines.join("\n");
-  return `… ${lines.slice(-count).join("\n")}`;
+const firstLines = (text: string, count: number) => clipLines(text, count, "first");
+
+/**
+ * Rolling tail for a streaming thought: the last few lines, but also capped by
+ * a character budget from the terminal width — a long reasoning paragraph with
+ * no newlines (routine for Qwen/Chinese reasoning) is under the line cap yet
+ * would still flood the live region.
+ */
+export function thoughtTail(text: string, columns: number): string {
+  const clipped = clipLines(text, 4, "last");
+  const budget = 4 * Math.max(20, columns - 4);
+  if (clipped.length <= budget) return clipped;
+  // Strip any leading ellipsis clipLines added so we don't double it.
+  const body = clipped.startsWith("… ") ? clipped.slice(2) : clipped;
+  return `… ${body.slice(-budget)}`;
 }
 
 function PlanView({ entries }: { entries: Extract<ViewItem, { kind: "plan" }>["entries"] }) {

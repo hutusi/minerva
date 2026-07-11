@@ -170,6 +170,82 @@ describe("agent loop edges", () => {
     expect(events.at(-1)).toMatchObject({ type: "turn.failed", error: "model exploded" });
   });
 
+  test("a stream that throws after streaming persists the partial output", async () => {
+    const throwingProvider: ModelProvider = {
+      id: "throwing",
+      async *streamTurn() {
+        yield { type: "text-delta", text: "partial answer" } as const;
+        yield { type: "reasoning-delta", text: "half a thought" } as const;
+        throw new Error("stream reset");
+      },
+    };
+    const h = harness(throwingProvider);
+    await h.client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await h.client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd: h.cwd,
+    });
+    await expect(
+      h.client.request(AGENT_METHODS.sessionPrompt, {
+        sessionId,
+        prompt: [{ type: "text", text: "boom" }],
+      }),
+    ).rejects.toThrow("stream reset");
+
+    const session = h.kernel.getSession(sessionId);
+    if (!session) throw new Error("missing session");
+    await session.flush();
+    const events = readFileSync(session.logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent);
+    const types = events.map((e) => e.type);
+    // Everything streamed to the UI is recorded, in stream order, before the
+    // terminal turn.failed.
+    expect(types).toEqual([
+      "session.created",
+      "user.message",
+      "assistant.message",
+      "assistant.thought",
+      "turn.failed",
+    ]);
+    expect(events.find((e) => e.type === "assistant.message")).toMatchObject({
+      text: "partial answer",
+    });
+    expect(events.find((e) => e.type === "assistant.thought")).toMatchObject({
+      text: "half a thought",
+    });
+  });
+
+  test("a stream error after a tool call synthesizes results before failing", async () => {
+    const h = harness(
+      createScriptedProvider([
+        [
+          { type: "text-delta", text: "starting" },
+          { type: "tool-call", toolCallId: "c1", toolName: "bash", input: { command: "echo hi" } },
+          { type: "error", error: new Error("boom") } as TurnEvent,
+        ],
+      ]),
+    );
+    await h.client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await h.client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd: h.cwd,
+    });
+    await expect(
+      h.client.request(AGENT_METHODS.sessionPrompt, {
+        sessionId,
+        prompt: [{ type: "text", text: "go" }],
+      }),
+    ).rejects.toThrow("boom");
+
+    // The recorded assistant message carried a tool call that never ran; its
+    // batch is resolved so the live history has no dangling tool use.
+    const session = h.kernel.getSession(sessionId);
+    expect(session?.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+    expect(JSON.stringify(session?.messages.at(-1))).toContain(
+      "interrupted by a model stream error",
+    );
+  });
+
   test("cancelling mid-turn synthesizes results for pending tool calls", async () => {
     let cancelNow: (() => void) | undefined;
     const slowProvider: ModelProvider = {

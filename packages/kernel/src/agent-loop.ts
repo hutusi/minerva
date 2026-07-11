@@ -80,6 +80,16 @@ async function runLoop(
   for (let turn = 0; turn < MAX_MODEL_TURNS; turn++) {
     let text = "";
     let thought = "";
+    // Set once any reasoning streamed this turn, even segments already
+    // flushed: a thought-only turn still needs an assistant message pushed,
+    // or the next prompt sends two consecutive user messages and strict
+    // role-alternating endpoints reject the whole history.
+    let hadThought = false;
+    // A new reasoning block started while the current thought is non-empty:
+    // insert a blank line before its first delta so back-to-back blocks read
+    // as distinct paragraphs instead of one run-on thought. Deferred to the
+    // next delta so an empty trailing block adds no whitespace.
+    let pendingThoughtSeparator = false;
     const toolCalls: ProviderToolCall[] = [];
     let finishReason: TurnFinishReason = "other";
     let streamError: unknown;
@@ -97,21 +107,23 @@ async function runLoop(
     // turn is cancelled mid-stream — the event log has to be able to
     // re-render what the user actually saw.
     const recordAssistantMessage = () => {
-      if (text || toolCalls.length > 0) {
+      if (text || toolCalls.length > 0 || hadThought) {
         // toolCalls ride on the event so replay can rebuild the provider
-        // message even for turns where the model emitted no text.
+        // message even for turns where the model emitted no text. A
+        // thought-only turn records an empty message (serialized as
+        // content: "" on OpenAI-compatible wires) to keep role alternation.
         session.append({ type: "assistant.message", text, toolCalls, at: now() });
         session.messages.push({ role: "assistant", text, toolCalls });
       }
     };
     // A pushed assistant message with tool calls must always be followed by
     // matching tool results, or the provider rejects the whole history on
-    // the next prompt.
-    const cancelToolBatch = () => {
+    // the next prompt — whether the calls died to cancellation or an error.
+    const resolveToolBatch = (output: string) => {
       if (toolCalls.length === 0) return;
       session.messages.push({
         role: "tool",
-        results: toolCalls.map((call) => cancelToolCall(context, call)),
+        results: toolCalls.map((call) => resolveToolCall(context, call, output)),
       });
     };
 
@@ -125,8 +137,11 @@ async function runLoop(
       for await (const event of stream) {
         switch (event.type) {
           case "text-delta":
+            // Empty deltas (DashScope keep-alives) must not end a thought
+            // segment or open a phantom item in the client view.
+            if (!event.text) break;
             // A text or tool event ends the thought segment, keeping log
-            // order faithful for hypothetical thought→text→thought turns.
+            // order faithful for thought→text→thought turns.
             flushThought();
             text += event.text;
             sendUpdate(context, {
@@ -134,13 +149,28 @@ async function runLoop(
               content: { type: "text", text: event.text },
             });
             break;
-          case "reasoning-delta":
-            thought += event.text;
+          case "reasoning-start":
+            // Only a boundary between two non-empty blocks needs a separator.
+            pendingThoughtSeparator = thought.length > 0;
+            break;
+          case "reasoning-delta": {
+            if (!event.text) break;
+            hadThought = true;
+            // Guard on thought.length too: a text/tool event between the
+            // block boundary and here already flushed the thought, so the
+            // new block starts a fresh item that needs no separator.
+            const chunk =
+              pendingThoughtSeparator && thought.length > 0 ? `\n\n${event.text}` : event.text;
+            pendingThoughtSeparator = false;
+            thought += chunk;
+            // Stream the same text that is persisted, so the client's live
+            // thought and the replayed one are byte-identical.
             sendUpdate(context, {
               sessionUpdate: "agent_thought_chunk",
-              content: { type: "text", text: event.text },
+              content: { type: "text", text: chunk },
             });
             break;
+          }
           case "tool-call":
             flushThought();
             toolCalls.push(event);
@@ -155,21 +185,28 @@ async function runLoop(
         }
       }
     } catch (error) {
-      if (!session.cancelled) throw error;
+      // A non-cancel throw is handled like a streamed error event below, so
+      // partial output still lands in the log before the prompt fails. An
+      // earlier error event wins: it is what actually ended the stream.
+      if (!session.cancelled) streamError ??= error;
     }
-    // Covers every exit: cancellation mid-thought and thought-only turns
-    // must still land in the log (the event log re-renders what streamed).
+    // Covers every exit — cancellation, stream errors, thought-only turns:
+    // everything streamed to the UI must land in the log (it re-renders what
+    // the user saw), and in stream order: any still-buffered thought
+    // postdates the accumulated text, since earlier thought segments were
+    // flushed at the first following text or tool event.
+    recordAssistantMessage();
     flushThought();
     if (session.cancelled) {
-      recordAssistantMessage();
-      cancelToolBatch();
+      resolveToolBatch("Tool call cancelled by user.");
       return finish(context, "cancelled", promptUsage);
     }
     if (streamError !== undefined) {
+      // The recorded assistant message may carry tool calls that will never
+      // execute; resolve them so the history has no dangling tool use.
+      resolveToolBatch("Tool call was interrupted by a model stream error.");
       throw streamError instanceof Error ? streamError : new Error(String(streamError));
     }
-
-    recordAssistantMessage();
 
     if (toolCalls.length === 0) {
       return finish(context, finishReason === "length" ? "max_tokens" : "end_turn", promptUsage);
@@ -179,7 +216,7 @@ async function runLoop(
     for (const call of toolCalls) {
       results.push(
         session.cancelled
-          ? cancelToolCall(context, call)
+          ? resolveToolCall(context, call, "Tool call cancelled by user.")
           : await executeToolCall(context, call, toolsByName.get(call.toolName)),
       );
     }
@@ -257,17 +294,18 @@ async function executeToolCall(
   return completeToolCall(context, call, { output, isError });
 }
 
-/** Resolve a tool call as cancelled without executing it. */
-function cancelToolCall(context: LoopContext, call: ProviderToolCall): ProviderToolResult {
+/** Resolve a tool call with a synthesized error result, without executing it. */
+function resolveToolCall(
+  context: LoopContext,
+  call: ProviderToolCall,
+  output: string,
+): ProviderToolResult {
   startToolCall(
     context,
     call,
     context.tools.find((tool) => tool.name === call.toolName),
   );
-  return completeToolCall(context, call, {
-    output: "Tool call cancelled by user.",
-    isError: true,
-  });
+  return completeToolCall(context, call, { output, isError: true });
 }
 
 function startToolCall(

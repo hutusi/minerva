@@ -46,7 +46,7 @@ describe("AI SDK provider adapter", () => {
     ]);
   });
 
-  test("surfaces reasoning deltas and drops the start/end markers", async () => {
+  test("surfaces reasoning-start and deltas, drops the end marker", async () => {
     const model = new MockLanguageModelV4({
       doStream: async () => ({
         stream: simulateReadableStream({
@@ -70,13 +70,16 @@ describe("AI SDK provider adapter", () => {
       provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }),
     );
 
+    // reasoning-start is surfaced (block boundary); reasoning-end is dropped.
     expect(events.map((event) => event.type)).toEqual([
+      "reasoning-start",
       "reasoning-delta",
       "reasoning-delta",
       "text-delta",
       "finish",
     ]);
-    expect(events.slice(0, 2)).toEqual([
+    expect(events.slice(0, 3)).toEqual([
+      { type: "reasoning-start" },
       { type: "reasoning-delta", text: "Think" },
       { type: "reasoning-delta", text: "ing" },
     ]);
@@ -103,6 +106,99 @@ describe("AI SDK provider adapter", () => {
     await collect(provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }));
 
     expect(seenProviderOptions).toEqual({ bailian: { enable_thinking: true } });
+  });
+
+  test("thinking:'off' suppresses enable_thinking for that call, keeping other options", async () => {
+    const seen: unknown[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        seen.push(options.providerOptions);
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+            ],
+          }),
+        };
+      },
+    });
+    const provider = createAiSdkProvider(model, "mock", {
+      providerOptions: { bailian: { enable_thinking: true, other: "keep" } },
+    });
+
+    // A normal call keeps the configured thinking flag…
+    await collect(provider.streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }));
+    // …a thinking:"off" call flips only enable_thinking, leaving other intact.
+    await collect(
+      provider.streamTurn({
+        messages: [{ role: "user", content: "summarize" }],
+        tools: [],
+        thinking: "off",
+      }),
+    );
+
+    expect(seen[0]).toEqual({ bailian: { enable_thinking: true, other: "keep" } });
+    expect(seen[1]).toEqual({ bailian: { enable_thinking: false, other: "keep" } });
+  });
+
+  test("thinking:'off' leaves a provider with no thinking toggle untouched", async () => {
+    let seen: unknown;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        seen = options.providerOptions;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+            ],
+          }),
+        };
+      },
+    });
+    const provider = createAiSdkProvider(model, "mock");
+
+    await collect(
+      provider.streamTurn({
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+        thinking: "off",
+      }),
+    );
+
+    expect(seen).toBeUndefined();
+  });
+
+  test("an empty assistant message (thought-only turn) survives into the prompt", async () => {
+    let seenPrompt: unknown;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        seenPrompt = options.prompt;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+            ],
+          }),
+        };
+      },
+    });
+    const provider = createAiSdkProvider(model, "mock");
+
+    await collect(
+      provider.streamTurn({
+        messages: [
+          { role: "user", content: "think only" },
+          // A thought-only turn records an assistant message with no text and
+          // no tool calls; it must still reach the model as an assistant slot.
+          { role: "assistant", text: "", toolCalls: [] },
+          { role: "user", content: "now answer" },
+        ],
+        tools: [],
+      }),
+    );
+
+    const prompt = seenPrompt as Array<{ role: string }>;
+    expect(prompt.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
   });
 
   test("surfaces tool calls with parsed input", async () => {

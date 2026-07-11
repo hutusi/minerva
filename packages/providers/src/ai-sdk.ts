@@ -6,6 +6,7 @@
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import {
+  type JSONValue,
   jsonSchema,
   type LanguageModel,
   type ModelMessage,
@@ -38,14 +39,33 @@ export function createAnthropicProvider(options: AnthropicProviderOptions = {}):
   return createAiSdkProvider(anthropic(modelId), `anthropic/${modelId}`);
 }
 
-// Mirrors the AI SDK's ProviderOptions shape (`ai` doesn't export the type):
-// a JSON object per provider-options namespace.
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-export type ProviderOptions = Record<string, Record<string, JsonValue>>;
+// Mirrors the AI SDK's ProviderOptions shape (`ai` doesn't export that type,
+// but it does export JSONValue): a JSON object per provider-options namespace.
+export type ProviderOptions = Record<string, Record<string, JSONValue>>;
 
 export interface AiSdkProviderOptions {
   /** Passed through to every streamText call, e.g. a thinking toggle. */
   providerOptions?: ProviderOptions | undefined;
+}
+
+/**
+ * Force enable_thinking false in every namespace that sets it, for a single
+ * call. Only rewrites namespaces that already carry the key — a provider with
+ * no thinking toggle is left untouched (nothing to suppress).
+ */
+function suppressThinking(options: ProviderOptions | undefined): ProviderOptions | undefined {
+  if (options === undefined) return undefined;
+  let changed = false;
+  const next: ProviderOptions = {};
+  for (const [namespace, values] of Object.entries(options)) {
+    if ("enable_thinking" in values && values.enable_thinking !== false) {
+      next[namespace] = { ...values, enable_thinking: false };
+      changed = true;
+    } else {
+      next[namespace] = values;
+    }
+  }
+  return changed ? next : options;
 }
 
 /** Wrap any AI SDK language model (including mocks in tests). */
@@ -57,15 +77,17 @@ export function createAiSdkProvider(
   return {
     id,
     async *streamTurn(request) {
+      const providerOptions =
+        request.thinking === "off"
+          ? suppressThinking(options.providerOptions)
+          : options.providerOptions;
       const result = streamText({
         model,
         messages: request.messages.map(toModelMessage),
         tools: toToolSet(request.tools),
         ...(request.system !== undefined ? { instructions: request.system } : {}),
         ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
-        ...(options.providerOptions !== undefined
-          ? { providerOptions: options.providerOptions }
-          : {}),
+        ...(providerOptions !== undefined ? { providerOptions } : {}),
       });
 
       for await (const part of result.stream) {
@@ -128,9 +150,12 @@ function toTurnEvent(part: StreamPart): TurnEvent | null {
   switch (part.type) {
     case "text-delta":
       return { type: "text-delta", text: part.text };
-    // reasoning-start/-end are dropped: they exist to carry provider
-    // metadata (Anthropic signatures) that the kernel doesn't consume;
-    // the boundary is derivable from the next text/tool event.
+    // reasoning-start marks a block boundary so the kernel can keep
+    // consecutive reasoning blocks from merging into one run-on thought.
+    // reasoning-end is still dropped: it only carries provider metadata
+    // (Anthropic signatures) the kernel doesn't consume.
+    case "reasoning-start":
+      return { type: "reasoning-start" };
     case "reasoning-delta":
       return { type: "reasoning-delta", text: part.text };
     case "tool-call":
