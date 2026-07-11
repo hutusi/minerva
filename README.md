@@ -120,11 +120,20 @@ project file), and any file that may hold keys is written with mode `0600`.
 `"thinking"` asks the model to reason before answering: `true` sends
 `enable_thinking: true` to the endpoint (needed by Qwen models, which default
 it off), `false` suppresses it (GLM models think by default), unset sends
-nothing. OpenAI-compatible providers only — setting it on `anthropic`/`openai`
-is rejected at startup (Anthropic extended thinking needs reasoning replayed
-into tool loops, which Minerva doesn't do yet). Reasoning the model streams is
-shown dimmed while it thinks and collapses to a one-line summary once the
-answer starts; either way it is display-only and never re-sent to the model.
+nothing. A single boolean applies to every model on the provider; when one
+provider hosts model families with opposite defaults — Bailian serves both
+Qwen and GLM — use a per-model map whose keys are model-id patterns with `*`
+wildcards (most specific match wins):
+
+```json
+"bailian": { "thinking": { "qwen-*": true, "glm-*": false } }
+```
+
+OpenAI-compatible providers only — setting it on `anthropic`/`openai` is
+rejected at startup (Anthropic extended thinking needs reasoning replayed into
+tool loops, which Minerva doesn't do yet). Reasoning the model streams is shown
+dimmed while it thinks and collapses to a one-line summary once the answer
+starts; either way it is display-only and never re-sent to the model.
 
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:

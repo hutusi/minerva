@@ -1,4 +1,5 @@
 import { dirname, join } from "node:path";
+import type { ThinkingConfig } from "@minerva/providers";
 import type { Runtime } from "./runtime";
 
 /**
@@ -32,9 +33,10 @@ export interface ProviderSettings {
   apiKey?: string | undefined;
   /**
    * Request (true) or suppress (false) model thinking; unset sends nothing.
-   * OpenAI-compatible providers only.
+   * A boolean covers every model; a `{ "qwen-*": true }` map toggles per
+   * model. OpenAI-compatible providers only.
    */
-  thinking?: boolean | undefined;
+  thinking?: ThinkingConfig | undefined;
 }
 
 export interface MinervaSettings {

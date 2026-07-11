@@ -5,6 +5,7 @@ import {
   createProviderFromRef,
   parseModelRef,
   resolveApiKey,
+  resolveThinking,
   type TurnEvent,
 } from "../src";
 
@@ -212,6 +213,60 @@ describe("provider registry", () => {
     expect(() => buildProviderRegistry({ openai: { thinking: false } })).toThrow(
       "only supported for OpenAI-compatible",
     );
+    // A per-model map is also a thinking request; the same guard applies.
+    expect(() => buildProviderRegistry({ anthropic: { thinking: { "claude-*": true } } })).toThrow(
+      "only supported for OpenAI-compatible",
+    );
+  });
+
+  test("resolveThinking: boolean applies to every model", () => {
+    expect(resolveThinking(true, "qwen-plus")).toBe(true);
+    expect(resolveThinking(false, "glm-5.2")).toBe(false);
+    expect(resolveThinking(undefined, "qwen-plus")).toBeUndefined();
+  });
+
+  test("resolveThinking: a map resolves per model, most specific wins", () => {
+    const map = { "qwen-*": true, "glm-5.2": false };
+    // Exact match wins over any pattern.
+    expect(resolveThinking(map, "glm-5.2")).toBe(false);
+    // Wildcard match.
+    expect(resolveThinking(map, "qwen-plus")).toBe(true);
+    // No match → nothing sent.
+    expect(resolveThinking(map, "deepseek-chat")).toBeUndefined();
+  });
+
+  test("resolveThinking: the longest matching pattern wins", () => {
+    const map = { "qwen-*": false, "qwen-max-*": true };
+    expect(resolveThinking(map, "qwen-max-2025")).toBe(true);
+    expect(resolveThinking(map, "qwen-plus")).toBe(false);
+  });
+
+  test("a per-model thinking map lands the right flag on the wire per model", async () => {
+    const providers = buildProviderRegistry({
+      bailian: { thinking: { "qwen-*": true, "glm-5.2": false } },
+    });
+    let qwenBody: Record<string, unknown> | undefined;
+    await drain(
+      createProviderFromRef("bailian/qwen-plus", {
+        providers,
+        apiKey: "sk-test",
+        fetch: capturingFetch((b) => {
+          qwenBody = b;
+        }),
+      }).streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }),
+    );
+    let glmBody: Record<string, unknown> | undefined;
+    await drain(
+      createProviderFromRef("bailian/glm-5.2", {
+        providers,
+        apiKey: "sk-test",
+        fetch: capturingFetch((b) => {
+          glmBody = b;
+        }),
+      }).streamTurn({ messages: [{ role: "user", content: "hi" }], tools: [] }),
+    );
+    expect(qwenBody?.enable_thinking).toBe(true);
+    expect(glmBody?.enable_thinking).toBe(false);
   });
 
   test("invalid provider names are rejected", () => {
