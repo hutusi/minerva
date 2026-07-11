@@ -17,6 +17,14 @@ const CHOICES: ProviderChoice[] = [
   },
 ];
 
+const BAILIAN_WITH_MODELS: ProviderChoice = {
+  name: "bailian",
+  defaultModel: "qwen-plus",
+  keyVar: "DASHSCOPE_API_KEY",
+  keySource: "none",
+  models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
+};
+
 function renderPanel(
   options: {
     choices?: ProviderChoice[];
@@ -140,18 +148,10 @@ describe("ConfigPanel", () => {
     ui.unmount();
   });
 
-  test("↑/↓ cycles the provider's known models at the model step", async () => {
+  test("known models render as a select list; picking glm-5.2 saves it", async () => {
     const results: ConfigResult[] = [];
     const ui = renderPanel({
-      choices: [
-        {
-          name: "bailian",
-          defaultModel: "qwen-plus",
-          keyVar: "DASHSCOPE_API_KEY",
-          keySource: "none",
-          models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
-        },
-      ],
+      choices: [BAILIAN_WITH_MODELS],
       onSubmit: async (result) => {
         results.push(result);
       },
@@ -160,18 +160,43 @@ describe("ConfigPanel", () => {
     await press(ui, "\r");
     await waitFor(() => (ui.lastFrame() ?? "").includes("API key"), "key step");
     await submitText(ui, "sk-x");
-    await waitFor(() => (ui.lastFrame() ?? "").includes("Model id"), "model step");
-    expect(ui.lastFrame()).toContain("known: qwen-plus · qwen-max · qwen-turbo · glm-5.2");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("other…"), "model list");
+    const frame = ui.lastFrame() ?? "";
+    for (const id of BAILIAN_WITH_MODELS.models ?? []) expect(frame).toContain(id);
+    expect(frame).toContain("(default)");
 
-    await press(ui, "[A"); // ↑ from the qwen-plus prefill wraps to glm-5.2
-    // Twice in the frame: once in the hint line, once as the input value.
-    await waitFor(
-      () => ((ui.lastFrame() ?? "").match(/glm-5\.2/g) ?? []).length >= 2,
-      "cycled model",
-    );
+    await press(ui, "k"); // ↑ from the qwen-plus prefill wraps to other…
+    await press(ui, "k"); // …and once more up to glm-5.2
     await press(ui, "\r");
     await waitFor(() => results.length === 1, "submit");
     expect(results[0]?.modelRef).toBe("bailian/glm-5.2");
+    ui.unmount();
+  });
+
+  test("the other… row switches to free text; esc returns to the list", async () => {
+    const results: ConfigResult[] = [];
+    const ui = renderPanel({
+      choices: [BAILIAN_WITH_MODELS],
+      onSubmit: async (result) => {
+        results.push(result);
+      },
+    });
+    await waitFor(() => (ui.lastFrame() ?? "").includes("bailian"), "panel");
+    await press(ui, "\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("API key"), "key step");
+    await submitText(ui, "sk-x");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("other…"), "model list");
+
+    await press(ui, "k"); // wrap up to other…
+    await press(ui, "\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Model id"), "free text");
+    await press(ui, ""); // esc → back to the list
+    await waitFor(() => (ui.lastFrame() ?? "").includes("other…"), "list again");
+    await press(ui, "\r"); // other… is still the highlighted row
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Model id"), "free text again");
+    await submitText(ui, "qwen-long"); // draft was cleared, not prefilled
+    await waitFor(() => results.length === 1, "submit");
+    expect(results[0]?.modelRef).toBe("bailian/qwen-long");
     ui.unmount();
   });
 

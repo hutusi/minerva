@@ -18,7 +18,8 @@ export interface ProviderChoice {
   /** Where a usable key was found, if anywhere. */
   keySource: "env" | "settings" | "none";
   baseUrl?: string | undefined;
-  /** Known model ids — cycled with ↑/↓ at the model step; free text still wins. */
+  /** Known model ids — offered as a select list at the model step; the
+   *  trailing "other…" row still accepts any id as free text. */
   models?: string[] | undefined;
 }
 
@@ -64,9 +65,14 @@ export function ConfigPanel({
   const rows = providers.length + 1; // trailing "custom…" row
   const selected = custom ? undefined : providers[index];
   const suggestions = selected?.models ?? [];
-  // Position within `suggestions` while cycling; -1 = free text. A ref for
-  // the same batching reason as indexRef.
-  const suggestionRef = useRef(-1);
+  // Model-step list highlight (same ref-mirror pattern as indexRef).
+  const [modelIndex, setModelIndex] = useState(0);
+  const modelIndexRef = useRef(0);
+  const modelRows = suggestions.length + 1; // trailing "other…" row
+  // Free-text entry: always for providers without a models list; opt-in via
+  // the "other…" row when there is one.
+  const [modelFreeText, setModelFreeText] = useState(false);
+  const modelList = step === "model" && suggestions.length > 0 && !modelFreeText;
 
   const chooseProvider = (i: number) => {
     setError(null);
@@ -85,20 +91,11 @@ export function ConfigPanel({
     const currentModelId = slash === -1 ? currentModel : currentModel.slice(slash + 1);
     const prefill = currentProvider === choice.name ? currentModelId : (choice.defaultModel ?? "");
     setModel(prefill);
-    suggestionRef.current = (choice.models ?? []).indexOf(prefill);
+    const known = (choice.models ?? []).indexOf(prefill);
+    modelIndexRef.current = known === -1 ? 0 : known;
+    setModelIndex(modelIndexRef.current);
+    setModelFreeText(false);
     setStep("apiKey");
-  };
-
-  const cycleSuggestion = (delta: number) => {
-    if (suggestions.length === 0) return;
-    suggestionRef.current =
-      suggestionRef.current === -1
-        ? delta > 0
-          ? 0
-          : suggestions.length - 1
-        : (suggestionRef.current + suggestions.length + delta) % suggestions.length;
-    const next = suggestions[suggestionRef.current];
-    if (next !== undefined) setModel(next);
   };
 
   const stepBack = () => {
@@ -114,6 +111,11 @@ export function ConfigPanel({
     setIndex(indexRef.current);
   };
 
+  const moveModelIndex = (delta: number) => {
+    modelIndexRef.current = (modelIndexRef.current + modelRows + delta) % modelRows;
+    setModelIndex(modelIndexRef.current);
+  };
+
   useInput((input, key) => {
     if (saving) return;
     if (step === "provider") {
@@ -123,11 +125,35 @@ export function ConfigPanel({
       else if (key.escape) onCancel();
       return;
     }
-    if (step === "model") {
-      if (key.upArrow) cycleSuggestion(-1);
-      else if (key.downArrow) cycleSuggestion(1);
+    if (modelList) {
+      if (key.upArrow || input === "k") moveModelIndex(-1);
+      else if (key.downArrow || input === "j") moveModelIndex(1);
+      else if (key.return) {
+        const i = modelIndexRef.current;
+        if (i === suggestions.length) {
+          // "other…" — hand over to free text; keep the draft only when it
+          // isn't just the highlighted suggestion.
+          if (suggestions.includes(model)) setModel("");
+          setModelFreeText(true);
+        } else {
+          const value = suggestions[i];
+          if (value !== undefined) {
+            setModel(value);
+            void submitModel(value);
+          }
+        }
+      } else if (key.escape) stepBack();
+      return;
     }
-    if (key.escape) stepBack();
+    if (key.escape) {
+      // esc from free text returns to the model list when there is one.
+      if (step === "model" && modelFreeText && suggestions.length > 0) {
+        setError(null);
+        setModelFreeText(false);
+      } else {
+        stepBack();
+      }
+    }
   });
 
   const submitName = (value: string) => {
@@ -252,26 +278,41 @@ export function ConfigPanel({
         </Box>
       ) : null}
 
-      {step === "model" ? (
+      {modelList ? (
         <Box flexDirection="column">
-          <Box>
-            <Text>Model id: </Text>
-            <TextInput
-              value={model}
-              onChange={setModel}
-              onSubmit={submitModel}
-              placeholder={selected?.defaultModel ?? "model-id"}
-            />
-          </Box>
-          {suggestions.length > 0 ? (
-            <Text dimColor>known: {suggestions.join(" · ")} (↑/↓ cycle, or type any id)</Text>
-          ) : null}
+          {suggestions.map((id, i) => (
+            <Text key={id} {...(i === modelIndex ? { color: "cyan" } : {})}>
+              {i === modelIndex ? "❯ " : "  "}
+              {id}
+              {id === selected?.defaultModel ? <Text dimColor> (default)</Text> : null}
+            </Text>
+          ))}
+          <Text {...(modelIndex === suggestions.length ? { color: "cyan" } : {})}>
+            {modelIndex === suggestions.length ? "❯ " : "  "}other…{"  "}
+            <Text dimColor>type a model id</Text>
+          </Text>
+        </Box>
+      ) : null}
+
+      {step === "model" && !modelList ? (
+        <Box>
+          <Text>Model id: </Text>
+          <TextInput
+            value={model}
+            onChange={setModel}
+            onSubmit={submitModel}
+            placeholder={selected?.defaultModel ?? "model-id"}
+          />
         </Box>
       ) : null}
 
       {saving ? <Text color="yellow">saving…</Text> : null}
       {error ? <Text color="red">{error}</Text> : null}
-      {step !== "provider" && !saving ? <Text dimColor>enter confirm · esc back</Text> : null}
+      {step !== "provider" && !saving ? (
+        <Text dimColor>
+          {modelList ? "↑/↓ select · enter save · esc back" : "enter confirm · esc back"}
+        </Text>
+      ) : null}
     </Box>
   );
 }

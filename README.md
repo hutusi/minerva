@@ -71,10 +71,11 @@ in global settings** (set either via `/config`):
 
 Bailian uses the China endpoint by default; for the international one,
 override its `baseUrl` in settings (see below). Bailian hosts third-party
-models too (e.g. Zhipu's GLM) — the `/config` panel cycles the known ids with
-↑/↓ at the model step, and any id it doesn't know can simply be typed. Any
-other OpenAI-compatible endpoint (DeepSeek, Ollama, a proxy…) can be added as
-a custom provider — via `/config` → `custom…`, or directly in settings.
+models too (e.g. Zhipu's GLM) — the `/config` panel lists the known ids to
+pick from at the model step, with an `other…` row for any id it doesn't know.
+Any other OpenAI-compatible endpoint (DeepSeek, Ollama, a proxy…) can be
+added as a custom provider — via `/config` → `custom…`, or directly in
+settings.
 
 ## Configuration
 
