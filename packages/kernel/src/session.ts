@@ -3,12 +3,20 @@ import { join } from "node:path";
 import type { PlanEntry } from "@minerva/protocol";
 import type { ProviderMessage, TurnUsage } from "@minerva/providers";
 import { now, type SessionEvent } from "./events";
+import { withFileLock } from "./file-lock";
 import { DEFAULT_MODE, isSessionModeId, PermissionEngine, type SessionModeId } from "./permissions";
 import { type ReplayResult, replayEvents } from "./replay";
 import type { Runtime } from "./runtime";
 import { loadSettings } from "./settings";
 import type { KernelTool } from "./tools";
 import { addUsage } from "./usage";
+
+/**
+ * Above this many lines, the append-per-use session index is compacted (one
+ * line per session id) on the next write. Kept high so compaction is rare —
+ * blind append stays the fast, concurrency-safe common path.
+ */
+const INDEX_COMPACT_THRESHOLD = 500;
 
 export interface SessionOptions {
   cwd: string;
@@ -62,10 +70,7 @@ export class Session {
     const session = new Session(id, options, new PermissionEngine(settings.rules), mode);
 
     const createdAt = now();
-    await options.runtime.appendTextFile(
-      join(dir, "index.jsonl"),
-      `${JSON.stringify({ sessionId: id, cwd: options.cwd, createdAt })}\n`,
-    );
+    await appendSessionIndex(options.runtime, dir, { sessionId: id, cwd: options.cwd, createdAt });
     session.append({
       type: "session.created",
       sessionId: id,
@@ -116,10 +121,11 @@ export class Session {
     session.usage = replay.usage;
     // Re-append to the index so "latest session" means most recently used,
     // not most recently created; the list handler dedupes by id.
-    await options.runtime.appendTextFile(
-      join(dir, "index.jsonl"),
-      `${JSON.stringify({ sessionId, cwd: options.cwd, createdAt: now() })}\n`,
-    );
+    await appendSessionIndex(options.runtime, dir, {
+      sessionId,
+      cwd: options.cwd,
+      createdAt: now(),
+    });
     session.append({ type: "session.resumed", provider: options.providerId, at: now() });
     return { session, replay };
   }
@@ -187,15 +193,85 @@ export function projectSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || "root";
 }
 
+interface IndexEntry {
+  sessionId: string;
+  cwd: string;
+  createdAt: string;
+}
+
+/**
+ * Append a session-index entry, opportunistically compacting the file when it
+ * grows past the threshold. Both the append and the (rare) compaction run
+ * under a per-path lock, so blind append stays atomic and a concurrent writer
+ * can't land between the compaction's read and its atomic rename.
+ */
+async function appendSessionIndex(runtime: Runtime, dir: string, entry: IndexEntry): Promise<void> {
+  const path = join(dir, "index.jsonl");
+  await withFileLock(path, async () => {
+    await runtime.appendTextFile(path, `${JSON.stringify(entry)}\n`);
+    let raw: string;
+    try {
+      raw = await runtime.readTextFile(path);
+    } catch {
+      return; // the append succeeded; a failed re-read just skips compaction
+    }
+    const lines = raw.split("\n").filter((line) => line.trim());
+    if (lines.length <= INDEX_COMPACT_THRESHOLD) return;
+    // Keep the latest line per session id, in last-occurrence order — the same
+    // dedupe the list handler applies at read time.
+    const bySession = new Map<string, string>();
+    for (const line of lines) {
+      let id: string;
+      try {
+        id = (JSON.parse(line) as IndexEntry).sessionId;
+      } catch {
+        continue; // drop a torn line during compaction
+      }
+      bySession.delete(id);
+      bySession.set(id, line);
+    }
+    // Random temp + exclusive/no-follow create + atomic rename, matching the
+    // settings writer. The index lives in the data dir, not the repo, so it
+    // isn't attacker-reachable — this is defense-in-depth and consistency.
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      await runtime.writeNewFile(tmp, `${[...bySession.values()].join("\n")}\n`);
+      await runtime.rename(tmp, path);
+    } catch (error) {
+      await runtime.unlink(tmp).catch(() => {});
+      throw error;
+    }
+  });
+}
+
 export function parseEventLog(raw: string): SessionEvent[] {
+  const lines = raw.split("\n");
+  // A torn final record (kill -9 mid-write) is expected and must not block
+  // resume; corruption anywhere earlier means real damage, so fail loudly
+  // rather than silently dropping events from the middle of the history.
+  // Only an *unterminated* tail is a torn write: a trailing newline means the
+  // final line was fully flushed, so a malformed complete line is corruption.
+  const lastNonEmpty =
+    !raw.endsWith("\n") && raw.trimEnd().length !== 0 ? findLastNonEmptyIndex(lines) : -1;
   const events: SessionEvent[] = [];
-  for (const line of raw.split("\n")) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as string;
     if (!line.trim()) continue;
     try {
       events.push(JSON.parse(line) as SessionEvent);
-    } catch {
-      // A torn final line (kill -9 mid-write) must not block resume.
+    } catch (error) {
+      if (i === lastNonEmpty) break; // tolerate only the torn final line
+      throw new Error(
+        `corrupt session event log at line ${i + 1}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
   return events;
+}
+
+function findLastNonEmptyIndex(lines: string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if ((lines[i] as string).trim()) return i;
+  }
+  return -1;
 }
