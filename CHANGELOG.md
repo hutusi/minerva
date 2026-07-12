@@ -18,6 +18,13 @@ All notable changes to Minerva are documented here. The format follows
   cancels the turn) plus a preview of what the call will do — the command
   for execute tools, a line diff for edits, all-added content for new
   files, the URL for fetches.
+- `web_fetch` tool: bounded, permission-gated HTTP(S) GET for the model —
+  manual redirects (max 5, scheme re-checked per hop), 30 s default / 120 s
+  max timeout, 1 MiB body cap, 30k char output cap, HTML reduced to plain
+  text. Never auto-allowed (network egress always prompts in default mode);
+  permission rules match the URL, e.g. `web_fetch(https://example.com/*)` —
+  which also applies to MCP tools whose inputs carry a `url`. No
+  private-IP/SSRF blocking in v1 (documented posture).
 - Named profiles: settings `profiles: { <name>: { systemPrompt?, model?,
   defaultMode? } }` plus a `profile` default. A profile's system prompt
   replaces the base coding-agent prompt (AGENTS.md instructions still

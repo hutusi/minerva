@@ -167,8 +167,9 @@ that fails to connect degrades to a startup warning; the session still opens.
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:
 **deny** → **ask** → read-only auto-allow → **plan mode deny** → **allow** →
-mode default. Rules match the bash command string or the file path; MCP tools
-are named `mcp__<server>__<tool>` and are never auto-allowed.
+mode default. Rules match the bash command string, the URL for fetch-shaped
+tools (`web_fetch(https://example.com/*)`), or the file path; MCP tools are
+named `mcp__<server>__<tool>` and are never auto-allowed.
 
 > **Bash rules are advisory, not a sandbox.** They match the raw command
 > string, not a parsed argv, so a `bash(rm -rf *)` deny is evaded by
@@ -176,6 +177,13 @@ are named `mcp__<server>__<tool>` and are never auto-allowed.
 > wildcard allow can match a compound `cmd; <anything>`. Treat them as friction
 > that catches honest mistakes; use OS-level sandboxing for real isolation, and
 > avoid `auto` mode with untrusted input.
+
+> **web_fetch is permission-gated, not network-sandboxed.** It is never
+> auto-allowed (network egress can exfiltrate context via the URL), so default
+> mode always shows the exact URL before fetching, and `deny` rules can block
+> URL ranges. There is no private-IP/SSRF blocking in v1 — same posture as the
+> bash rules above; be deliberate about `auto` mode on machines with sensitive
+> internal endpoints.
 
 > **Opening a third-party repository activates its configuration.** The
 > project's `AGENTS.md` enters the system prompt, `.minerva/skills/` becomes

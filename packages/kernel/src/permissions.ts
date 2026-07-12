@@ -93,12 +93,16 @@ export class PermissionEngine {
 
 /**
  * The string a rule pattern matches against — and the rule persisted by an
- * "always allow" answer. Command text for bash, the path for file tools.
+ * "always allow" answer. Command text for bash, the URL for fetch-shaped
+ * tools (`web_fetch(https://example.com/*)` rules; note this also changes
+ * the matched value for MCP tools whose inputs carry a `url` — intended),
+ * the path for file tools.
  */
 export function permissionValue(input: unknown): string {
   if (typeof input === "object" && input !== null) {
     const record = input as Record<string, unknown>;
     if (typeof record.command === "string") return record.command;
+    if (typeof record.url === "string") return record.url;
     if (typeof record.path === "string") return record.path;
   }
   return JSON.stringify(input ?? null);
