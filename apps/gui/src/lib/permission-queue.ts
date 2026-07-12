@@ -18,6 +18,9 @@ export interface PermissionQueue {
   handler: PermissionHandler;
   subscribe(listener: () => void): () => void;
   readonly snapshot: PermissionQueueSnapshot;
+  /** Resolve everything as cancelled — used when the kernel connection dies:
+   * the requester is gone, and a modal must not outlive its kernel. */
+  cancelAll(): void;
 }
 
 /**
@@ -59,6 +62,12 @@ export function createPermissionQueue(): PermissionQueue {
     },
     get snapshot() {
       return snapshot;
+    },
+    cancelAll() {
+      // resolve() splices the entry out, so iterate over a copy.
+      for (const entry of [...pending]) {
+        entry.resolve({ outcome: { outcome: "cancelled" } });
+      }
     },
   };
 }

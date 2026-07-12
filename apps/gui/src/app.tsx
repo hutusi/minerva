@@ -6,18 +6,30 @@ import type {
   SessionSummary,
   SkillInfo,
 } from "@minerva/protocol";
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ConfigDialog } from "./components/ConfigDialog";
 import { Transcript } from "./components/chat/Transcript";
 import { UsageFooter } from "./components/chat/UsageFooter";
 import { HeaderBar } from "./components/HeaderBar";
 import { PermissionDialog } from "./components/PermissionDialog";
+import { ProjectTabs } from "./components/ProjectTabs";
 import { SessionBrowser } from "./components/SessionBrowser";
 import { useSessionStore } from "./hooks/use-session-store";
-import { connectKernel } from "./lib/kernel-connection";
+import { createKernelManager, type KernelManager } from "./lib/kernel-manager";
 import { pickFolder } from "./lib/native";
-import { createPermissionQueue, type PermissionQueue } from "./lib/permission-queue";
 import { createTauriSidecarBridge, fetchDefaultCwd } from "./lib/sidecar-bridge";
+import { ensureTabSession } from "./lib/tab-session";
+import { deserializeTabs, EMPTY_TABS, serializeTabs, type Tab, tabsReducer } from "./lib/tabs";
+
+const TABS_KEY = "minerva.tabs.v1";
 
 interface Session {
   id: string;
@@ -29,27 +41,13 @@ interface Session {
   profiles: string[];
 }
 
-interface Boot {
-  client: MinervaClient;
-  permissions: PermissionQueue;
-  config: ConfigStateResult;
-}
-
-// Connection lives outside React: StrictMode double-effects and HMR reloads
-// re-enter boot(), which must attach to the running kernel, not respawn it.
-// The session is created separately — first run configures a model first.
-let bootPromise: Promise<Boot> | null = null;
-let sessionPromise: Promise<Session> | null = null;
-
-function boot(): Promise<Boot> {
-  bootPromise ??= (async () => {
-    const bridge = createTauriSidecarBridge();
-    const permissions = createPermissionQueue();
-    const client = await connectKernel(bridge, { onPermissionRequest: permissions.handler });
-    const config = await client.getConfigState();
-    return { client, permissions, config };
-  })();
-  return bootPromise;
+// The manager lives outside React: StrictMode double-effects and HMR reloads
+// must attach to the running kernel, not respawn it.
+let managerSingleton: KernelManager | null = null;
+function getManager(): KernelManager {
+  managerSingleton ??= createKernelManager(createTauriSidecarBridge());
+  managerSingleton.start();
+  return managerSingleton;
 }
 
 /** Skills and profiles are assistive; a project without them must not block
@@ -84,156 +82,298 @@ async function createSession(
   };
 }
 
-async function resumeSession(client: MinervaClient, summary: SessionSummary): Promise<Session> {
-  const result = await client.loadSession(summary.sessionId, summary.cwd);
+async function resumeSession(
+  client: MinervaClient,
+  sessionId: string,
+  cwd: string,
+): Promise<Session> {
+  const result = await client.loadSession(sessionId, cwd);
   return {
     id: result.sessionId,
     store: result.store,
-    cwd: summary.cwd,
+    cwd,
     modes: result.modes ?? null,
     profile: result.profile ?? null,
-    ...(await fetchExtras(client, summary.cwd)),
+    ...(await fetchExtras(client, cwd)),
   };
-}
-
-function openInitialSession(client: MinervaClient): Promise<Session> {
-  sessionPromise ??= (async () => createSession(client, await fetchDefaultCwd()))();
-  return sessionPromise;
 }
 
 export function App() {
-  const [ready, setReady] = useState<Boot | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
+  const manager = useMemo(getManager, []);
+  const kernel = useSyncExternalStore(
+    useCallback((listener: () => void) => manager.subscribe(listener), [manager]),
+    () => manager.snapshot,
+  );
+  const [tabs, dispatch] = useReducer(
+    tabsReducer,
+    undefined,
+    () => deserializeTabs(localStorage.getItem(TABS_KEY)) ?? EMPTY_TABS,
+  );
+  const [sessions, setSessions] = useState<ReadonlyMap<string, Session>>(new Map());
   const [configState, setConfigState] = useState<ConfigStateResult | null>(null);
+  const [configDone, setConfigDone] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const ensuring = useRef(new Set<string>());
+
+  const client = kernel.phase === "ready" ? kernel.client : null;
+  // Gate sessions on configuration: first run must store a key first.
+  const configReady = client !== null && (!kernel.config?.needsApiKey || configDone);
+  const activeTab = tabs.tabs.find((tab) => tab.id === tabs.activeTabId) ?? null;
+  const activeSession = activeTab ? (sessions.get(activeTab.id) ?? null) : null;
+
+  // A restart hands out a FRESH client; every store from the old one is dead.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: client identity IS the trigger
+  useEffect(() => {
+    setSessions(new Map());
+    ensuring.current.clear();
+  }, [client]);
 
   useEffect(() => {
-    let cancelled = false;
-    const fail = (cause: unknown) => {
-      if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
-    };
-    boot().then((value) => {
-      if (cancelled) return;
-      setReady(value);
-      if (value.config.needsApiKey) {
-        // First run: no usable key — configure before any session exists.
-        setConfigState(value.config);
-      } else {
-        openInitialSession(value.client).then((s) => !cancelled && setSession(s), fail);
-      }
-    }, fail);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    localStorage.setItem(TABS_KEY, serializeTabs(tabs));
+  }, [tabs]);
 
-  if (error) {
-    return (
-      <Centered>
-        <p className="text-sm text-destructive">Failed to start the kernel: {error}</p>
-      </Centered>
+  // First-run config dialog, once per app life.
+  useEffect(() => {
+    if (kernel.phase === "ready" && kernel.config?.needsApiKey && !configDone) {
+      setConfigState(kernel.config);
+    }
+  }, [kernel.phase, kernel.config, configDone]);
+
+  // Always have at least one tab (home directory until a folder is picked).
+  useEffect(() => {
+    if (kernel.phase !== "ready" || tabs.tabs.length > 0) return;
+    fetchDefaultCwd().then(
+      (cwd) => dispatch({ type: "open", tabId: crypto.randomUUID(), cwd }),
+      (cause: unknown) => setNotice(cause instanceof Error ? cause.message : String(cause)),
     );
-  }
-  if (!ready) {
-    return (
-      <Centered>
-        <p className="text-sm text-muted-foreground">Starting kernel…</p>
-      </Centered>
+  }, [kernel.phase, tabs.tabs.length]);
+
+  // Materialize the active tab's session lazily: resume its persisted id, or
+  // fall back to (then record) a fresh one. Background tabs load on activation.
+  useEffect(() => {
+    if (!configReady || !client || !activeTab) return;
+    if (sessions.has(activeTab.id) || ensuring.current.has(activeTab.id)) return;
+    ensuring.current.add(activeTab.id);
+    const tab = activeTab;
+    ensureTabSession(
+      {
+        load: (sessionId, cwd) => resumeSession(client, sessionId, cwd),
+        create: (cwd) => createSession(client, cwd),
+      },
+      tab,
+    ).then(
+      ({ session }) => {
+        ensuring.current.delete(tab.id);
+        setSessions((prev) => new Map(prev).set(tab.id, session));
+        if (session.id !== tab.sessionId) {
+          dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
+        }
+      },
+      (cause: unknown) => {
+        ensuring.current.delete(tab.id);
+        setNotice(cause instanceof Error ? cause.message : String(cause));
+      },
     );
-  }
-  const client = ready.client;
+  }, [configReady, client, activeTab, sessions]);
 
   const reportError = (cause: unknown) => {
     const message = cause instanceof Error ? cause.message : String(cause);
-    if (session) session.store.addError(message);
-    else setError(message);
+    if (activeSession) activeSession.store.addError(message);
+    else setNotice(message);
   };
 
-  /** Swap the active session: cancel a running turn, detach the old store. */
-  const switchTo = (next: Promise<Session>) => {
-    sessionPromise = next;
-    const previous = session;
-    next.then((value) => {
-      if (previous && previous.id !== value.id) {
-        if (previous.store.snapshot.busy) client.cancel(previous.id);
-        client.closeSession(previous.id);
-      }
-      setSession(value);
-      setBrowserOpen(false);
+  /** Replace the active tab's session (browser pick / new session). */
+  const switchWithinTab = (tab: Tab, next: Promise<Session>) => {
+    next.then(
+      (session) => {
+        const previous = sessions.get(tab.id);
+        if (previous && previous.id !== session.id && client) {
+          if (previous.store.snapshot.busy) client.cancel(previous.id);
+          client.closeSession(previous.id);
+        }
+        setSessions((prev) => new Map(prev).set(tab.id, session));
+        dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
+        setBrowserOpen(false);
+      },
+      (cause: unknown) => {
+        setBrowserOpen(false);
+        reportError(cause);
+      },
+    );
+  };
+
+  const addTab = () => {
+    pickFolder().then((path) => {
+      if (path) dispatch({ type: "open", tabId: crypto.randomUUID(), cwd: path });
     }, reportError);
   };
 
-  const applyConfig = async (params: ConfigSetModelParams) => {
-    await client.setModel(params);
-    setConfigState(null);
-    if (!session) switchTo(openInitialSession(client));
+  const closeTab = (tabId: string) => {
+    const session = sessions.get(tabId);
+    if (session && client) {
+      if (session.store.snapshot.busy) client.cancel(session.id);
+      client.closeSession(session.id);
+    }
+    setSessions((prev) => {
+      const next = new Map(prev);
+      next.delete(tabId);
+      return next;
+    });
+    dispatch({ type: "close", tabId });
   };
 
-  const openConfig = () => {
-    client.getConfigState().then(setConfigState, reportError);
+  const applyConfig = async (params: ConfigSetModelParams) => {
+    if (!client) throw new Error("kernel is not connected");
+    await client.setModel(params);
+    setConfigDone(true);
+    setConfigState(null);
   };
+
+  const stores = useMemo(() => {
+    const map = new Map<string, SessionStore>();
+    for (const [tabId, session] of sessions) map.set(tabId, session.store);
+    return map;
+  }, [sessions]);
 
   return (
-    <>
-      {session ? (
+    <div className="flex h-screen flex-col">
+      {kernel.phase !== "ready" ? (
+        <KernelBanner
+          phase={kernel.phase}
+          exitCode={kernel.exitCode}
+          error={kernel.error}
+          onRetry={() => manager.start()}
+        />
+      ) : null}
+      {notice ? (
+        <div className="flex items-center justify-between bg-destructive/10 px-4 py-1 text-xs text-destructive">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} className="px-1">
+            ×
+          </button>
+        </div>
+      ) : null}
+      <ProjectTabs
+        tabs={tabs.tabs}
+        activeTabId={tabs.activeTabId}
+        stores={stores}
+        onActivate={(tabId) => dispatch({ type: "activate", tabId })}
+        onCloseTab={closeTab}
+        onAddTab={addTab}
+      />
+      {activeSession && client ? (
         <Chat
+          key={activeTab?.id}
           client={client}
-          session={session}
-          profiles={session.profiles}
-          onOpenConfig={openConfig}
-          onOpenFolder={() => {
-            pickFolder().then((path) => {
-              if (path) switchTo(createSession(client, path));
-            }, reportError);
-          }}
+          session={activeSession}
+          onOpenConfig={() => client.getConfigState().then(setConfigState, reportError)}
+          onOpenFolder={addTab}
           onOpenSessions={() => setBrowserOpen(true)}
-          onNewSession={() =>
-            switchTo(createSession(client, session.cwd, session.profile ?? undefined))
-          }
+          onNewSession={() => {
+            if (activeTab) {
+              switchWithinTab(
+                activeTab,
+                createSession(client, activeTab.cwd, activeSession.profile ?? undefined),
+              );
+            }
+          }}
           onSetProfile={(profile) => {
-            client.setProfile(session.id, profile).then(() => {
-              setSession({ ...session, profile });
-              session.store.addInfo(`profile → ${profile ?? "(none)"}`);
+            client.setProfile(activeSession.id, profile).then(() => {
+              setSessions((prev) => {
+                const next = new Map(prev);
+                if (activeTab) next.set(activeTab.id, { ...activeSession, profile });
+                return next;
+              });
+              activeSession.store.addInfo(`profile → ${profile ?? "(none)"}`);
             }, reportError);
           }}
         />
       ) : (
-        <Centered>
+        <div className="flex flex-1 items-center justify-center">
           <p className="text-sm text-muted-foreground">
-            {configState ? "Configure a model to get started." : "Opening session…"}
+            {kernel.phase !== "ready"
+              ? "Waiting for the kernel…"
+              : configState && !configDone
+                ? "Configure a model to get started."
+                : "Opening session…"}
           </p>
-        </Centered>
+        </div>
       )}
-      {browserOpen && session ? (
+      {browserOpen && activeTab && activeSession && client ? (
         <SessionBrowser
           client={client}
-          cwd={session.cwd}
-          currentId={session.id}
-          onPick={(summary) => switchTo(resumeSession(client, summary))}
+          cwd={activeTab.cwd}
+          currentId={activeSession.id}
+          onPick={(summary: SessionSummary) => {
+            // If it's already open in another tab, go there instead.
+            const existing = tabs.tabs.find((tab) => tab.sessionId === summary.sessionId);
+            if (existing && existing.id !== activeTab.id) {
+              dispatch({ type: "activate", tabId: existing.id });
+              setBrowserOpen(false);
+              return;
+            }
+            switchWithinTab(activeTab, resumeSession(client, summary.sessionId, summary.cwd));
+          }}
           onClose={() => setBrowserOpen(false)}
         />
       ) : null}
-      {configState ? (
+      {configState && client ? (
         <ConfigDialog
           state={configState}
           onSubmit={applyConfig}
-          onClose={session ? () => setConfigState(null) : undefined}
+          onClose={
+            configDone || !kernel.config?.needsApiKey ? () => setConfigState(null) : undefined
+          }
         />
       ) : null}
-      <PermissionDialog queue={ready.permissions} />
-    </>
+      <PermissionDialog queue={manager.permissions} />
+    </div>
   );
 }
 
-function Centered({ children }: { children: React.ReactNode }) {
-  return <div className="flex h-screen items-center justify-center">{children}</div>;
+function KernelBanner({
+  phase,
+  exitCode,
+  error,
+  onRetry,
+}: {
+  phase: "starting" | "restarting" | "down";
+  exitCode: number | null;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const text =
+    phase === "starting"
+      ? "Starting kernel…"
+      : phase === "restarting"
+        ? `Kernel exited${exitCode !== null ? ` (code ${exitCode})` : ""} — restarting…`
+        : `Kernel is down${exitCode !== null ? ` (exit code ${exitCode})` : ""}${error ? `: ${error}` : ""}`;
+  return (
+    <div
+      className={`flex items-center justify-between px-4 py-1.5 text-xs ${
+        phase === "down"
+          ? "bg-destructive/15 text-destructive"
+          : "bg-yellow-500/15 text-yellow-700 dark:text-yellow-400"
+      }`}
+    >
+      <span>{text}</span>
+      {phase === "down" ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-md border px-2 py-0.5 hover:bg-secondary"
+        >
+          Restart kernel
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function Chat({
   client,
   session,
-  profiles,
   onOpenConfig,
   onOpenFolder,
   onOpenSessions,
@@ -242,7 +382,6 @@ function Chat({
 }: {
   client: MinervaClient;
   session: Session;
-  profiles: string[];
   onOpenConfig: () => void;
   onOpenFolder: () => void;
   onOpenSessions: () => void;
@@ -291,12 +430,12 @@ function Chat({
       : [];
 
   return (
-    <div className="flex h-screen flex-col">
+    <>
       <HeaderBar
         cwd={session.cwd}
         modes={session.modes}
         currentModeId={vm.currentModeId}
-        profiles={profiles}
+        profiles={session.profiles}
         profile={session.profile}
         busy={vm.busy}
         onOpenFolder={onOpenFolder}
@@ -381,6 +520,6 @@ function Chat({
           </div>
         </div>
       </footer>
-    </div>
+    </>
   );
 }
