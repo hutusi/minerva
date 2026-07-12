@@ -32,6 +32,8 @@ export interface LoopContext {
   tools: KernelTool[];
   system: string;
   runtime: Runtime;
+  /** Config/session root — settings-reading tools resolve their layers from it. */
+  dataDir: string;
   /**
    * From the session's prompt lease, claimed by the CALLER synchronously
    * after its promptActive guard (an await between guard and claim opens a
@@ -309,6 +311,7 @@ async function executeToolCall(
     const result = await tool.execute(call.input, {
       cwd: session.cwd,
       runtime: context.runtime,
+      dataDir: context.dataDir,
       signal: context.signal,
       updateTodos: (entries) => {
         session.todos = entries;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,7 @@ import { createScriptedProvider } from "@minerva/providers";
 import { createKernel, defaultRuntime, type MinervaKernel } from "../src";
 import { permissionValue } from "../src/permissions";
 import { htmlToText, webFetchTool } from "../src/tools";
-import { type BodyReader, readBoundedFrom } from "../src/tools/web-fetch";
+import { type BodyReader, createWebFetchTool, readBoundedFrom } from "../src/tools/web-fetch";
 
 const servers: Array<{ stop: (force?: boolean) => void }> = [];
 const kernels: MinervaKernel[] = [];
@@ -28,8 +28,22 @@ function serve(handler: (request: Request) => Response | Promise<Response>): str
   return `http://localhost:${server.port}`;
 }
 
-const ctx = (cwd: string) => ({ cwd, runtime: defaultRuntime });
 const tmp = () => mkdtempSync(join(tmpdir(), "minerva-fetch-"));
+
+/** Project settings permitting private hosts — the fetch-mechanics tests all
+ * talk to local Bun.serve servers, which the default guard would refuse. */
+function allowPrivateHosts(cwd: string): void {
+  mkdirSync(join(cwd, ".minerva"), { recursive: true });
+  writeFileSync(join(cwd, ".minerva", "settings.json"), '{"webFetch":{"allowPrivate":true}}');
+}
+
+const ctx = (cwd: string) => {
+  allowPrivateHosts(cwd);
+  return { cwd, dataDir: tmp(), runtime: defaultRuntime };
+};
+
+/** Default posture: no settings anywhere, so the private-host guard is on. */
+const guardedCtx = (cwd: string) => ({ cwd, dataDir: tmp(), runtime: defaultRuntime });
 
 describe("web_fetch", () => {
   test("plain text passes through; title is the URL", async () => {
@@ -201,6 +215,7 @@ describe("web_fetch", () => {
 
   test("default mode prompts with the URL as the permission title", async () => {
     const cwd = tmp();
+    allowPrivateHosts(cwd); // the scripted fetch targets a local server
     const dataDir = tmp();
     const base = serve(() => new Response("fetched"));
     const url = `${base}/page`;
@@ -237,4 +252,71 @@ describe("web_fetch", () => {
     });
     expect(titles).toEqual([url]);
   }, 15_000);
+});
+
+describe("web_fetch private-host guard", () => {
+  const noDns = () => Promise.reject(new Error("DNS must not be consulted"));
+
+  test("literal private IPs are refused without any DNS", async () => {
+    const tool = createWebFetchTool({ lookup: noDns });
+    for (const url of [
+      "http://127.0.0.1:1/x",
+      "http://[::1]:1/",
+      "http://10.0.0.1/",
+      "http://169.254.169.254/latest/meta-data",
+    ]) {
+      const result = await tool.execute({ url }, guardedCtx(tmp()));
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("refused:");
+      expect(result.output).toContain("allowPrivate");
+    }
+  });
+
+  test("hostnames resolving to a private address are refused", async () => {
+    const tool = createWebFetchTool({ lookup: async () => [{ address: "10.1.2.3" }] });
+    const result = await tool.execute({ url: "http://internal.example.com/" }, guardedCtx(tmp()));
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("resolves to a private/loopback address (10.1.2.3)");
+  });
+
+  test("localhost is refused by default and permitted via settings", async () => {
+    const base = serve(() => new Response("local"));
+    // Real resolver: localhost → loopback, no network involved.
+    const refused = await webFetchTool.execute({ url: base }, guardedCtx(tmp()));
+    expect(refused.isError).toBe(true);
+    expect(refused.output).toContain("refused:");
+
+    const allowed = await webFetchTool.execute({ url: base }, ctx(tmp()));
+    expect(allowed.isError).toBe(false);
+    expect(allowed.output).toBe("local");
+  });
+
+  test("a redirect into a private range is refused at the hop", async () => {
+    const base = serve(
+      () => new Response(null, { status: 302, headers: { location: "http://192.168.1.1/admin" } }),
+    );
+    // The injected lookup calls our local server public, so the initial
+    // request proceeds; the hop target is a literal private IP.
+    const tool = createWebFetchTool({ lookup: async () => [{ address: "93.184.216.34" }] });
+    const result = await tool.execute({ url: `${base}/start` }, guardedCtx(tmp()));
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("refused:");
+    expect(result.output).toContain("192.168.1.1");
+  });
+
+  test("public hosts are unaffected by the guard", async () => {
+    const base = serve(() => new Response("public ok"));
+    const tool = createWebFetchTool({ lookup: async () => [{ address: "93.184.216.34" }] });
+    const result = await tool.execute({ url: base }, guardedCtx(tmp()));
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe("public ok");
+  });
+
+  test("resolution failures fail closed, without the escape-hatch hint", async () => {
+    const tool = createWebFetchTool({ lookup: () => Promise.reject(new Error("NXDOMAIN")) });
+    const result = await tool.execute({ url: "http://nope.invalid/" }, guardedCtx(tmp()));
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("cannot resolve host");
+    expect(result.output).not.toContain("allowPrivate");
+  });
 });

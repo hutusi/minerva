@@ -5,6 +5,10 @@ import { type BoundedRead, isNotFoundError, type Runtime } from "../runtime";
 export interface ToolContext {
   cwd: string;
   runtime: Runtime;
+  /** Config/session root, for tools that consult settings (web_fetch). The
+   * agent loop always provides it; only direct-call tests may omit it, and
+   * settings-dependent behavior must fail CLOSED without it. */
+  dataDir?: string | undefined;
   /** Aborts when the prompt is cancelled; long-running tools should honor it. */
   signal?: AbortSignal | undefined;
   /** Provided by the agent loop: persist + broadcast the session todo list. */

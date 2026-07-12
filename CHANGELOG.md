@@ -19,6 +19,18 @@ All notable changes to Minerva are documented here. The format follows
   auto-compaction stays inert until `providers.ollama.contextWindow` is
   set; `baseUrl` is overridable in settings for a remote host.
 
+### Security
+- `web_fetch` now refuses hosts that are — or resolve to — private,
+  loopback, or link-local addresses (both IP families, IPv4-mapped forms
+  included), checked on the initial URL and on every redirect hop, with any
+  one private DNS record rejecting the fetch and resolution failures
+  failing closed. Stops accidental SSRF-shaped fetches (cloud metadata
+  endpoints, router admin pages) that the URL permission prompt alone
+  wouldn't flag as odd. **Behavior change:** fetching `localhost` now
+  requires `"webFetch": { "allowPrivate": true }` in settings (global or
+  project). Explicitly still friction, not a sandbox: `fetch` re-resolves
+  DNS after the check, so a rebinding race remains possible.
+
 ## [0.2.0] — 2026-07-12
 
 ### Added

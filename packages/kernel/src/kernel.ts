@@ -620,6 +620,7 @@ export class MinervaKernel {
         tools: this.#toolsFor(session.id),
         system: instructions ? `${base}\n\n${instructions}` : base,
         runtime: this.#runtime,
+        dataDir: this.#dataDir,
         signal,
       };
     } catch (error) {

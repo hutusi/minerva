@@ -217,9 +217,13 @@ named `mcp__<server>__<tool>` and are never auto-allowed.
 > **web_fetch is permission-gated, not network-sandboxed.** It is never
 > auto-allowed (network egress can exfiltrate context via the URL), so default
 > mode always shows the exact URL before fetching, and `deny` rules can block
-> URL ranges. There is no private-IP/SSRF blocking in v1 — same posture as the
-> bash rules above; be deliberate about `auto` mode on machines with sensitive
-> internal endpoints.
+> URL ranges. Hosts that are — or resolve to — private/loopback addresses
+> (cloud metadata endpoints, router admin pages, localhost) are refused by
+> default, on the initial URL and on every redirect hop; set
+> `"webFetch": { "allowPrivate": true }` in settings when developing against
+> local servers. This is friction against accidental SSRF-shaped fetches, not
+> a sandbox (DNS re-resolution between check and connect is not closed) —
+> same posture as the bash rules above.
 
 > **Opening a third-party repository activates its configuration.** The
 > project's `AGENTS.md` enters the system prompt, `.minerva/skills/` becomes
