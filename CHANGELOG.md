@@ -18,6 +18,11 @@ All notable changes to Minerva are documented here. The format follows
   cancels the turn) plus a preview of what the call will do — the command
   for execute tools, a line diff for edits, all-added content for new
   files, the URL for fetches.
+- CLI polish: an animated busy spinner with elapsed seconds replaces the
+  static "working…" line; frontend failures render as red `✖` error items
+  distinct from dim info notices; the usage footer becomes a status footer
+  that also shows the session mode when it isn't `default`; and a terminal
+  bell rings when a permission request arrives.
 - CLI: assistant replies render as terminal markdown (headings, lists,
   fenced code, blockquotes, inline emphasis/links) via `marked`'s lexer and
   a hand-rolled Ink renderer. Unknown constructs (tables, HTML) fall back

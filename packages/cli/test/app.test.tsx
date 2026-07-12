@@ -452,6 +452,35 @@ describe("TUI (ink-testing-library, full stack)", () => {
 
     await type(ui, "/mode plan");
     await waitFor(() => (ui.lastFrame() ?? "").includes("[plan]"), "mode indicator");
+    // The status footer reports the non-default mode too.
+    expect(ui.lastFrame()).toContain("mode plan");
+    ui.unmount();
+  }, 20_000);
+
+  test("a failed command renders as a red ✖ error item", async () => {
+    const ui = renderTui([]);
+    await ready(ui);
+
+    await type(ui, "/mode yolo");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("✖"), "error item");
+    expect(ui.lastFrame()).toContain("unknown mode");
+    ui.unmount();
+  }, 20_000);
+
+  test("the busy indicator spins while a prompt runs", async () => {
+    const ui = renderTui([
+      [
+        { type: "text-delta", text: "chunk one " },
+        { type: "text-delta", text: "chunk two" },
+        FINISH_STOP,
+      ],
+    ]);
+    await ready(ui);
+
+    await type(ui, "work");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("chunk two"), "turn done");
+    // Loose assertion (no frame timing): some frame showed the spinner.
+    expect(ui.frames.some((frame) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] working…/.test(frame))).toBe(true);
     ui.unmount();
   }, 20_000);
 });

@@ -152,6 +152,16 @@ describe("SessionStore reducer", () => {
     expect(store.snapshot.items[0]).toEqual({ kind: "info", text: "welcome" });
   });
 
+  test("addError appends an error item distinct from info", () => {
+    const store = new SessionStore();
+    store.addInfo("heads up");
+    store.addError("boom");
+    expect(store.snapshot.items).toEqual([
+      { kind: "info", text: "heads up" },
+      { kind: "error", text: "boom" },
+    ]);
+  });
+
   test("current_mode_update is handled", () => {
     const store = new SessionStore();
     store.apply({ sessionUpdate: "current_mode_update", currentModeId: "auto" });

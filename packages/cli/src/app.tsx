@@ -6,7 +6,7 @@ import type {
   RequestPermissionParams,
   SkillInfo,
 } from "@minerva/protocol";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput, useStderr, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
@@ -175,7 +175,7 @@ function Chat({
 
   const info = (text: string) => session.store.addInfo(text);
   const reportError = (cause: unknown) =>
-    info(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
+    session.store.addError(cause instanceof Error ? cause.message : String(cause));
 
   const runCommand = (input: string) => {
     const resolved = resolveSlashInput(input, skills);
@@ -317,7 +317,7 @@ function Chat({
           onCancel={cancelConfig}
         />
       ) : viewModel.busy ? (
-        <Text color="yellow">✳ working… (esc to cancel)</Text>
+        <BusyIndicator />
       ) : (
         <Box>
           {viewModel.currentModeId && viewModel.currentModeId !== "default" ? (
@@ -327,26 +327,56 @@ function Chat({
           <TextInput value={draft} onChange={setDraft} onSubmit={submit} />
         </Box>
       )}
-      {viewModel.usage ? <UsageFooter usage={viewModel.usage} /> : null}
+      <StatusFooter modeId={viewModel.currentModeId} usage={viewModel.usage} />
     </Box>
   );
 }
 
-function UsageFooter({ usage }: { usage: NonNullable<SessionViewModel["usage"]> }) {
-  const { lastTurn, cumulative } = usage;
-  const cached =
-    cumulative.cacheReadTokens && cumulative.cacheReadTokens > 0
-      ? ` (${formatTokens(cumulative.cacheReadTokens)} cached)`
-      : "";
-  const parts = [
-    ...(lastTurn
-      ? [
-          `last ${formatTokens(lastTurn.inputTokens)} in / ${formatTokens(lastTurn.outputTokens)} out`,
-        ]
-      : []),
-    `session ${formatTokens(cumulative.inputTokens)} in / ${formatTokens(cumulative.outputTokens)} out${cached}`,
-  ];
-  return <Text dimColor>tokens · {parts.join(" · ")}</Text>;
+/** Braille spinner + elapsed seconds while a prompt runs. */
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+function BusyIndicator() {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((current) => current + 1), 100);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <Text color="yellow">
+      {SPINNER_FRAMES[tick % SPINNER_FRAMES.length]} working… {Math.floor(tick / 10)}s (esc to
+      cancel)
+    </Text>
+  );
+}
+
+/** Session status line: mode (when not default) and token usage. */
+function StatusFooter({
+  modeId,
+  usage,
+}: {
+  modeId: string | undefined;
+  usage: SessionViewModel["usage"];
+}) {
+  const parts: string[] = [];
+  if (modeId && modeId !== "default") parts.push(`mode ${modeId}`);
+  if (usage) {
+    const { lastTurn, cumulative } = usage;
+    const cached =
+      cumulative.cacheReadTokens && cumulative.cacheReadTokens > 0
+        ? ` (${formatTokens(cumulative.cacheReadTokens)} cached)`
+        : "";
+    parts.push(
+      "tokens",
+      ...(lastTurn
+        ? [
+            `last ${formatTokens(lastTurn.inputTokens)} in / ${formatTokens(lastTurn.outputTokens)} out`,
+          ]
+        : []),
+      `session ${formatTokens(cumulative.inputTokens)} in / ${formatTokens(cumulative.outputTokens)} out${cached}`,
+    );
+  }
+  if (parts.length === 0) return null;
+  return <Text dimColor>{parts.join(" · ")}</Text>;
 }
 
 function formatTokens(count: number): string {
@@ -392,6 +422,12 @@ function ItemView({ item }: { item: ViewItem }) {
       return (
         <Box marginTop={1}>
           <Text dimColor>{item.text}</Text>
+        </Box>
+      );
+    case "error":
+      return (
+        <Box marginTop={1}>
+          <Text color="red">✖ {item.text}</Text>
         </Box>
       );
   }
@@ -558,6 +594,16 @@ function permissionHotkey(kind: PermissionOptionKind): string | undefined {
 
 function PermissionPrompt({ pending }: { pending: PendingPermission }) {
   const options = pending.request.options;
+  const { stderr } = useStderr();
+  const toolCallId = pending.request.toolCall.toolCallId;
+  // Terminal bell once per request: the user may have tabbed away while the
+  // model worked, and an unanswered prompt stalls the whole turn. Rung on
+  // stderr — same terminal, but it can never interleave with Ink's frame
+  // painting on stdout.
+  useEffect(() => {
+    void toolCallId; // read in the effect so the dependency is genuine
+    stderr?.write("\u0007");
+  }, [stderr, toolCallId]);
   const [index, setIndex] = useState(0);
   // Ref mirror of `index`, current within a single input batch (the
   // config-panel pattern): rapid ↓+enter must select the row the user saw.

@@ -30,7 +30,8 @@ export type ViewItem =
       diff?: { path: string; oldText: string | null; newText: string } | undefined;
     }
   | { kind: "plan"; entries: PlanEntry[] }
-  | { kind: "info"; text: string };
+  | { kind: "info"; text: string }
+  | { kind: "error"; text: string };
 
 export interface SessionViewModel {
   items: ViewItem[];
@@ -62,6 +63,12 @@ export class SessionStore {
 
   addInfo(text: string): void {
     this.#push({ kind: "info", text });
+  }
+
+  /** Frontend-side failures (rejected commands, transport errors) — styled
+   * distinctly from informational notices. */
+  addError(text: string): void {
+    this.#push({ kind: "error", text });
   }
 
   setBusy(busy: boolean): void {
