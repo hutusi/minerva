@@ -35,12 +35,29 @@ Commands:
   acp                  Host the kernel on stdio (ACP framing) for editors
 
 Options:
+  -p, --print [text]   One-shot mode: run the prompt (or stdin when piped),
+                       print the reply, exit 0 on a completed turn
+  --mode <id>          Session mode for -p (plan | default | acceptEdits | auto)
   -c, --continue       Resume the most recent session for this directory
   -r, --resume <id>    Resume a specific session
   -m, --model <ref>    Model as [provider/]model, e.g. openai/gpt-5.2 or
                        claude-opus-4-8 (bare ids default to Anthropic)
+  --profile <name>     Named profile from settings (system prompt, model, mode)
   -h, --help           Show help
 ```
+
+One-shot print mode composes with pipes — only the model's reply lands on
+stdout (tool progress and diagnostics go to stderr):
+
+```sh
+minerva -p "explain this repo" --mode auto
+git diff | minerva -p              # prompt read from stdin
+minerva -c -p "and now add tests"  # continue the latest session
+```
+
+Without `--mode`, print mode runs in `default` mode and **auto-denies** every
+permission request (there is nobody to ask); the model is told and continues.
+Use `--mode acceptEdits` or `--mode auto` to let tools run unattended.
 
 Inside the TUI:
 
@@ -50,13 +67,17 @@ Inside the TUI:
 | `/config` | Choose provider, API key, and model — applies to the next prompt, no restart |
 | `/mode [id]` | Show or set the session mode (`plan` \| `default` \| `acceptEdits` \| `auto`) |
 | `/compact` | Summarize the conversation and reset the model context |
-| `/sessions` | List recent sessions for this directory |
+| `/profile [name]` | List profiles, switch persona (`none` clears) |
+| `/sessions`, `/resume` | Pick a recent session and switch to it in place |
 | `/new` | Start a fresh session |
 | `/exit` | Quit |
 
-`esc` cancels the running turn — including while a permission prompt is open.
-Permission prompts accept `y` (allow once), `a` (allow always — persisted as a
-project rule), `n` (reject), `esc` (cancel the turn).
+The composer recalls input history with ↑/↓ (persisted across runs) and
+autocompletes `/commands` and skills with tab/enter. `esc` cancels the running
+turn — including while a permission prompt is open. Permission prompts show
+what the call will do (command, file diff, URL), navigate with ↑/↓ + enter,
+and keep the `y` / `a` (allow always — persisted as a project rule) / `n`
+hotkeys; `esc` cancels the turn.
 
 ## Providers
 

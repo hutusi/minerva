@@ -17,6 +17,7 @@ import {
   type SessionPromptResult,
   type SessionSummary,
   type SessionsListResult,
+  type SessionUpdate,
   type SessionUpdateBatchParams,
   type SessionUpdateParams,
   type SessionUsageParams,
@@ -37,6 +38,12 @@ export interface MinervaClientOptions {
    * from user input; leaving it unset rejects every request (safe default).
    */
   onPermissionRequest?: PermissionHandler;
+  /**
+   * Raw update tap, invoked before store application (batched replay
+   * included, one call per update). Streaming surfaces like print mode
+   * consume this; store-driven UIs don't need it.
+   */
+  onSessionUpdate?: (sessionId: string, update: SessionUpdate) => void;
 }
 
 /**
@@ -56,10 +63,14 @@ export class MinervaClient {
     this.#connection = new Connection(transport);
     this.#connection.handleNotification(CLIENT_METHODS.sessionUpdate, (params) => {
       const { sessionId, update } = params as SessionUpdateParams;
+      options.onSessionUpdate?.(sessionId, update);
       this.#stores.get(sessionId)?.apply(update);
     });
     this.#connection.handleNotification(CLIENT_METHODS.sessionUpdateBatch, (params) => {
       const { sessionId, updates } = params as SessionUpdateBatchParams;
+      if (options.onSessionUpdate) {
+        for (const update of updates) options.onSessionUpdate(sessionId, update);
+      }
       this.#stores.get(sessionId)?.applyBatch(updates);
     });
     this.#connection.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {

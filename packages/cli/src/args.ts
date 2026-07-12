@@ -11,6 +11,10 @@ interface CliArgs {
   resume: string | null;
   /** Named profile from --profile; null = use the settings default. */
   profile: string | null;
+  /** -p/--print one-shot mode: absent = TUI; prompt null = read stdin. */
+  print: { prompt: string | null } | null;
+  /** --mode for print mode's non-interactive permission story. */
+  mode: string | null;
 }
 
 export type ParsedCli =
@@ -28,6 +32,10 @@ Commands:
   acp                  Host the kernel on stdio (ACP framing) for editors
 
 Options:
+  -p, --print [text]   One-shot mode: run the prompt (or stdin when piped),
+                       print the reply, exit 0 on a completed turn
+  --mode <id>          Session mode for -p (plan | default | acceptEdits |
+                       auto); default asks nothing and denies side effects
   -c, --continue       Resume the most recent session for this directory
   -r, --resume <id>    Resume a specific session
   -m, --model <ref>    Model as [provider/]model, e.g. bailian/qwen-plus or
@@ -50,12 +58,29 @@ export function parseCliArgs(argv: string[]): ParsedCli {
   let model: string | null = null;
   let resume: string | null = null;
   let profile: string | null = null;
+  let print: CliArgs["print"] = null;
+  let mode: string | null = null;
   let command: CliArgs["command"] = "tui";
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "acp" && command === "tui") {
       command = "acp";
+    } else if (arg === "--print" || arg === "-p") {
+      // The prompt is optional: a following flag (or nothing) means stdin.
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        print = { prompt: next };
+        i++;
+      } else {
+        print = { prompt: null };
+      }
+    } else if (arg === "--mode") {
+      const value = argv[++i];
+      if (!value || value.startsWith("-")) {
+        return { kind: "error", message: "--mode requires a mode id" };
+      }
+      mode = value;
     } else if (arg === "--continue" || arg === "-c") {
       resume = "latest";
     } else if (arg === "--resume" || arg === "-r") {
@@ -82,5 +107,13 @@ export function parseCliArgs(argv: string[]): ParsedCli {
       return { kind: "error", message: `unknown option: ${arg}` };
     }
   }
-  return { kind: "run", args: { command, model, resume, profile } };
+  // --mode exists for print mode's non-interactive permission story; the TUI
+  // keeps /mode so the flag can't silently change interactive policy.
+  if (mode !== null && print === null) {
+    return { kind: "error", message: "--mode requires -p/--print (use /mode in the TUI)" };
+  }
+  if (print !== null && command === "acp") {
+    return { kind: "error", message: "acp and --print are mutually exclusive" };
+  }
+  return { kind: "run", args: { command, model, resume, profile, print, mode } };
 }

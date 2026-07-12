@@ -25,6 +25,7 @@ import { App } from "./app";
 import { parseCliArgs, usage } from "./args";
 import type { ProviderChoice } from "./config-panel";
 import { createPermissionBridge } from "./permission-bridge";
+import { runPrintMode } from "./print";
 
 const usageDefault = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
 const parsed = parseCliArgs(process.argv.slice(2));
@@ -116,15 +117,18 @@ const kernelOptions = {
   dataDir,
 };
 
+function requireKeyOrExit(): void {
+  if (!missingRequiredKey) return;
+  const keyVar = apiKeyEnvVar(providerName, registry);
+  console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
+  console.error(`  export ${keyVar}="..."`);
+  console.error("or run `minerva` and use /config to store a key in settings.");
+  process.exit(1);
+}
+
 if (command === "acp") {
   // stdout carries the protocol — no UI, so a missing key stays a hard exit.
-  if (missingRequiredKey) {
-    const keyVar = apiKeyEnvVar(providerName, registry);
-    console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
-    console.error(`  export ${keyVar}="..."`);
-    console.error("or run `minerva` and use /config to store a key in settings.");
-    process.exit(1);
-  }
+  requireKeyOrExit();
   // runAcpHost awaits kernel.close() on disconnect; a durability failure
   // surfaces here as a nonzero exit rather than a silent success.
   try {
@@ -134,6 +138,31 @@ if (command === "acp") {
     console.error(`minerva: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
+}
+
+if (parsed.args.print) {
+  // One-shot output — no UI, so a missing key is a hard exit like acp.
+  requireKeyOrExit();
+  let promptText = parsed.args.print.prompt;
+  if (promptText === null) {
+    // -p with no inline prompt reads stdin, but only when something is
+    // actually piped in — headlessly waiting on a TTY would just hang.
+    if (process.stdin.isTTY) {
+      fail(new Error("-p/--print needs a prompt argument or piped stdin"));
+    }
+    promptText = await Bun.stdin.text();
+  }
+  if (!promptText.trim()) fail(new Error("empty prompt"));
+  const code = await runPrintMode({
+    kernelOptions,
+    cwd,
+    prompt: promptText.trim(),
+    mode: parsed.args.mode,
+    profile: profileFlag,
+    resume,
+    io: { stdout: process.stdout, stderr: process.stderr },
+  });
+  process.exit(code);
 }
 
 // Rows for the /config panel: every registry provider plus where (if

@@ -18,6 +18,14 @@ All notable changes to Minerva are documented here. The format follows
   cancels the turn) plus a preview of what the call will do — the command
   for execute tools, a line diff for edits, all-added content for new
   files, the URL for fetches.
+- Print mode: `minerva -p "<prompt>"` runs one prompt and exits — reply on
+  stdout (pipe-clean), tool progress and diagnostics on stderr, exit 0 only
+  when the turn completes. `-p` without an argument reads the prompt from
+  piped stdin; composes with `-c`/`-r`/`-m`/`--profile`. `--mode <id>` sets
+  the session mode for the run (print-mode only; the TUI keeps `/mode`);
+  without it, permission requests are auto-denied with a stderr note since
+  there is nobody to ask. New client option `onSessionUpdate` taps raw
+  updates before store application for streaming surfaces.
 - `web_fetch` tool: bounded, permission-gated HTTP(S) GET for the model —
   manual redirects (max 5, scheme re-checked per hop), 30 s default / 120 s
   max timeout, 1 MiB body cap, 30k char output cap, HTML reduced to plain
