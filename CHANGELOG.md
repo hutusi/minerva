@@ -18,6 +18,11 @@ All notable changes to Minerva are documented here. The format follows
   cancels the turn) plus a preview of what the call will do — the command
   for execute tools, a line diff for edits, all-added content for new
   files, the URL for fetches.
+- Interactive session picker: `/sessions` (and the new `/resume` alias)
+  opens an arrow-key list of recent sessions — relative age, first-prompt
+  preview, `(current)` marker — and enter switches to the selected session
+  in place, replaying its transcript. A new client `closeSession` detaches
+  a session's store so a session can be re-entered after switching away.
 - CLI input history and slash autocomplete: ↑/↓ recall prior inputs (with
   the in-progress draft stashed and restored), persisted across runs to
   `<dataDir>/history.jsonl` (last 500, file mode 0600). Typing `/prefix`

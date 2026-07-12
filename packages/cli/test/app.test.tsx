@@ -457,6 +457,42 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.unmount();
   }, 20_000);
 
+  test("the session picker switches sessions and back, replaying transcripts", async () => {
+    const ui = renderTui([[{ type: "text-delta", text: "alpha reply" }, FINISH_STOP]]);
+    await ready(ui);
+
+    await type(ui, "alpha prompt");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("alpha reply"), "first turn");
+
+    await type(ui, "/new");
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("alpha reply"), "fresh session");
+
+    await type(ui, "/sessions");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Sessions"), "picker open");
+    expect(ui.lastFrame()).toContain("(current)");
+    expect(ui.lastFrame()).toContain("alpha prompt"); // old session's preview
+
+    // Row 0 is the newest (current, empty) session; ↓ + enter resumes the older one.
+    await Bun.sleep(50);
+    ui.stdin.write("[B");
+    await Bun.sleep(30);
+    ui.stdin.write("\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("alpha reply"), "old transcript replayed");
+
+    // Switch back to the empty session: its store registration from /new must
+    // not block the reload (closeSession clears it). Row 0 is now the just-
+    // resumed session (the index orders by most-recent use), so ↓ once.
+    await type(ui, "/resume");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Sessions"), "picker reopened");
+    await Bun.sleep(50);
+    ui.stdin.write("\u001B[B");
+    await Bun.sleep(30);
+    ui.stdin.write("\r");
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("alpha reply"), "empty session again");
+    await waitFor(() => (ui.lastFrame() ?? "").includes(">"), "composer back");
+    ui.unmount();
+  }, 20_000);
+
   test("up-arrow recalls submitted input into the composer", async () => {
     const ui = renderTui([[{ type: "text-delta", text: "ok one" }, FINISH_STOP]]);
     await ready(ui);

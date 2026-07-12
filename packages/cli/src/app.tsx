@@ -4,6 +4,7 @@ import type {
   PermissionOption,
   PermissionOptionKind,
   RequestPermissionParams,
+  SessionSummary,
   SkillInfo,
 } from "@minerva/protocol";
 import { Box, Text, useApp, useInput, useStderr, useStdout } from "ink";
@@ -14,6 +15,7 @@ import { clipDiff, type DiffLine, diffLines } from "./diff";
 import { InputHistory } from "./history";
 import { Markdown } from "./markdown";
 import type { PendingPermission, PermissionBridge } from "./permission-bridge";
+import { SessionPicker } from "./session-picker";
 import { resolveSlashInput, skillsHelp } from "./slash";
 import { slashSuggestions } from "./suggest";
 
@@ -110,6 +112,26 @@ export function App({
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
+  const loadExistingSession = (sessionId: string) => {
+    if (sessionId === session.id) return;
+    // Clear any registration left from an earlier switch away — loadSession
+    // refuses to overwrite a live store, and switching never unregisters.
+    client.closeSession(sessionId);
+    client
+      .loadSession(sessionId, cwd)
+      .then(({ store, instructions }) => {
+        announceInstructions(store, instructions);
+        setSession({ id: sessionId, store });
+        refreshSkills();
+      })
+      // A failed switch keeps the current session usable — never setError,
+      // which unmounts the whole app.
+      .catch((cause) =>
+        session.store.addError(
+          `could not load session: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ),
+      );
+  };
   return (
     <Box flexDirection="column">
       <Text dimColor>
@@ -122,6 +144,7 @@ export function App({
         cwd={cwd}
         skills={skills}
         onNewSession={startNewSession}
+        onLoadSession={loadExistingSession}
         providers={providers}
         model={modelRef}
         onModelChanged={setModelRef}
@@ -145,7 +168,8 @@ const HELP_TEXT = [
   "/config            choose provider, API key, and model",
   "/mode [id]         show or set the session mode (plan | default | acceptEdits | auto)",
   "/compact           summarize the conversation and reset the model context",
-  "/sessions          list recent sessions for this directory",
+  "/sessions          pick a recent session for this directory",
+  "/resume            same as /sessions",
   "/new               start a fresh session",
   "/exit              quit",
 ].join("\n");
@@ -157,6 +181,7 @@ function Chat({
   cwd,
   skills,
   onNewSession,
+  onLoadSession,
   providers,
   model,
   onModelChanged,
@@ -170,6 +195,7 @@ function Chat({
   cwd: string;
   skills: SkillInfo[];
   onNewSession: () => void;
+  onLoadSession: (sessionId: string) => void;
   providers: ProviderChoice[];
   model: string;
   onModelChanged: (providerId: string) => void;
@@ -186,6 +212,8 @@ function Chat({
   // One history for the whole run — it survives session switches on purpose.
   const [history] = useState(() => new InputHistory(initialHistory));
   const [configOpen, setConfigOpen] = useState(initialConfigOpen);
+  /** Rows for the session picker; null = closed. */
+  const [pickerSessions, setPickerSessions] = useState<SessionSummary[] | null>(null);
   // The provider snapshot and first-run flag start from the startup values but
   // must reflect a successful /config, or the panel keeps showing a
   // just-configured provider as "no key" and re-renders the first-run banner.
@@ -241,6 +269,11 @@ function Chat({
           .catch(reportError);
         break;
       case "sessions":
+      case "resume":
+        if (viewModel.busy) {
+          session.store.addError("finish or cancel the current turn first");
+          break;
+        }
         client
           .listSessions(cwd)
           .then((sessions) => {
@@ -248,11 +281,7 @@ function Chat({
               info("no sessions for this directory yet");
               return;
             }
-            info(
-              sessions
-                .map((entry) => `${entry.sessionId}  ${entry.preview ?? "(no messages)"}`)
-                .join("\n"),
-            );
+            setPickerSessions(sessions);
           })
           .catch(reportError);
         break;
@@ -334,6 +363,16 @@ function Chat({
       ))}
       {pending ? (
         <PermissionPrompt pending={pending} />
+      ) : pickerSessions ? (
+        <SessionPicker
+          sessions={pickerSessions}
+          currentId={session.id}
+          onSelect={(sessionId) => {
+            setPickerSessions(null);
+            onLoadSession(sessionId);
+          }}
+          onCancel={() => setPickerSessions(null)}
+        />
       ) : configOpen ? (
         <ConfigPanel
           providers={providerChoices}

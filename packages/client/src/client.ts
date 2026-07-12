@@ -124,6 +124,16 @@ export class MinervaClient {
     }
   }
 
+  /**
+   * Detach the client-side store for a session — the kernel session is
+   * untouched, and a later loadSession rebuilds a fresh store from replay.
+   * Frontends call this before re-loading a session they switched away
+   * from, since loadSession refuses to overwrite a live registration.
+   */
+  closeSession(sessionId: string): void {
+    this.#stores.delete(sessionId);
+  }
+
   async listSessions(cwd: string): Promise<SessionSummary[]> {
     const result = await this.#connection.request<SessionsListResult>(
       MINERVA_METHODS.sessionsList,
