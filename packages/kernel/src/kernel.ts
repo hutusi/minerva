@@ -509,12 +509,15 @@ export class MinervaKernel {
       .filter((line) => line.trim())
       .flatMap((line) => {
         try {
-          return [JSON.parse(line) as SessionSummary];
+          return [JSON.parse(line) as SessionSummary & { parent?: string }];
         } catch {
           return [];
         }
       })
-      .filter((entry) => entry.cwd === cwd);
+      // Child sessions (subagent transcripts) are audit artifacts, not
+      // resumable conversations — keep them out of pickers.
+      .filter((entry) => entry.cwd === cwd && entry.parent === undefined)
+      .map(({ parent: _parent, ...entry }) => entry);
 
     // The index is append-per-use (create and resume both write), so the
     // last entry per session id reflects most-recent use. Return the 20

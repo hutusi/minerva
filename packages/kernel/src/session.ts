@@ -42,6 +42,9 @@ export interface SessionOptions {
   /** Named profile to create the session with (create only; load re-resolves
    * the name recorded in the log). Unknown names throw. */
   profile?: string | undefined;
+  /** Parent session id — set when creating a subagent's child session, so
+   * the log records its provenance and pickers can exclude it. */
+  parent?: string | undefined;
 }
 
 /**
@@ -132,13 +135,21 @@ export class Session {
     }
 
     const createdAt = now();
-    await appendSessionIndex(options.runtime, dir, { sessionId: id, cwd: options.cwd, createdAt });
+    await appendSessionIndex(options.runtime, dir, {
+      sessionId: id,
+      cwd: options.cwd,
+      createdAt,
+      // Parentage rides the index too, so sessions/list can exclude child
+      // logs without opening them.
+      ...(options.parent !== undefined ? { parent: options.parent } : {}),
+    });
     session.append({
       type: "session.created",
       sessionId: id,
       cwd: options.cwd,
       provider: options.providerId,
       ...(profile ? { profile: profile.name } : {}),
+      ...(options.parent !== undefined ? { parent: options.parent } : {}),
       // Persisted so replay is authoritative for the initial mode — a mode
       // set by a profile default must survive resume.
       mode,
@@ -334,6 +345,8 @@ interface IndexEntry {
   createdAt: string;
   /** First user message, truncated — lets the picker skip reading the log. */
   preview?: string;
+  /** Parent session id — present only on subagent child sessions. */
+  parent?: string;
 }
 
 /** Truncate a first-user-message to a picker-sized preview (code-point safe). */

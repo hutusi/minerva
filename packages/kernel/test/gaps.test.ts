@@ -447,6 +447,55 @@ describe("settings + index write hardening", () => {
   });
 });
 
+describe("session parentage (subagents)", () => {
+  test("a child session records its parent in the log and the index", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-parent-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-parent-data-"));
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const parent = await Session.create(opts);
+    const child = await Session.create({ ...opts, parent: parent.id });
+    await parent.flush();
+    await child.flush();
+
+    const childEvents = readFileSync(child.logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent);
+    const created = childEvents.find((e) => e.type === "session.created");
+    expect(created).toMatchObject({ sessionId: child.id, parent: parent.id });
+
+    const index = readFileSync(join(projectDir(dataDir, cwd), "index.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { sessionId: string; parent?: string });
+    expect(index.find((e) => e.sessionId === child.id)?.parent).toBe(parent.id);
+    expect(index.find((e) => e.sessionId === parent.id)?.parent).toBeUndefined();
+  });
+
+  test("replay rolls a task.completed event's usage into the session total", () => {
+    const replay = replayEvents(
+      [
+        {
+          type: "task.completed",
+          toolCallId: "c1",
+          childSessionId: "ses_child",
+          stopReason: "end_turn",
+          usage: { inputTokens: 70, outputTokens: 30 },
+          at: "t",
+        },
+        {
+          type: "turn.completed",
+          stopReason: "end_turn",
+          usage: { inputTokens: 20, outputTokens: 8 },
+          at: "t",
+        },
+      ],
+      [],
+    );
+    expect(replay.usage).toEqual({ inputTokens: 90, outputTokens: 38 });
+  });
+});
+
 describe("shutdown draining", () => {
   test("close() cancels and drains an in-flight prompt, persisting its trailing events", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "gaps-drain-proj-"));
