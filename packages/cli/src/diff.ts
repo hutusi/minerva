@@ -5,7 +5,9 @@
  */
 
 export interface DiffLine {
-  kind: "add" | "del" | "context" | "gap";
+  /** add/del/context are diff rows; gap marks elided context; note is a
+   * dim annotation (currently only the trailing-newline marker). */
+  kind: "add" | "del" | "context" | "gap" | "note";
   text: string;
 }
 
@@ -46,11 +48,40 @@ export function diffLines(oldText: string | null, newText: string): DiffLine[] {
           ...added.map((text) => ({ kind: "add", text }) as const),
         ]
       : lcsDiff(removed, added);
-  return [
+  const lines = [
     ...oldLines.slice(0, start).map(context),
     ...middle,
     ...oldLines.slice(oldEnd).map(context),
   ];
+  return withNewlineNote(lines, oldText, newText);
+}
+
+/**
+ * Git-style "no newline at end of file" handling: splitLines treats the
+ * trailing newline as a line terminator, so "line\n" vs "line" would
+ * otherwise render as an all-context (invisible) diff even though the file
+ * changed. When the EOF-newline state differs, surface the final line as a
+ * del/add pair and append a dim note naming the side that lacks it.
+ */
+function withNewlineNote(lines: DiffLine[], oldText: string, newText: string): DiffLine[] {
+  const oldEndsNL = oldText === "" || oldText.endsWith("\n");
+  const newEndsNL = newText === "" || newText.endsWith("\n");
+  if (oldEndsNL === newEndsNL) return lines;
+  const out = [...lines];
+  const last = out.at(-1);
+  if (last && out.every((line) => line.kind === "context")) {
+    out.splice(
+      out.length - 1,
+      1,
+      { kind: "del", text: last.text },
+      { kind: "add", text: last.text },
+    );
+  }
+  out.push({
+    kind: "note",
+    text: `\\ ${oldEndsNL ? "new" : "old"} file has no trailing newline`,
+  });
+  return out;
 }
 
 /**

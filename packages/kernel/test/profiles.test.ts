@@ -161,6 +161,30 @@ describe("named profiles through the kernel", () => {
     expect(captured[0]).toContain("You are WRITER v2.");
   }, 15_000);
 
+  test("a profile's default mode survives resume (creation-time mode wins over settings)", async () => {
+    const cwd = tmp("minerva-prof-proj-");
+    const dataDir = tmp("minerva-prof-data-");
+    // The settings default differs from the profile default, so a resume that
+    // fell back to settings would come back as acceptEdits instead of plan.
+    writeProjectSettings(cwd, { ...PROFILE_SETTINGS, defaultMode: "acceptEdits" });
+    const first = boot(dataDir, []);
+    await first.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const created = await first.request<SessionNewResult>(AGENT_METHODS.sessionNew, {
+      cwd,
+      profile: "writer",
+    });
+    expect(created.modes?.currentModeId).toBe("plan");
+    await kernels.pop()?.close();
+
+    const second = boot(dataDir, []);
+    await second.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const loaded = await second.request<SessionLoadResult>(AGENT_METHODS.sessionLoad, {
+      sessionId: created.sessionId,
+      cwd,
+    });
+    expect(loaded.modes?.currentModeId).toBe("plan");
+  }, 15_000);
+
   test("a vanished profile degrades to the base persona instead of bricking resume", async () => {
     const cwd = tmp("minerva-prof-proj-");
     const dataDir = tmp("minerva-prof-data-");

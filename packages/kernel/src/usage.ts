@@ -31,6 +31,19 @@ export function hasUsage(usage: TurnUsage | undefined): usage is TurnUsage {
   );
 }
 
+/**
+ * How much of the context window one model CALL occupied. The AI SDK's
+ * inputTokens is already the total prompt size — Anthropic's adapter adds
+ * cache read/creation back onto the raw input_tokens, and OpenAI-compatible
+ * prompt_tokens includes cached tokens — so cache fields must NOT be added
+ * on top (that double-counts). Feeds the auto-compaction trigger; callers
+ * must pass a single call's usage, never a tool-loop's accumulated total.
+ */
+export function contextSize(usage: TurnUsage | undefined): number | undefined {
+  const size = usage?.inputTokens ?? 0;
+  return size > 0 ? size : undefined;
+}
+
 /** Normalize for the wire: in/out default to 0, cache fields stay optional. */
 export function toTokenUsage(usage: TurnUsage): TokenUsage {
   return {

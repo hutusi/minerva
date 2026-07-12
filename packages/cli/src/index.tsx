@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
 import {
@@ -24,6 +23,7 @@ import { runAcpHost } from "./acp";
 import { App } from "./app";
 import { parseCliArgs, usage } from "./args";
 import type { ProviderChoice } from "./config-panel";
+import { appendHistoryFile, loadHistoryFile } from "./history-file";
 import { createPermissionBridge } from "./permission-bridge";
 import { runPrintMode } from "./print";
 
@@ -184,36 +184,9 @@ const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, d
 }));
 
 // Input history is frontend-local state (like Ink itself), so it lives here
-// rather than behind the protocol: one JSONL file per data dir, best-effort.
+// rather than behind the protocol: one JSONL file per data dir, best-effort,
+// compacted at load when it grows past its threshold.
 const historyPath = join(dataDir, "history.jsonl");
-function loadHistory(): string[] {
-  try {
-    return readFileSync(historyPath, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .flatMap((line) => {
-        try {
-          const parsed = JSON.parse(line) as { text?: unknown };
-          return typeof parsed.text === "string" ? [parsed.text] : [];
-        } catch {
-          return []; // torn/foreign line — skip it, keep the rest
-        }
-      })
-      .slice(-500);
-  } catch {
-    return [];
-  }
-}
-const appendHistory = (text: string) => {
-  try {
-    mkdirSync(dataDir, { recursive: true });
-    appendFileSync(historyPath, `${JSON.stringify({ text, at: new Date().toISOString() })}\n`, {
-      mode: 0o600,
-    });
-  } catch {
-    // History is a convenience; persistence failures must not break input.
-  }
-};
 
 // The CLI embeds the kernel, but only across the protocol's in-proc
 // transport — the same messages a Tauri sidecar or remote kernel would see.
@@ -235,8 +208,8 @@ const app = render(
     profile={profileFlag}
     providers={providerChoices}
     needsConfig={missingRequiredKey}
-    initialHistory={loadHistory()}
-    onHistoryAppend={appendHistory}
+    initialHistory={loadHistoryFile(historyPath)}
+    onHistoryAppend={(text) => appendHistoryFile(historyPath, text)}
   />,
 );
 await app.waitUntilExit();

@@ -12,6 +12,7 @@ import TextInput from "ink-text-input";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
 import { clipDiff, type DiffLine, diffLines } from "./diff";
+import { establishSession } from "./establish";
 import { InputHistory } from "./history";
 import { Markdown } from "./markdown";
 import type { PendingPermission, PermissionBridge } from "./permission-bridge";
@@ -80,14 +81,7 @@ export function App({
       });
     const establish = async () => {
       await client.initialize();
-      if (resume === "latest") {
-        const sessions = await client.listSessions(cwd);
-        const latest = sessions[0];
-        if (!latest) throw new Error(`no previous sessions for ${cwd}`);
-        return client.loadSession(latest.sessionId, cwd);
-      }
-      if (resume) return client.loadSession(resume, cwd);
-      return client.newSession(cwd, profile ? { profile } : {});
+      return establishSession(client, cwd, { resume, profile });
     };
     establish()
       .then(({ sessionId, store, instructions, profile: established }) => {
@@ -718,6 +712,7 @@ function DiffView({ lines }: { lines: DiffLine[] }) {
               </Text>
             );
           case "gap":
+          case "note":
             return (
               <Text key={key} dimColor>
                 {line.text}

@@ -139,6 +139,9 @@ export class Session {
       cwd: options.cwd,
       provider: options.providerId,
       ...(profile ? { profile: profile.name } : {}),
+      // Persisted so replay is authoritative for the initial mode — a mode
+      // set by a profile default must survive resume.
+      mode,
       at: createdAt,
     });
     return session;

@@ -19,7 +19,7 @@ const finish = (inputTokens: number, outputTokens = 5): TurnEvent => ({
 });
 
 /** Scripted provider with a declared context window of 100 tokens. */
-function boot(dataDir: string, turns: TurnEvent[][]) {
+function boot(dataDir: string, turns: TurnEvent[][], approveTools = false) {
   const [clientTransport, kernelTransport] = createInProcTransportPair();
   kernels.push(
     createKernel(kernelTransport, {
@@ -27,11 +27,20 @@ function boot(dataDir: string, turns: TurnEvent[][]) {
       provider: { ...createScriptedProvider(turns), contextWindow: 100 },
     }),
   );
-  return new MinervaClient(clientTransport);
+  return new MinervaClient(
+    clientTransport,
+    approveTools
+      ? {
+          onPermissionRequest: async () => ({
+            outcome: { outcome: "selected", optionId: "allow" },
+          }),
+        }
+      : {},
+  );
 }
 
 describe("auto-compaction", () => {
-  test("replay restores the trigger from turn.completed and resets it on compaction", () => {
+  test("replay restores the trigger from the persisted context and resets it on compaction", () => {
     const at = "t";
     const base: SessionEvent[] = [
       { type: "user.message", text: "hi", at },
@@ -39,11 +48,26 @@ describe("auto-compaction", () => {
       {
         type: "turn.completed",
         stopReason: "end_turn",
-        usage: { inputTokens: 70, outputTokens: 5, cacheReadTokens: 20 },
+        // Cumulative usage deliberately larger than the persisted context —
+        // replay must use `context`, never recompute from `usage`.
+        usage: { inputTokens: 130, outputTokens: 5, cacheReadTokens: 20 },
+        context: 70,
         at,
       },
     ];
-    expect(replayEvents(base, []).lastTurnContext).toBe(90);
+    expect(replayEvents(base, []).lastTurnContext).toBe(70);
+
+    // A turn.completed without the field (old logs) leaves the signal alone.
+    const withOldTurn = replayEvents(
+      [
+        ...base,
+        { type: "user.message", text: "again", at },
+        { type: "assistant.message", text: "ok", toolCalls: [], at },
+        { type: "turn.completed", stopReason: "end_turn", usage: { inputTokens: 500 }, at },
+      ],
+      [],
+    );
+    expect(withOldTurn.lastTurnContext).toBe(70);
 
     const compacted = replayEvents(
       [...base, { type: "session.compacted", summary: "short version", at }],
@@ -58,7 +82,13 @@ describe("auto-compaction", () => {
         { type: "session.compacted", summary: "short version", at },
         { type: "user.message", text: "more", at },
         { type: "assistant.message", text: "ok", toolCalls: [], at },
-        { type: "turn.completed", stopReason: "end_turn", usage: { inputTokens: 30 }, at },
+        {
+          type: "turn.completed",
+          stopReason: "end_turn",
+          usage: { inputTokens: 30 },
+          context: 30,
+          at,
+        },
       ],
       [],
     );
@@ -126,6 +156,74 @@ describe("auto-compaction", () => {
       ),
     ).toBe(true);
     expect(store.snapshot.items.at(-1)).toMatchObject({ text: "fresh reply" });
+  }, 15_000);
+
+  test("a tool loop's summed usage does not trigger — the last call is the signal", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-autoc-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-autoc-data-"));
+    const client = boot(
+      dataDir,
+      [
+        // One prompt, two model calls: 60 + 70 sum to 130 (> window 100),
+        // but the real context is the last call's 70 (< 80% threshold).
+        [
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "bash",
+            input: { command: "echo loop" },
+          },
+          {
+            type: "finish",
+            finishReason: "tool-calls",
+            usage: { inputTokens: 60, outputTokens: 5 },
+          },
+        ],
+        [{ type: "text-delta", text: "tool reply" }, finish(70)],
+        // If the sum triggered compaction, this turn would be consumed as the
+        // summary and the assertion below would see it as the reply.
+        [{ type: "text-delta", text: "follow-up reply" }, finish(20)],
+      ],
+      true,
+    );
+    await client.initialize();
+    const { sessionId, store } = await client.newSession(cwd);
+    await client.prompt(sessionId, "use the tool");
+    await client.prompt(sessionId, "follow up");
+    expect(
+      store.snapshot.items.some(
+        (item) => item.kind === "info" && item.text.includes("context auto-compacted"),
+      ),
+    ).toBe(false);
+    expect(store.snapshot.items.at(-1)).toMatchObject({ text: "follow-up reply" });
+  }, 15_000);
+
+  test("cached input tokens are not double-counted into the trigger", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-autoc-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-autoc-data-"));
+    const client = boot(dataDir, [
+      // inputTokens already INCLUDES the cached tokens (AI SDK semantics):
+      // real context 70 < 80. The old code added cacheRead on top (130 > 80).
+      [
+        { type: "text-delta", text: "cached reply" },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: { inputTokens: 70, outputTokens: 5, cacheReadTokens: 60 },
+        },
+      ],
+      [{ type: "text-delta", text: "next reply" }, finish(20)],
+    ]);
+    await client.initialize();
+    const { sessionId, store } = await client.newSession(cwd);
+    await client.prompt(sessionId, "one");
+    await client.prompt(sessionId, "two");
+    expect(
+      store.snapshot.items.some(
+        (item) => item.kind === "info" && item.text.includes("context auto-compacted"),
+      ),
+    ).toBe(false);
+    expect(store.snapshot.items.at(-1)).toMatchObject({ text: "next reply" });
   }, 15_000);
 
   test("providers without a contextWindow stay inert", async () => {

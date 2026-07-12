@@ -133,27 +133,48 @@ function classifyContentType(contentType: string): "html" | "text" | "binary" {
   return "binary";
 }
 
-/** Read at most maxBytes of the body, then cancel the rest of the stream. */
+/** The subset of ReadableStreamDefaultReader readBounded needs; lets tests
+ * drive the exact-boundary paths with a fake reader. */
+export interface BodyReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array | undefined }>;
+  cancel(): Promise<unknown>;
+}
+
 async function readBounded(
   response: Response,
   maxBytes: number,
 ): Promise<{ text: string; truncated: boolean }> {
   const body = response.body;
   if (!body) return { text: "", truncated: false };
-  const reader = body.getReader();
+  return readBoundedFrom(body.getReader(), maxBytes);
+}
+
+/** Read at most maxBytes, then cancel whatever remains of the stream. */
+export async function readBoundedFrom(
+  reader: BodyReader,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
   const chunks: Uint8Array[] = [];
   let total = 0;
-  let truncated = false;
+  let finished = false;
   while (total < maxBytes) {
     const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    total += value.byteLength;
+    if (done) {
+      finished = true;
+      break;
+    }
+    if (value) {
+      chunks.push(value);
+      total += value.byteLength;
+    }
   }
-  if (total > maxBytes) {
-    truncated = true;
-    await reader.cancel().catch(() => {});
+  if (!finished && total === maxBytes) {
+    // A chunk landed exactly on the cap: probe once to tell a clean EOF at
+    // the boundary from a body that actually continues.
+    finished = (await reader.read()).done;
   }
+  const truncated = !finished;
+  if (!finished) await reader.cancel().catch(() => {});
   const merged = new Uint8Array(Math.min(total, maxBytes));
   let offset = 0;
   for (const chunk of chunks) {

@@ -13,6 +13,7 @@ import { createScriptedProvider } from "@minerva/providers";
 import { createKernel, defaultRuntime, type MinervaKernel } from "../src";
 import { permissionValue } from "../src/permissions";
 import { htmlToText, webFetchTool } from "../src/tools";
+import { type BodyReader, readBoundedFrom } from "../src/tools/web-fetch";
 
 const servers: Array<{ stop: (force?: boolean) => void }> = [];
 const kernels: MinervaKernel[] = [];
@@ -125,6 +126,52 @@ describe("web_fetch", () => {
     expect(result.isError).toBe(true);
     expect(result.output).toContain("[HTTP 404]");
     expect(result.output).toContain("gone fishing");
+  });
+
+  test("readBoundedFrom: a chunk landing exactly on the cap is handled precisely", async () => {
+    const chunk = (size: number) => new Uint8Array(size).fill(120); // "x"
+    const fakeReader = (chunks: Uint8Array[], moreAfter: boolean) => {
+      let cancelled = false;
+      let index = 0;
+      const reader: BodyReader = {
+        read: async () => {
+          if (index < chunks.length) return { done: false, value: chunks[index++] };
+          // After the scripted chunks: either EOF or one more pending chunk.
+          if (moreAfter && index === chunks.length) {
+            index++;
+            return { done: false, value: chunk(1) };
+          }
+          return { done: true };
+        },
+        cancel: async () => {
+          cancelled = true;
+        },
+      };
+      return { reader, wasCancelled: () => cancelled };
+    };
+
+    // Exactly at the cap, then clean EOF: complete read, nothing to cancel.
+    const eof = fakeReader([chunk(6), chunk(4)], false);
+    const atCap = await readBoundedFrom(eof.reader, 10);
+    expect(atCap).toEqual({ text: "x".repeat(10), truncated: false });
+    expect(eof.wasCancelled()).toBe(false);
+
+    // Exactly at the cap with more data pending: truncated AND cancelled.
+    const pending = fakeReader([chunk(6), chunk(4)], true);
+    const cut = await readBoundedFrom(pending.reader, 10);
+    expect(cut).toEqual({ text: "x".repeat(10), truncated: true });
+    expect(pending.wasCancelled()).toBe(true);
+
+    // A chunk crossing the cap: trimmed, truncated, cancelled.
+    const over = fakeReader([chunk(6), chunk(7)], false);
+    const trimmed = await readBoundedFrom(over.reader, 10);
+    expect(trimmed).toEqual({ text: "x".repeat(10), truncated: true });
+    expect(over.wasCancelled()).toBe(true);
+
+    // EOF under the cap: everything read, not truncated.
+    const short = fakeReader([chunk(3)], false);
+    expect(await readBoundedFrom(short.reader, 10)).toEqual({ text: "xxx", truncated: false });
+    expect(short.wasCancelled()).toBe(false);
   });
 
   test("permissionValue matches rules against the URL", () => {

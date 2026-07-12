@@ -1,6 +1,7 @@
 import { MinervaClient } from "@minerva/client";
 import { createKernel, type KernelOptions } from "@minerva/kernel";
 import { createInProcTransportPair } from "@minerva/protocol";
+import { establishSession } from "./establish";
 
 /**
  * One-shot print mode (`minerva -p "…"`): run a single prompt against a
@@ -60,19 +61,20 @@ export async function runPrintMode(options: PrintModeOptions): Promise<number> {
   });
   try {
     await client.initialize();
-    const establish = async () => {
-      if (options.resume === "latest") {
-        const sessions = await client.listSessions(cwd);
-        const latest = sessions[0];
-        if (!latest) throw new Error(`no previous sessions for ${cwd}`);
-        return client.loadSession(latest.sessionId, cwd);
-      }
-      if (options.resume) return client.loadSession(options.resume, cwd);
-      return client.newSession(cwd, options.profile ? { profile: options.profile } : {});
-    };
-    const { sessionId } = await establish();
+    const { sessionId, store } = await establishSession(client, cwd, {
+      resume: options.resume,
+      profile: options.profile,
+    });
     live = true;
-    if (options.mode) await client.setMode(sessionId, options.mode);
+    // Print mode always runs in an EXPLICIT mode: default unless --mode. A
+    // session or settings default of auto must not silently execute tools in
+    // a headless run — the documented contract is deny-unless-flagged. Only
+    // set when it differs; set_mode has no no-op guard and would append a
+    // redundant mode_changed event per run.
+    const desired = options.mode ?? "default";
+    if ((store.snapshot.currentModeId ?? "default") !== desired) {
+      await client.setMode(sessionId, desired);
+    }
     const stopReason = await client.prompt(sessionId, options.prompt);
     if (wroteText) io.stdout.write("\n");
     if (stopReason !== "end_turn") {

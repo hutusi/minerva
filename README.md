@@ -55,8 +55,11 @@ git diff | minerva -p              # prompt read from stdin
 minerva -c -p "and now add tests"  # continue the latest session
 ```
 
-Without `--mode`, print mode runs in `default` mode and **auto-denies** every
-permission request (there is nobody to ask); the model is told and continues.
+Print mode always runs in an **explicit** mode — `default` unless `--mode`
+says otherwise — overriding the session's or settings' mode, so a session
+left in `auto` (or a `defaultMode: "auto"` in settings) can never execute
+tools silently in a headless run. In `default` mode every permission request
+is **auto-denied** (there is nobody to ask); the model is told and continues.
 Use `--mode acceptEdits` or `--mode auto` to let tools run unattended.
 
 Inside the TUI:

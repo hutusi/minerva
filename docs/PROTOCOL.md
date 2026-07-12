@@ -124,9 +124,9 @@ extension (`cost?: { amount, currency }`, mirroring ACP's session-usage RFD).
 ### `minerva/session/compacted` *(notification)*
 Params `{ sessionId, summary, reason: "auto" }`. Emitted when the KERNEL
 compacted a session on its own — currently only auto-compaction: when the
-provider declares a `contextWindow` and the previous prompt's context
-(input + cache read/write tokens) crossed 80% of it, the next
-`session/prompt` runs a compaction turn first. Manual
+provider declares a `contextWindow` and the previous prompt's context — the
+LAST model call's input tokens, which already include cache reads/writes —
+crossed 80% of it, the next `session/prompt` runs a compaction turn first. Manual
 `minerva/session/compact` responds to its requester instead and emits no
 notification. A `minerva/session/usage` notification for the summarization
 turn's spend precedes it.

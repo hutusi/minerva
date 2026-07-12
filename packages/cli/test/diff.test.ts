@@ -3,6 +3,7 @@ import { clipDiff, type DiffLine, diffLines } from "../src/diff";
 
 const render = (lines: DiffLine[]): string[] =>
   lines.map((line) => {
+    if (line.kind === "note") return line.text;
     const mark =
       line.kind === "add" ? "+" : line.kind === "del" ? "-" : line.kind === "gap" ? "…" : " ";
     return `${mark}${line.text}`;
@@ -33,6 +34,33 @@ describe("diffLines", () => {
   test("identical texts produce only context", () => {
     const lines = diffLines("same\nlines\n", "same\nlines\n");
     expect(lines.every((line) => line.kind === "context")).toBe(true);
+  });
+
+  test("a trailing-newline-only change is visible, never an empty diff", () => {
+    expect(render(diffLines("line\n", "line"))).toEqual([
+      "-line",
+      "+line",
+      "\\ new file has no trailing newline",
+    ]);
+    expect(render(diffLines("line", "line\n"))).toEqual([
+      "-line",
+      "+line",
+      "\\ old file has no trailing newline",
+    ]);
+  });
+
+  test("a content change with a newline change gets the note appended", () => {
+    expect(render(diffLines("a\nb\n", "a\nB"))).toEqual([
+      " a",
+      "-b",
+      "+B",
+      "\\ new file has no trailing newline",
+    ]);
+  });
+
+  test("no note when both sides share the newline state", () => {
+    expect(render(diffLines("a\nb", "a\nc"))).toEqual([" a", "-b", "+c"]);
+    expect(diffLines("a\n", "a\n").some((line) => line.kind === "note")).toBe(false);
   });
 
   test("oversized middle falls back to whole-block del/add", () => {

@@ -16,6 +16,14 @@ export type SessionEvent =
       provider: string;
       /** Profile name the session was created with; body re-resolves on load. */
       profile?: string | undefined;
+      /**
+       * The mode the session was created in (profile default > settings
+       * default > DEFAULT). Persisted so replay is authoritative for the
+       * initial mode — without it, a mode set by a profile silently degraded
+       * to the settings default on resume. Optional: old logs replay
+       * unchanged (load falls back to settings).
+       */
+      mode?: string | undefined;
       at: string;
     }
   | { type: "session.resumed"; provider: string; at: string }
@@ -101,7 +109,20 @@ export type SessionEvent =
       usage?: TurnUsage | undefined;
       at: string;
     }
-  | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage | undefined; at: string }
+  | {
+      type: "turn.completed";
+      stopReason: StopReason;
+      /** Whole-prompt spend, accumulated across every model call (billing). */
+      usage?: TurnUsage | undefined;
+      /**
+       * Context tokens of the LAST model call — the auto-compaction signal.
+       * Kept separate from `usage`: a tool loop's accumulated inputTokens sum
+       * to a multiple of the real context, which would trigger compaction at
+       * a fraction of the intended threshold.
+       */
+      context?: number | undefined;
+      at: string;
+    }
   | { type: "turn.failed"; error: string; at: string };
 
 export function now(): string {

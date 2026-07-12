@@ -16,12 +16,11 @@ import type {
 } from "@minerva/providers";
 import { now } from "./events";
 import { escapeRuleValue, formatRule, permissionValue } from "./permissions";
-import { contextSize } from "./replay";
 import type { Runtime } from "./runtime";
 import type { Session } from "./session";
 import { persistAllowRule } from "./settings";
 import type { KernelTool } from "./tools";
-import { addUsage, hasUsage, toTokenUsage } from "./usage";
+import { addUsage, contextSize, hasUsage, toTokenUsage } from "./usage";
 
 /** Backstop against runaway loops; becomes configurable with modes in slice 2. */
 const MAX_MODEL_TURNS = 40;
@@ -90,6 +89,11 @@ async function runLoop(
   // round-trip reports its own usage, and turn.completed must record the
   // whole prompt's spend, not just the final model turn's.
   let promptUsage: TurnUsage | undefined;
+  // The LAST model call's usage, tracked separately: its inputTokens are the
+  // real context size, while promptUsage's sum across a tool loop can be a
+  // multiple of it — using that for auto-compaction would trigger at a
+  // fraction of the intended threshold.
+  let lastCallUsage: TurnUsage | undefined;
 
   for (let turn = 0; turn < MAX_MODEL_TURNS; turn++) {
     let text = "";
@@ -192,6 +196,7 @@ async function runLoop(
           case "finish":
             finishReason = event.finishReason;
             promptUsage = addUsage(promptUsage ?? {}, event.usage);
+            lastCallUsage = event.usage;
             break;
           case "error":
             streamError = event.error;
@@ -221,7 +226,7 @@ async function runLoop(
     if (session.cancelled) {
       dropUnansweredUser();
       resolveToolBatch("Tool call cancelled by user.");
-      return finish(context, "cancelled", promptUsage);
+      return finish(context, "cancelled", promptUsage, lastCallUsage);
     }
     if (streamError !== undefined) {
       // The recorded assistant message may carry tool calls that will never
@@ -232,7 +237,12 @@ async function runLoop(
     }
 
     if (toolCalls.length === 0) {
-      return finish(context, finishReason === "length" ? "max_tokens" : "end_turn", promptUsage);
+      return finish(
+        context,
+        finishReason === "length" ? "max_tokens" : "end_turn",
+        promptUsage,
+        lastCallUsage,
+      );
     }
 
     const results: ProviderToolResult[] = [];
@@ -244,9 +254,9 @@ async function runLoop(
       );
     }
     session.messages.push({ role: "tool", results });
-    if (session.cancelled) return finish(context, "cancelled", promptUsage);
+    if (session.cancelled) return finish(context, "cancelled", promptUsage, lastCallUsage);
   }
-  return finish(context, "max_turn_requests", promptUsage);
+  return finish(context, "max_turn_requests", promptUsage, lastCallUsage);
 }
 
 async function executeToolCall(
@@ -487,16 +497,25 @@ function finish(
   context: LoopContext,
   stopReason: StopReason,
   usage?: TurnUsage,
+  lastCallUsage?: TurnUsage,
 ): { stopReason: StopReason } {
   const { session } = context;
-  session.append({ type: "turn.completed", stopReason, usage, at: now() });
+  // The auto-compaction signal is the LAST model call's context, persisted
+  // on the event so replay never has to reconstruct it from `usage` (whose
+  // inputTokens accumulate across a tool loop's calls).
+  const turnContext = contextSize(lastCallUsage);
+  session.append({
+    type: "turn.completed",
+    stopReason,
+    usage,
+    ...(turnContext !== undefined ? { context: turnContext } : {}),
+    at: now(),
+  });
+  if (turnContext !== undefined) session.lastTurnContext = turnContext;
   // Providers that report nothing (scripted fixtures, some proxies) get no
   // notification rather than a misleading all-zero one.
   if (hasUsage(usage)) {
     session.addTurnUsage(usage);
-    // The auto-compaction signal: what this prompt's turns occupied of the
-    // context window (kept separate from cumulative spend on purpose).
-    session.lastTurnContext = contextSize(usage) ?? session.lastTurnContext;
     const params: SessionUsageParams = {
       sessionId: session.id,
       lastTurn: toTokenUsage(usage),

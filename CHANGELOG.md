@@ -20,21 +20,26 @@ All notable changes to Minerva are documented here. The format follows
   files, the URL for fetches.
 - Auto-compaction: providers now declare a `contextWindow` (anthropic and
   openai 200k, bailian 128k; settings-overridable per provider). When the
-  previous prompt's context (input + cache tokens) crosses 80% of it, the
-  next prompt compacts first and continues from the summary, announced via
-  a new `minerva/session/compacted` notification (`reason: "auto"`) that
-  the CLI shows as an info line. The trigger is the last turn's context —
-  cleared by compaction and rebuilt on resume — so the compaction turn's
-  own usage can't re-trigger it. A failed auto-compaction degrades to a
-  warning and the prompt proceeds uncompacted.
+  previous prompt's context — the LAST model call's input tokens, which
+  already include cache reads/writes — crosses 80% of it, the next prompt
+  compacts first and continues from the summary, announced via a new
+  `minerva/session/compacted` notification (`reason: "auto"`) that the CLI
+  shows as an info line. The trigger is persisted per turn, cleared by
+  compaction, and rebuilt on resume — so neither a tool loop's summed
+  billing usage nor the compaction turn's own spend can mis-trigger it. A
+  failed auto-compaction degrades to a warning and the prompt proceeds
+  uncompacted.
 - Print mode: `minerva -p "<prompt>"` runs one prompt and exits — reply on
   stdout (pipe-clean), tool progress and diagnostics on stderr, exit 0 only
   when the turn completes. `-p` without an argument reads the prompt from
-  piped stdin; composes with `-c`/`-r`/`-m`/`--profile`. `--mode <id>` sets
-  the session mode for the run (print-mode only; the TUI keeps `/mode`);
-  without it, permission requests are auto-denied with a stderr note since
-  there is nobody to ask. New client option `onSessionUpdate` taps raw
-  updates before store application for streaming surfaces.
+  piped stdin; composes with `-c`/`-r`/`-m`/`--profile` (an explicit
+  `--profile` also overrides a resumed session's persisted persona).
+  `--mode <id>` sets the session mode for the run (print-mode only; the TUI
+  keeps `/mode`); the run always uses an explicit mode — `default` unless
+  flagged, overriding session/settings modes — and in `default` every
+  permission request is auto-denied with a stderr note since there is
+  nobody to ask. New client option `onSessionUpdate` taps raw updates
+  before store application for streaming surfaces.
 - `web_fetch` tool: bounded, permission-gated HTTP(S) GET for the model —
   manual redirects (max 5, scheme re-checked per hop), 30 s default / 120 s
   max timeout, 1 MiB body cap, 30k char output cap, HTML reduced to plain

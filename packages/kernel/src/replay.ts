@@ -39,6 +39,9 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   const messages: ProviderMessage[] = [];
   const updates: SessionUpdate[] = [];
   let todos: PlanEntry[] = [];
+  /** From session.created — the mode the session started in. */
+  let initialMode: string | undefined;
+  /** From session.mode_changed — explicit switches only. */
   let modeId: string | undefined;
   let profile: string | undefined;
   let usage: TurnUsage = {};
@@ -162,6 +165,7 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
 
       case "session.created":
         profile = event.profile;
+        initialMode = event.mode;
         break;
 
       case "session.profile_changed":
@@ -184,7 +188,9 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         // Spend telemetry survives compaction: session.compacted resets the
         // model context above, but not what the session has already cost.
         usage = addUsage(usage, event.usage);
-        lastTurnContext = contextSize(event.usage) ?? lastTurnContext;
+        // The persisted last-call context — NOT recomputed from `usage`,
+        // whose inputTokens accumulate across a tool loop's model calls.
+        lastTurnContext = event.context ?? lastTurnContext;
         flushToolBatch();
         break;
 
@@ -203,16 +209,19 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   }
   flushToolBatch();
 
+  // Only an EXPLICIT switch emits a mode update — the initial mode already
+  // reaches clients via the session/load result, and replaying it as an
+  // update would change the transcript stream for every session.
   if (modeId) updates.push({ sessionUpdate: "current_mode_update", currentModeId: modeId });
-  return { messages, updates, todos, modeId, profile, usage, lastTurnContext };
-}
-
-/** What of a turn's usage occupies the context window (see agent-loop). */
-export function contextSize(usage: TurnUsage | undefined): number | undefined {
-  if (!usage) return undefined;
-  const size =
-    (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
-  return size > 0 ? size : undefined;
+  return {
+    messages,
+    updates,
+    todos,
+    modeId: modeId ?? initialMode,
+    profile,
+    usage,
+    lastTurnContext,
+  };
 }
 
 function titleFor(tool: KernelTool | undefined, toolName: string, input: unknown): string {
