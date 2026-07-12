@@ -262,8 +262,12 @@ export async function execPtyCaptured(
     platform === "linux"
       ? ["-qec", command, "/dev/null"]
       : ["-q", "/dev/null", "/bin/bash", "-c", command];
+  // util-linux's -c runs the command via $SHELL (or /bin/sh) — pin it to bash
+  // so bashisms behave identically with and without a PTY. The BSD/macOS form
+  // already names /bin/bash in its argv; the variable is inert there.
+  const env = { ...process.env, SHELL: "/bin/bash" };
   try {
-    return await spawnCaptured(wrapper, args, options);
+    return await spawnCaptured(wrapper, args, options, env);
   } catch (error) {
     // ENOENT = no script(1) on this box (minimal containers) — degrade to
     // pipes rather than failing the command; anything else is a real error.
@@ -272,7 +276,12 @@ export async function execPtyCaptured(
   }
 }
 
-function spawnCaptured(file: string, args: string[], options: ExecOptions): Promise<ExecResult> {
+function spawnCaptured(
+  file: string,
+  args: string[],
+  options: ExecOptions,
+  env?: NodeJS.ProcessEnv,
+): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     // detached puts the child in its own process group so kills reach
     // grandchildren, not just the wrapper.
@@ -280,6 +289,7 @@ function spawnCaptured(file: string, args: string[], options: ExecOptions): Prom
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
+      ...(env ? { env } : {}),
     });
     let stdout = "";
     let stderr = "";

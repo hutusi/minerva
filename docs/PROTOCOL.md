@@ -98,7 +98,7 @@ Params `{ sessionId, update }`. `update.sessionUpdate` variants:
 | `tool_call_update` | `toolCallId, status?, title?, content?, rawOutput?` | Progress → `in_progress`, then `completed`/`failed` with output |
 | `plan` | `entries: [{ content, priority, status }]` | Todo list replaced |
 | `current_mode_update` | `currentModeId` | Session mode changed |
-| `usage_update` | `used, size` | Context-window utilization (ACP session-usage RFD): the last model call's context vs the provider's declared window. Emitted after each turn and once after a `session/load` replay — only when the provider declares a `contextWindow` |
+| `usage_update` | `used, size` | Context-window utilization (ACP session-usage RFD): the last model call's context vs the provider's declared window. Emitted after each turn and once after a `session/load` replay — only when the provider declares a `contextWindow`. After a model switch, `used` (measured under the previous model) is deliberately compared against the CURRENT window — the same comparison auto-compaction makes, because the question both answer is whether the next prompt fits the window it will actually hit; a value past 100% honestly signals imminent compaction |
 
 `kind ∈ read | edit | delete | move | search | execute | think | fetch | other`;
 `content` entries are `{ type: "content", content: { type: "text", text } }` or

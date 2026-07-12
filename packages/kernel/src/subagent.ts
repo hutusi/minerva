@@ -30,12 +30,17 @@ export async function runSubagent(
   toolCallId: string,
   input: TaskInput,
 ): Promise<ToolOutput> {
+  const policy = parent.policySession ?? parent.session;
   const child = await Session.create({
     cwd: parent.session.cwd,
     dataDir: parent.dataDir,
     providerId: parent.provider.id,
     runtime: parent.runtime,
     parent: parent.session.id,
+    // Audit fidelity: the child runs under the parent's system prompt and
+    // policy, so its log records the parent's actual persona and live mode —
+    // never a settings default it didn't run with.
+    inherited: { profile: parent.session.profile?.name, mode: policy.mode },
   });
   // The child claims its OWN lease — the parent's stays untouched. Esc /
   // session/cancel aborts the parent's signal, which chains here.
@@ -54,7 +59,7 @@ export async function runSubagent(
     runtime: parent.runtime,
     dataDir: parent.dataDir,
     signal: childSignal,
-    policySession: parent.policySession ?? parent.session,
+    policySession: policy,
     task: { parentSessionId: parent.session.id, toolCallId },
   };
 

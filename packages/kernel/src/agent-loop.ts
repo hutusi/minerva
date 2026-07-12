@@ -27,6 +27,15 @@ import { addUsage, contextSize, hasUsage, toTokenUsage } from "./usage";
 /** Backstop against runaway loops; becomes configurable with modes in slice 2. */
 const MAX_MODEL_TURNS = 40;
 
+/**
+ * Subagent spawns allowed per prompt. The task tool is readOnly (auto-
+ * allowed — every mutating child action is gated by the parent's policy
+ * instead), so without a budget a single injected response could fan out
+ * unbounded 40-turn child loops of permission-free spend. Counted across
+ * the whole prompt, not per model turn.
+ */
+const MAX_TASKS_PER_PROMPT = 10;
+
 export interface LoopContext {
   session: Session;
   connection: Connection;
@@ -62,6 +71,9 @@ export interface LoopContext {
    * usage notifications (the parent roll-up reports them).
    */
   task?: { parentSessionId: string; toolCallId: string } | undefined;
+  /** Subagents spawned so far in this prompt (contexts are per-prompt);
+   * mutated by the loop to enforce MAX_TASKS_PER_PROMPT. */
+  tasksSpawned?: number | undefined;
 }
 
 type SubagentRunner = (
@@ -350,8 +362,20 @@ async function executeToolCall(
       // Never handed to a child loop (context.task set) — no nesting in v1.
       ...(spawn && !context.task
         ? {
-            runSubagent: (input: { description: string; prompt: string }) =>
-              spawn(context, call.toolCallId, input),
+            runSubagent: (input: { description: string; prompt: string }) => {
+              // Budget check + increment stay synchronous and inside the
+              // closure, so parallel-call batches can't slip past the cap.
+              if ((context.tasksSpawned ?? 0) >= MAX_TASKS_PER_PROMPT) {
+                return Promise.resolve({
+                  output:
+                    `task budget exhausted: at most ${MAX_TASKS_PER_PROMPT} subagents ` +
+                    "per prompt — finish the work directly or ask the user to continue",
+                  isError: true,
+                });
+              }
+              context.tasksSpawned = (context.tasksSpawned ?? 0) + 1;
+              return spawn(context, call.toolCallId, input);
+            },
           }
         : {}),
     });

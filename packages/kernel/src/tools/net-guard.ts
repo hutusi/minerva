@@ -92,6 +92,7 @@ function isPrivateV6(groups: number[]): boolean {
   }
   if ((g0 & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
   if ((g0 & 0xfe00) === 0xfc00) return true; // ULA fc00::/7
+  if ((g0 & 0xff00) === 0xff00) return true; // multicast ff00::/8
   return false;
 }
 

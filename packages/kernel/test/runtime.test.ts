@@ -83,6 +83,20 @@ describe.if(process.platform !== "win32")("execPty", () => {
     expect(result.exitCode).toBe(7);
   });
 
+  test("bashisms behave identically with and without a PTY", async () => {
+    // util-linux script -c runs the command via $SHELL — the wrapper pins it
+    // to bash, or [[ ]] would fail under a PTY on sh-defaulting systems
+    // while working with pipes. macOS names /bin/bash in the argv directly;
+    // CI's ubuntu leg exercises the $SHELL route.
+    const result = await defaultRuntime.execPty(
+      '[[ -n ok ]] && echo BASHISM_OK "${BASH_VERSION:+HAS_BASH}"',
+      options(),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("BASHISM_OK");
+    expect(result.stdout).toContain("HAS_BASH");
+  });
+
   test("the timeout kills a PTY-wrapped command tree", async () => {
     const result = await defaultRuntime.execPty("sleep 30", options(300));
     expect(result.timedOut).toBe(true);

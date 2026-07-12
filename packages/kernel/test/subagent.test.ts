@@ -286,7 +286,44 @@ describe("subagents", () => {
     expect(
       harness.childEvents(childSessionId).find((e) => e.type === "permission.decision"),
     ).toMatchObject({ toolCallId: "w1", decision: "denied", source: "policy" });
+    // Audit fidelity: the child log records the mode it actually ran under,
+    // not a settings default resolved at spawn time.
+    expect(
+      harness.childEvents(childSessionId).find((e) => e.type === "session.created"),
+    ).toMatchObject({ mode: "plan", parent: harness.sessionId });
   }, 15_000);
+
+  test("at most 10 subagents spawn per prompt; the 11th call gets a budget error", async () => {
+    const taskCalls: TurnEvent[] = Array.from({ length: 11 }, (_, i) => ({
+      type: "tool-call",
+      toolCallId: `t${i + 1}`,
+      toolName: "task",
+      input: { description: `task ${i + 1}`, prompt: "Reply with one word." },
+    }));
+    const childTurn: TurnEvent[] = [
+      { type: "text-delta", text: "ok" },
+      { type: "finish", finishReason: "stop", usage: {} },
+    ];
+    const harness = await setup({
+      turns: [
+        [...taskCalls, { type: "finish", finishReason: "tool-calls", usage: {} }],
+        ...Array.from({ length: 10 }, () => childTurn),
+        [
+          { type: "text-delta", text: "Done." },
+          { type: "finish", finishReason: "stop", usage: {} },
+        ],
+      ],
+    });
+
+    const result = await prompt(harness, "fan out");
+    expect(result.stopReason).toBe("end_turn");
+
+    const events = harness.parentEvents();
+    expect(events.filter((e) => e.type === "task.completed")).toHaveLength(10);
+    const overBudget = events.find((e) => e.type === "tool.result" && e.toolCallId === "t11");
+    expect(overBudget).toMatchObject({ isError: true });
+    expect((overBudget as { output: string }).output).toContain("task budget exhausted");
+  }, 20_000);
 
   test("a child cannot spawn: its toolset lacks task, and the tool fails without a runner", async () => {
     const harness = await setup({

@@ -253,8 +253,10 @@ default mode still prompts (marked "from subagent"), and an "allow always"
 covers the rest of the task and the session. `esc` cancels the task with the
 turn. Child token spend rolls into the session totals. Each child's full
 transcript is persisted as its own session log (excluded from `/sessions`)
-next to the parent's, for auditing. Tasks run sequentially and cannot spawn
-further tasks.
+next to the parent's, for auditing. Tasks run sequentially, cannot spawn
+further tasks, and are capped at 10 per prompt — spawning itself is
+auto-allowed (only the child's actions are gated), so the budget is what
+bounds unapproved spend.
 
 ## Project instructions (AGENTS.md)
 

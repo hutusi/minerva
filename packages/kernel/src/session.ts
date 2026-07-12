@@ -45,6 +45,13 @@ export interface SessionOptions {
   /** Parent session id — set when creating a subagent's child session, so
    * the log records its provenance and pickers can exclude it. */
   parent?: string | undefined;
+  /**
+   * Set on child sessions: record the parent's ACTUAL persona and mode
+   * instead of re-resolving settings defaults — the child runs under the
+   * parent's system prompt and policy, and its log must say so. Also keeps a
+   * broken settings default profile (added mid-session) from failing spawns.
+   */
+  inherited?: { profile?: string | undefined; mode: SessionModeId } | undefined;
 }
 
 /**
@@ -118,14 +125,19 @@ export class Session {
     const dir = projectDir(options.dataDir, options.cwd);
     await options.runtime.mkdirp(dir, { mode: DATA_DIR_MODE });
     const settings = await loadSettings(options.runtime, options.dataDir, options.cwd);
+    const inherited = options.inherited;
     // Throws on an unknown name — an explicit request AND a settings default
     // both fail loudly rather than silently running the base persona.
-    const profile = resolveProfile(settings, options.profile);
-    const mode = isSessionModeId(profile?.defaultMode)
-      ? profile.defaultMode
-      : isSessionModeId(settings.defaultMode)
-        ? settings.defaultMode
-        : DEFAULT_MODE;
+    // Inherited (child) sessions skip resolution entirely: their persona is
+    // the parent's, by name.
+    const profile = inherited ? undefined : resolveProfile(settings, options.profile);
+    const mode = inherited
+      ? inherited.mode
+      : isSessionModeId(profile?.defaultMode)
+        ? profile.defaultMode
+        : isSessionModeId(settings.defaultMode)
+          ? settings.defaultMode
+          : DEFAULT_MODE;
     const session = new Session(id, options, new PermissionEngine(settings.rules), mode);
     if (profile) {
       session.profile = {
@@ -133,6 +145,7 @@ export class Session {
         ...(profile.systemPrompt !== undefined ? { systemPrompt: profile.systemPrompt } : {}),
       };
     }
+    const profileName = inherited ? inherited.profile : profile?.name;
 
     const createdAt = now();
     await appendSessionIndex(options.runtime, dir, {
@@ -148,7 +161,7 @@ export class Session {
       sessionId: id,
       cwd: options.cwd,
       provider: options.providerId,
-      ...(profile ? { profile: profile.name } : {}),
+      ...(profileName !== undefined ? { profile: profileName } : {}),
       ...(options.parent !== undefined ? { parent: options.parent } : {}),
       // Persisted so replay is authoritative for the initial mode — a mode
       // set by a profile default must survive resume.
@@ -225,7 +238,9 @@ export class Session {
     // Re-append to the index so "latest session" means most recently used, not
     // most recently created (the list handler dedupes by id), carrying the
     // first user message forward as a preview so the picker needn't read the
-    // full log.
+    // full log. Parentage is carried too: the list dedupes to the LATEST
+    // entry per id, so dropping it here would surface a loaded child session
+    // in pickers despite the create-time exclusion.
     const firstUser = events.find((event) => event.type === "user.message");
     session.#previewRecorded = firstUser !== undefined;
     await appendSessionIndex(options.runtime, dir, {
@@ -233,6 +248,7 @@ export class Session {
       cwd: options.cwd,
       createdAt: now(),
       ...(firstUser ? { preview: previewText(firstUser.text) } : {}),
+      ...(created.parent !== undefined ? { parent: created.parent } : {}),
     });
     session.append({ type: "session.resumed", provider: options.providerId, at: now() });
     return { session, replay };

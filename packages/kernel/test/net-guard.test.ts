@@ -56,6 +56,9 @@ describe("isPrivateAddress", () => {
       "::ffff:127.0.0.1",
       "::ffff:a00:1", // ::ffff:10.0.0.1 as the URL parser stores it
       "[::ffff:c0a8:101]", // ::ffff:192.168.1.1
+      "ff02::1", // multicast, link-local scope
+      "ff05::1:3", // multicast, site-local scope
+      "ff0e::1", // multicast, global scope
     ]) {
       expect(isPrivateAddress(ip)).toBe(true);
     }

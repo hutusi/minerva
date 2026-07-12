@@ -12,9 +12,11 @@ All notable changes to Minerva are documented here. The format follows
   until the timeout) via a `script(1)` wrapper — no native module, so the
   compiled single binary is unaffected. Opt-in because a PTY merges stderr
   into stdout; the output is normalized (ANSI stripped, CRLF and
-  progress-bar `\r` overwrites collapsed). POSIX only — Windows and
-  script-less minimal images fall back to pipes with a note in the result.
-  Interactive stdin remains out of scope.
+  progress-bar `\r` overwrites collapsed). The wrapper is pinned to bash
+  (`SHELL=/bin/bash` — util-linux `script -c` otherwise runs `$SHELL`, so
+  bashisms would behave differently with and without a PTY). POSIX only —
+  Windows and script-less minimal images fall back to pipes with a note in
+  the result. Interactive stdin remains out of scope.
 - Subagents: the model can delegate a self-contained side quest via the new
   `task` tool — a child agent loop over its own persisted session (parent
   recorded in the log, excluded from `/sessions`) with the same tools minus
@@ -28,8 +30,11 @@ All notable changes to Minerva are documented here. The format follows
   tool-call synthesis. Live progress streams as the new
   `minerva/session/task_update` notification — the CLI renders a collapsed
   status line under the task (`↳ 3 tool calls · grep "handleAuth"`) while
-  generic ACP clients still see a plain tool call. Sequential, no nesting
-  (v1).
+  generic ACP clients still see a plain tool call. Sequential, no nesting,
+  and at most 10 subagents per prompt (spawning is auto-allowed, so the
+  budget is what bounds unapproved spend); child logs record the parent's
+  actual profile and mode, and stay picker-excluded even after being loaded
+  for inspection (v1).
 - ACP `usage_update`: `session/update` now carries context-window
   utilization (`used`/`size`, per the ACP session-usage RFD) after each
   turn and once after a `session/load` replay — emitted only when the
@@ -44,8 +49,9 @@ All notable changes to Minerva are documented here. The format follows
 
 ### Security
 - `web_fetch` now refuses hosts that are — or resolve to — private,
-  loopback, or link-local addresses (both IP families, IPv4-mapped forms
-  included), checked on the initial URL and on every redirect hop, with any
+  loopback, link-local, or multicast addresses (both IP families,
+  IPv4-mapped forms included), checked on the initial URL and on every
+  redirect hop, with any
   one private DNS record rejecting the fetch and resolution failures
   failing closed. Stops accidental SSRF-shaped fetches (cloud metadata
   endpoints, router admin pages) that the URL permission prompt alone

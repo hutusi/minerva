@@ -17,8 +17,9 @@ export const taskTool: KernelTool = {
     "side quests — a broad search, an isolated analysis — whose details " +
     "would bloat this conversation. It runs to completion and only its " +
     "final report returns, so the prompt must be standalone: include all " +
-    "needed context and say exactly what to return. Tasks run sequentially " +
-    "and cannot spawn further tasks.",
+    "needed context and say exactly what to return. Tasks run sequentially, " +
+    "cannot spawn further tasks, and at most 10 are allowed per prompt — " +
+    "plan them deliberately.",
   inputSchema: {
     type: "object",
     properties: {
