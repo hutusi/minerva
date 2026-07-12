@@ -20,5 +20,7 @@
     "types": ["bun"]
   },
   "include": ["packages/**/*", "apps/**/*"],
-  "exclude": ["**/node_modules", "**/dist"]
+  // apps/gui needs the DOM lib (webview code), which would poison the Bun-typed
+  // root project — it typechecks as its own project: `tsc -p apps/gui`.
+  "exclude": ["**/node_modules", "**/dist", "apps/gui"]
 }

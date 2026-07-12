@@ -10,7 +10,8 @@
     },
     "packages/cli": {
       "entry": ["test/fixtures/*.{ts,tsx}", "scripts/*.ts"]
-    }
+    },
+    "apps/gui": {}
   },
   "ignoreBinaries": ["expect"]
 }
