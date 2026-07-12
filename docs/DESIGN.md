@@ -109,10 +109,12 @@ untouched until v0.1 lands via one final, non-squashed PR.
   kernel-owned.
 - **Windows**: compiled-binary paths, shell differences — test in slice 4, not
   after.
-- **macOS arm64 compiled binaries**: Bun 1.3.12's `--compile` output is
-  unsigned on this setup; the kernel SIGKILLs unsigned arm64 binaries and
-  `codesign` rejects the file format for re-signing. Revisit on a newer Bun
-  before cutting release artifacts.
+- **macOS arm64 compiled binaries** *(resolved 2026-07)*: the SIGKILL was a
+  Bun 1.3.12 regression — a truncated `LC_CODE_SIGNATURE`
+  (oven-sh/bun#29270), fixed in 1.3.13; we pin 1.3.14. `build:release`
+  ad-hoc re-signs on macOS (Bun's own signature still fails
+  `codesign --verify --strict`) and then self-checks the artifact by running
+  it and verifying the signature, so a recurrence fails the build loudly.
 
 ## Verification strategy
 

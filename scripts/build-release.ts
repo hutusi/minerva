@@ -64,3 +64,44 @@ const dest = join(dist, process.platform === "win32" ? "rg.exe" : "rg");
 copyFileSync(rgPath, dest);
 chmodSync(dest, 0o755);
 console.log(`copied ripgrep → ${dest} (from ${dirname(rgPath)})`);
+
+const binary = join(dist, process.platform === "win32" ? "minerva.exe" : "minerva");
+
+// Bun's own compile-time signature runs (the 1.3.12 truncation that SIGKILLed
+// arm64 binaries was fixed in 1.3.13, oven-sh/bun#29270) but still fails
+// `codesign --verify --strict` on 1.3.14. A fresh ad-hoc signature is cheap,
+// makes strict verification pass, and is what distribution needs anyway.
+if (process.platform === "darwin") {
+  const sign = Bun.spawnSync(["codesign", "--force", "--sign", "-", binary], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  if (!sign.success) {
+    console.error(`ad-hoc signing failed for ${binary}`);
+    process.exit(1);
+  }
+}
+
+// Post-build self-check: actually RUN the binary — and, on macOS, validate
+// its signature — so any signing recurrence fails the build loudly instead
+// of shipping an artifact that dies on the user's machine.
+const versionCheck = Bun.spawnSync([binary, "--version"], { stderr: "inherit" });
+const versionOut = versionCheck.stdout.toString().trim();
+if (!versionCheck.success || !/\d+\.\d+\.\d+/.test(versionOut)) {
+  console.error(
+    `self-check failed: ${binary} --version exited ` +
+      `${versionCheck.exitCode ?? `signal ${versionCheck.signalCode}`} with output "${versionOut}"`,
+  );
+  process.exit(1);
+}
+if (process.platform === "darwin") {
+  const codesign = Bun.spawnSync(["codesign", "--verify", "--strict", binary], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  if (!codesign.success) {
+    console.error(`self-check failed: codesign rejects ${binary}`);
+    process.exit(1);
+  }
+}
+console.log(`self-check passed: ${binary} runs (${versionOut})`);

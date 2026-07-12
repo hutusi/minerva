@@ -47,6 +47,14 @@ All notable changes to Minerva are documented here. The format follows
   auto-compaction stays inert until `providers.ollama.contextWindow` is
   set; `baseUrl` is overridable in settings for a remote host.
 
+### Fixed
+- macOS arm64 compiled binaries no longer die on launch: the SIGKILL was a
+  Bun 1.3.12 regression (truncated code signature, oven-sh/bun#29270, fixed
+  upstream in 1.3.13) — Bun is now pinned at 1.3.14, `build:release` ad-hoc
+  re-signs the binary on macOS, and a post-build self-check (run the binary,
+  verify its signature) fails the build if the problem ever recurs. The
+  compiled-binary CI job runs on macOS again.
+
 ### Security
 - `web_fetch` now refuses hosts that are — or resolve to — private,
   loopback, link-local, or multicast addresses (both IP families,

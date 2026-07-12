@@ -340,7 +340,9 @@ platform's `rg`, cross-compiling with `--target` for a different OS/arch is
 rejected (it would pair the binary with the wrong `rg`); build on the target
 platform to produce a native pair.
 
-> **Known issue (macOS arm64):** with Bun 1.3.12 the compiled binary comes out
-> unsigned; the kernel kills unsigned arm64 binaries (SIGKILL on launch) and
-> `codesign` rejects the file format for re-signing. Until this is resolved
-> (try a newer Bun), run the CLI via `bun run packages/cli/src/index.tsx`.
+> **Resolved (macOS arm64):** Bun 1.3.12 emitted binaries with a truncated
+> code signature that the kernel SIGKILLed on launch
+> ([oven-sh/bun#29270](https://github.com/oven-sh/bun/issues/29270), fixed in
+> 1.3.13; this repo pins 1.3.14). `build:release` now ad-hoc re-signs on
+> macOS and self-checks the artifact — it runs the built binary and verifies
+> its signature — so a recurrence fails the build instead of shipping.
