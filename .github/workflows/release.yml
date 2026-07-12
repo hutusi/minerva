@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# The job cuts a GitHub Release, so it needs write access to repository contents.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: 1.3.12
+
+jobs:
+  release:
+    name: publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+
+      - name: Tag matches package version
+        # A tag whose number disagrees with the shipped code is a broken release;
+        # fail before publishing rather than tag a mismatch.
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(jq -r .version packages/cli/package.json)"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "tag $GITHUB_REF_NAME (=$tag_version) != packages/cli version $pkg_version" >&2
+            exit 1
+          fi
+
+      - name: Verify gate
+        run: bun run verify
+
+      - name: Dead code and unused dependencies
+        run: bun run knip
+
+      - name: Extract the changelog section for this version
+        # Print the body between this version's heading and the next `## [` heading.
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if ! grep -q '[^[:space:]]' RELEASE_NOTES.md; then
+            echo "no changelog section found for $version" >&2
+            exit 1
+          fi
+          echo "--- release notes ---"
+          cat RELEASE_NOTES.md
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag

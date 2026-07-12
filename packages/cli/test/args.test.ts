@@ -96,12 +96,17 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["acp", "acp"])).toMatchObject({ kind: "error" });
   });
 
+  test("--version and -v report the version", () => {
+    expect(parseCliArgs(["--version"])).toEqual({ kind: "version" });
+    expect(parseCliArgs(["-v"])).toEqual({ kind: "version" });
+  });
+
   test("usage names the default model and every documented flag", () => {
     const DEFAULT = "claude-opus-4-8";
     const text = usage(DEFAULT);
     expect(text).toContain("Usage: minerva");
     expect(text).toContain(DEFAULT);
-    for (const flag of ["--continue", "--resume", "--model", "--help", "acp"]) {
+    for (const flag of ["--continue", "--resume", "--model", "--help", "--version", "acp"]) {
       expect(text).toContain(flag);
     }
     for (const keyVar of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY"]) {

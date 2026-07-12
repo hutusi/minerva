@@ -20,6 +20,7 @@ interface CliArgs {
 export type ParsedCli =
   | { kind: "run"; args: CliArgs }
   | { kind: "help" }
+  | { kind: "version" }
   | { kind: "error"; message: string };
 
 export function usage(defaultModel: string): string {
@@ -43,6 +44,7 @@ Options:
   --profile <name>     Named profile from settings (system prompt, model,
                        default mode); see the profiles section of the README
   -h, --help           Show this help
+  -v, --version        Print the version and exit
 
 Environment:
   ANTHROPIC_API_KEY    Key for anthropic/* models
@@ -103,6 +105,8 @@ export function parseCliArgs(argv: string[]): ParsedCli {
       profile = value;
     } else if (arg === "--help" || arg === "-h") {
       return { kind: "help" };
+    } else if (arg === "--version" || arg === "-v") {
+      return { kind: "version" };
     } else {
       return { kind: "error", message: `unknown option: ${arg}` };
     }

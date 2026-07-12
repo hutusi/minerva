@@ -19,6 +19,7 @@ import {
   resolveApiKey,
 } from "@minerva/providers";
 import { render } from "ink";
+import pkg from "../package.json";
 import { runAcpHost } from "./acp";
 import { App } from "./app";
 import { parseCliArgs, usage } from "./args";
@@ -29,6 +30,10 @@ import { runPrintMode } from "./print";
 
 const usageDefault = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
 const parsed = parseCliArgs(process.argv.slice(2));
+if (parsed.kind === "version") {
+  console.log(`minerva ${pkg.version}`);
+  process.exit(0);
+}
 if (parsed.kind === "help") {
   console.log(usage(usageDefault));
   process.exit(0);

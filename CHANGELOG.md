@@ -6,6 +6,8 @@ All notable changes to Minerva are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-12
+
 ### Added
 - Structured diffs for file edits: `edit_file`/`write_file` results carry a
   `{ type: "diff", path, oldText, newText }` content entry (ACP semantics,
