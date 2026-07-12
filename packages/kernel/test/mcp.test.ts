@@ -292,11 +292,13 @@ describe("MCP tools through the kernel", () => {
     const { connectMcpServers } = await import("../src/mcp");
     const startPostRejecting = (postStatus: number) => {
       let gets = 0;
+      let lastGetAuthorization: string | null = null;
       const server = Bun.serve({
         port: 0,
         fetch(req) {
           if (req.method === "GET") {
             gets++;
+            lastGetAuthorization = req.headers.get("authorization");
             return new Response("no sse here", { status: 404 });
           }
           return new Response("nope", { status: postStatus });
@@ -305,6 +307,7 @@ describe("MCP tools through the kernel", () => {
       return {
         url: `http://127.0.0.1:${server.port}/mcp`,
         gets: () => gets,
+        lastGetAuthorization: () => lastGetAuthorization,
         close: () => server.stop(true),
       };
     };
@@ -314,10 +317,19 @@ describe("MCP tools through the kernel", () => {
     // warning still names the original streamable failure.
     const legacy = startPostRejecting(405);
     const legacyResult = await connectMcpServers(
-      { legacy: { type: "http", url: legacy.url } },
+      {
+        legacy: {
+          type: "http",
+          url: legacy.url,
+          headers: { Authorization: "Bearer sse-token" },
+        },
+      },
       cwd,
     );
     expect(legacy.gets()).toBe(1);
+    // Configured headers must reach the SSE probe's initial GET too — an
+    // authenticated legacy server can't accept the fallback otherwise.
+    expect(legacy.lastGetAuthorization()).toBe("Bearer sse-token");
     // The warning surfaces the ORIGINAL streamable failure, not the SSE one.
     expect(legacyResult.warnings[0]).toContain("Error POSTing to endpoint");
     await legacyResult.close();

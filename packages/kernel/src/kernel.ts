@@ -212,16 +212,17 @@ export class MinervaKernel {
    * config file must not brick sessions.
    */
   async #prepareSession(sessionId: string, cwd: string): Promise<InstructionsInfo | undefined> {
-    await this.#connectMcp(sessionId, cwd);
-    const instructions = await loadProjectInstructions(this.#runtime, this.#dataDir, cwd);
-    for (const warning of instructions.warnings) {
+    // Independent I/O — run concurrently so one slow MCP server doesn't
+    // delay instruction/skill loading (each degrades to warnings internally).
+    const [, instructions, skills] = await Promise.all([
+      this.#connectMcp(sessionId, cwd),
+      loadProjectInstructions(this.#runtime, this.#dataDir, cwd),
+      loadSkills(this.#runtime, this.#dataDir, cwd),
+    ]);
+    for (const warning of [...instructions.warnings, ...skills.warnings]) {
       process.stderr.write(`minerva: ${warning}\n`);
     }
     this.#instructions.set(sessionId, instructions);
-    const skills = await loadSkills(this.#runtime, this.#dataDir, cwd);
-    for (const warning of skills.warnings) {
-      process.stderr.write(`minerva: ${warning}\n`);
-    }
     this.#skills.set(sessionId, skills);
     if (instructions.files.length === 0) return undefined;
     return {

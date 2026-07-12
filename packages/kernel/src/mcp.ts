@@ -10,6 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerConfig } from "./settings";
+import { truncateCodePointSafe } from "./text";
 import type { KernelTool } from "./tools";
 import { asRecord } from "./tools";
 
@@ -57,9 +58,8 @@ export async function connectMcpServers(
       // the handshake slowly can't buy itself a second full budget.
       const deadline = Date.now() + startupTimeoutMs;
       const remaining = () => Math.max(1, deadline - Date.now());
-      const client = new Client({ name: "minerva", version: "0.1.0" });
       try {
-        await connectClient(client, config, cwd, remaining);
+        const client = await connectClient(config, cwd, remaining);
         try {
           const listed = await client.listTools(undefined, { timeout: remaining() });
           clients.push(client);
@@ -92,58 +92,73 @@ export async function connectMcpServers(
 }
 
 /**
- * Pick a transport from the config shape: `url` = remote Streamable HTTP
- * (with a one-shot SSE fallback for pre-2025-03 servers), `command` = local
- * stdio child. Throws into the caller's warning path — a bad entry degrades,
- * it never fails the session.
+ * Pick a transport from the config shape and return a connected client:
+ * `url` = remote Streamable HTTP (with a one-shot SSE fallback for
+ * pre-2025-03 servers), `command` = local stdio child. Each connect attempt
+ * gets a FRESH Client — the SDK fail-fasts (AlreadyConnected) when a client
+ * that bound a transport is reused, and failed transports don't restart.
+ * Throws into the caller's warning path — a bad entry degrades, it never
+ * fails the session.
  */
 async function connectClient(
-  client: Client,
   config: McpServerConfig,
   cwd: string,
   /** Milliseconds left in the server's shared startup budget. */
   remaining: () => number,
-): Promise<void> {
+): Promise<Client> {
+  const makeClient = () => new Client({ name: "minerva", version: "0.1.0" });
   if (config.type === "http") {
     const url = new URL(config.url); // malformed URL → descriptive TypeError
     const options = config.headers ? { requestInit: { headers: config.headers } } : {};
+    const streamable = makeClient();
     try {
       // Cast: the transport's `sessionId: string | undefined` doesn't unify
       // with the interface's `sessionId?: string` under
       // exactOptionalPropertyTypes — an SDK-internal mismatch, not ours.
-      await client.connect(new StreamableHTTPClientTransport(url, options) as Transport, {
+      await streamable.connect(new StreamableHTTPClientTransport(url, options) as Transport, {
         timeout: remaining(),
       });
+      return streamable;
     } catch (streamableError) {
+      await streamable.close().catch(() => {});
       if (!shouldFallBackToSse(streamableError)) throw streamableError;
+      const sse = makeClient();
       try {
-        await client.connect(new SSEClientTransport(url, options), { timeout: remaining() });
+        await sse.connect(new SSEClientTransport(url, options), { timeout: remaining() });
+        return sse;
       } catch {
+        await sse.close().catch(() => {});
         // The SSE attempt was only a courtesy; the streamable error names
         // the real problem (auth, protocol), so surface that one.
         throw streamableError;
       }
     }
-    return;
   }
   if (!config.command) {
     throw new Error('config needs a "command" (stdio) or "type": "http" with a "url"');
   }
-  await client.connect(
-    new StdioClientTransport({
-      command: config.command,
-      ...(config.args ? { args: config.args } : {}),
-      // Launch the server in the session's working directory so relative
-      // paths and project detection match the user's project, not the
-      // Minerva host's cwd.
-      cwd,
-      // Merge with the SDK's safe defaults: passing env alone REPLACES
-      // the environment, and a config that sets one variable would
-      // otherwise strip PATH/HOME and break the server's spawn.
-      ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
-    }),
-    { timeout: remaining() },
-  );
+  const client = makeClient();
+  try {
+    await client.connect(
+      new StdioClientTransport({
+        command: config.command,
+        ...(config.args ? { args: config.args } : {}),
+        // Launch the server in the session's working directory so relative
+        // paths and project detection match the user's project, not the
+        // Minerva host's cwd.
+        cwd,
+        // Merge with the SDK's safe defaults: passing env alone REPLACES
+        // the environment, and a config that sets one variable would
+        // otherwise strip PATH/HOME and break the server's spawn.
+        ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
+      }),
+      { timeout: remaining() },
+    );
+    return client;
+  } catch (error) {
+    await client.close().catch(() => {});
+    throw error;
+  }
 }
 
 /**
@@ -223,7 +238,7 @@ function wrapMcpTool(client: Client, serverName: string, info: McpToolInfo): Ker
         }
       }
       if (totalChars > MAX_MCP_OUTPUT_CHARS) {
-        output = `${output.slice(0, MAX_MCP_OUTPUT_CHARS)}\n[truncated: ${totalChars} characters]`;
+        output = `${truncateCodePointSafe(output, MAX_MCP_OUTPUT_CHARS)}\n[truncated: ${totalChars} characters]`;
       }
       return { output: output || "(no output)", isError: result.isError === true };
     },

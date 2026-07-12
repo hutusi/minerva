@@ -1,7 +1,8 @@
 import { join } from "node:path";
-import { isNotFoundError, type Runtime } from "./runtime";
+import { type BoundedRead, isNotFoundError, type Runtime } from "./runtime";
+import { truncateCodePointSafe } from "./text";
 // Direct module import (not the ./tools barrel) to avoid an import cycle.
-import { resolveWithinWorkspace } from "./tools/types";
+import { readConfinedTextFilePrefix } from "./tools/types";
 
 /**
  * AGENTS.md project instructions (agents.md open standard): user-authored
@@ -56,25 +57,20 @@ export async function loadProjectInstructions(
   const sections: string[] = [];
 
   for (const candidate of candidates) {
-    // Project files are repo-controlled: a symlinked AGENTS.md must not pull
-    // content from outside the workspace into the prompt. The global file is
-    // user-owned (like stored API keys) — dotfile symlinks stay legitimate.
-    if (candidate.scope === "project") {
-      try {
-        await resolveWithinWorkspace(runtime, cwd, candidate.path);
-      } catch (error) {
-        warnings.push(
-          `skipping ${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        continue;
-      }
-    }
-    let raw: { text: string; truncated: boolean; totalBytes: number };
+    let raw: BoundedRead;
     try {
-      raw = await runtime.readTextFilePrefix(candidate.path, INSTRUCTIONS_BYTE_BUDGET);
+      // Project files are repo-controlled: a symlinked AGENTS.md must not
+      // pull content from outside the workspace into the prompt (the
+      // confined read pins the inode it actually read). The global file is
+      // user-owned (like stored API keys) — dotfile symlinks stay legitimate.
+      raw =
+        candidate.scope === "project"
+          ? await readConfinedTextFilePrefix(runtime, cwd, candidate.path, INSTRUCTIONS_BYTE_BUDGET)
+          : await runtime.readTextFilePrefix(candidate.path, INSTRUCTIONS_BYTE_BUDGET);
     } catch (error) {
-      // Absent is the normal case; anything else (EACCES, EISDIR) is worth a
-      // warning but must not fail session start.
+      // Absent is the normal case; anything else (EACCES, EISDIR, an
+      // outside-the-workspace symlink) is worth a warning but must not fail
+      // session start.
       if (!isNotFoundError(error)) {
         warnings.push(
           `could not read ${candidate.path}: ${error instanceof Error ? error.message : String(error)}`,
@@ -86,7 +82,7 @@ export async function loadProjectInstructions(
     if (trimmed.length === 0) continue;
     const truncated = raw.truncated || trimmed.length > MAX_INSTRUCTIONS_CHARS;
     const content = truncated
-      ? `${trimmed.slice(0, MAX_INSTRUCTIONS_CHARS)}\n[truncated: AGENTS.md is ${raw.totalBytes} bytes; loaded the first ${MAX_INSTRUCTIONS_CHARS} characters]`
+      ? `${truncateCodePointSafe(trimmed, MAX_INSTRUCTIONS_CHARS)}\n[truncated: AGENTS.md is ${raw.totalBytes} bytes; loaded the first ${MAX_INSTRUCTIONS_CHARS} characters]`
       : trimmed;
     files.push({ path: candidate.path, scope: candidate.scope, bytes: raw.totalBytes, truncated });
     sections.push(`## From ${candidate.path} (${candidate.scope})\n\n${content}`);

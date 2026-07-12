@@ -130,7 +130,7 @@ describe("loadSkills", () => {
     rmSync(skill.path);
     symlinkSync(join(outside, "secret.md"), skill.path);
 
-    expect(readSkillBody(defaultRuntime, skill)).rejects.toThrow("outside the workspace");
+    await expect(readSkillBody(defaultRuntime, skill)).rejects.toThrow("outside the workspace");
   });
 
   test("a global skill symlink is exempt from confinement (user-owned)", async () => {
@@ -504,7 +504,7 @@ describe("the skill tool", () => {
     const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
       cwd,
     });
-    expect(
+    await expect(
       client.request(AGENT_METHODS.sessionPrompt, {
         sessionId,
         prompt: [{ type: "text", text: "/blocked go" }],

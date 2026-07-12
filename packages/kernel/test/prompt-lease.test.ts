@@ -130,7 +130,7 @@ describe("prompt lease concurrency", () => {
       cwd,
     });
 
-    expect(
+    await expect(
       client.request(AGENT_METHODS.sessionPrompt, {
         sessionId,
         prompt: [{ type: "text", text: "first" }],

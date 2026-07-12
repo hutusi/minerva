@@ -17,6 +17,7 @@ import {
   readlink,
   realpath,
   rename,
+  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -47,6 +48,16 @@ export interface BoundedRead {
   truncated: boolean;
   /** The file's full size in bytes, for honest truncation diagnostics. */
   totalBytes: number;
+  /** Identity of the file actually read (from the open fd), so callers can
+   * prove the bytes came from a path they validated — see
+   * readConfinedTextFilePrefix. */
+  dev: number;
+  ino: number;
+}
+
+export interface FileIdentity {
+  dev: number;
+  ino: number;
 }
 
 export interface Runtime {
@@ -60,6 +71,8 @@ export interface Runtime {
    * caller's separate realpath check); error codes match readTextFile.
    */
   readTextFilePrefix(path: string, maxBytes: number): Promise<BoundedRead>;
+  /** Identity (dev/ino) of the file a path currently resolves to. */
+  statFile(path: string): Promise<FileIdentity>;
   writeTextFile(path: string, content: string, options?: WriteTextFileOptions): Promise<void>;
   /**
    * Create and write a brand-new file, failing if it already exists and
@@ -113,7 +126,9 @@ const PIPE_GRACE_MS = 1_000;
 export const defaultRuntime: Runtime = {
   readTextFile: (path) => readFile(path, "utf8"),
   readTextFilePrefix: async (path, maxBytes) => {
-    const handle = await open(path, "r");
+    // O_NONBLOCK: opening a FIFO planted at this path must not hang the
+    // kernel waiting for a writer; it has no effect on regular files.
+    const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const stats = await handle.stat();
       // open() on a directory succeeds on some platforms; fail like readFile
@@ -122,6 +137,11 @@ export const defaultRuntime: Runtime = {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), {
           code: "EISDIR",
         });
+      }
+      // FIFOs, sockets, and device files are never valid instruction/skill
+      // input, and reading them can block or produce unbounded garbage.
+      if (!stats.isFile()) {
+        throw new Error(`not a regular file: ${path}`);
       }
       const budget = Math.min(stats.size, maxBytes);
       const buffer = Buffer.alloc(budget);
@@ -137,10 +157,16 @@ export const defaultRuntime: Runtime = {
         text: buffer.toString("utf8", 0, offset),
         truncated: stats.size > maxBytes,
         totalBytes: stats.size,
+        dev: stats.dev,
+        ino: stats.ino,
       };
     } finally {
       await handle.close();
     }
+  },
+  statFile: async (path) => {
+    const stats = await stat(path);
+    return { dev: stats.dev, ino: stats.ino };
   },
   writeTextFile: async (path, content, options) => {
     const mode = options?.mode;

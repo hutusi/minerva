@@ -15,7 +15,9 @@ describe("readTextFilePrefix", () => {
   test("a file within the budget comes back whole and untruncated", async () => {
     const path = tmpFile("hello world");
     const result = await defaultRuntime.readTextFilePrefix(path, 1024);
-    expect(result).toEqual({ text: "hello world", truncated: false, totalBytes: 11 });
+    expect(result).toMatchObject({ text: "hello world", truncated: false, totalBytes: 11 });
+    // The fd's identity rides along for confined-read verification.
+    expect(result.ino).toBeGreaterThan(0);
   });
 
   test("a file past the budget is cut with truncated=true and honest totalBytes", async () => {

@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import { isNotFoundError, type Runtime } from "./runtime";
+import { type BoundedRead, isNotFoundError, type Runtime } from "./runtime";
+import { truncateCodePointSafe } from "./text";
 // Direct module import (not the ./tools barrel) to avoid an import cycle
 // with tools/skill.ts, which imports this module.
-import { resolveWithinWorkspace } from "./tools/types";
+import { readConfinedTextFilePrefix } from "./tools/types";
 
 /**
  * Skills: user-authored, reusable instructions as `skills/<name>/SKILL.md`
@@ -130,23 +131,16 @@ export async function loadSkills(
     }
     for (const entry of sorted) {
       const path = join(root.dir, entry, "SKILL.md");
-      // Project skills are repo-controlled: a symlink must not reach outside
-      // the workspace. Global skills are user-owned and stay unconfined.
-      if (root.source === "project") {
-        try {
-          await resolveWithinWorkspace(runtime, cwd, path);
-        } catch (error) {
-          warnings.push(
-            `skipping ${path}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          continue;
-        }
-      }
-      let prefix: { text: string; truncated: boolean };
+      let prefix: BoundedRead;
       try {
         // Discovery only ever reads enough for frontmatter — bodies stay on
-        // disk until a skill is invoked.
-        prefix = await runtime.readTextFilePrefix(path, FRONTMATTER_PREFIX_BYTES);
+        // disk until a skill is invoked. Project skills are repo-controlled:
+        // the confined read refuses anything resolving outside the
+        // workspace. Global skills are user-owned and stay unconfined.
+        prefix =
+          root.source === "project"
+            ? await readConfinedTextFilePrefix(runtime, cwd, path, FRONTMATTER_PREFIX_BYTES)
+            : await runtime.readTextFilePrefix(path, FRONTMATTER_PREFIX_BYTES);
       } catch (error) {
         // A stray file (ENOTDIR) or a dir without SKILL.md (ENOENT) is not a
         // skill; anything else is worth a warning.
@@ -194,19 +188,15 @@ export async function loadSkills(
 
 /** A skill's instructions with frontmatter stripped, capped for model input. */
 export async function readSkillBody(runtime: Runtime, skill: Skill): Promise<string> {
-  if (skill.confineTo) {
-    // Re-check at invoke time: discovery-time confinement is stale the moment
-    // a symlink is swapped underneath it. Same check-then-open TOCTOU stance
-    // that resolveWithinWorkspace documents for tool paths.
-    await resolveWithinWorkspace(runtime, skill.confineTo, skill.path);
-  }
-  const { text, truncated, totalBytes } = await runtime.readTextFilePrefix(
-    skill.path,
-    SKILL_BODY_BYTE_BUDGET,
-  );
+  // Re-checked at every invoke: discovery-time confinement is stale the
+  // moment a symlink is swapped underneath it, and the confined read pins
+  // the inode it actually read, so a swap mid-read is refused too.
+  const { text, truncated, totalBytes } = skill.confineTo
+    ? await readConfinedTextFilePrefix(runtime, skill.confineTo, skill.path, SKILL_BODY_BYTE_BUDGET)
+    : await runtime.readTextFilePrefix(skill.path, SKILL_BODY_BYTE_BUDGET);
   const body = parseFrontmatter(text).body.trim();
   if (!truncated && body.length <= MAX_SKILL_BODY_CHARS) return body;
-  return `${body.slice(0, MAX_SKILL_BODY_CHARS)}\n[truncated: SKILL.md is ${totalBytes} bytes; loaded the first ${MAX_SKILL_BODY_CHARS} characters]`;
+  return `${truncateCodePointSafe(body, MAX_SKILL_BODY_CHARS)}\n[truncated: SKILL.md is ${totalBytes} bytes; loaded the first ${MAX_SKILL_BODY_CHARS} characters]`;
 }
 
 function clipDescription(description: string | undefined): string | undefined {

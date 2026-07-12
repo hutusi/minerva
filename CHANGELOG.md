@@ -88,7 +88,27 @@ All notable changes to Minerva are documented here. The format follows
   500 chars and discovery scans at most 64 entries per directory. Remote MCP
   tool output is capped at 50k chars and server-provided descriptions at 2k.
 
+- Confined reads are now atomic with their check: the bounded read pins the
+  inode it actually read (via the open fd) and the path must still resolve
+  inside the workspace to that same inode, closing the residual
+  check-then-open TOCTOU for project AGENTS.md/SKILL.md files. Reads also
+  refuse non-regular files (a planted FIFO can no longer hang session start;
+  opens are non-blocking).
+
 ### Fixed
+- The SSE fallback now uses a fresh MCP client for the retry — the SDK
+  fail-fasts (`AlreadyConnected`) when a client that bound a transport is
+  reused, so the fallback could hit dirty state; failed clients are closed.
+  A test also pins that configured headers reach the SSE probe's initial GET
+  (they do — via the SDK's common-headers path), so authenticated legacy
+  servers can accept the fallback.
+- Truncation cuts (instruction files, skill bodies, MCP tool output) are now
+  surrogate-safe: a cut can no longer split an astral character and emit a
+  lone surrogate, which is invalid Unicode and can break JSON encoding to
+  providers.
+- Session establish runs MCP connect, AGENTS.md loading, and skill discovery
+  concurrently — a slow MCP server no longer delays instruction/skill
+  loading it doesn't depend on.
 - A throwing host `systemPrompt` callback (or any failure between claiming
   the prompt lease and handing it to the turn loop) no longer locks the
   session permanently — all fallible pre-work now sits inside a
