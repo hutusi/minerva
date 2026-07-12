@@ -5,19 +5,62 @@ describe("parseCliArgs", () => {
   test("no arguments runs the TUI with no model override", () => {
     expect(parseCliArgs([])).toEqual({
       kind: "run",
-      args: { command: "tui", model: null, resume: null },
+      args: { command: "tui", model: null, resume: null, profile: null, print: null, mode: null },
     });
   });
 
   test("acp command and flags compose in any order", () => {
-    expect(parseCliArgs(["acp", "-m", "openai/gpt-5.2"])).toEqual({
-      kind: "run",
-      args: { command: "acp", model: "openai/gpt-5.2", resume: null },
+    const args = {
+      command: "acp" as const,
+      model: "openai/gpt-5.2",
+      resume: null,
+      profile: null,
+      print: null,
+      mode: null,
+    };
+    expect(parseCliArgs(["acp", "-m", "openai/gpt-5.2"])).toEqual({ kind: "run", args });
+    expect(parseCliArgs(["-m", "openai/gpt-5.2", "acp"])).toEqual({ kind: "run", args });
+  });
+
+  test("-p captures a prompt, or defers to stdin when followed by a flag", () => {
+    expect(parseCliArgs(["-p", "say hi"])).toMatchObject({
+      args: { print: { prompt: "say hi" }, mode: null },
     });
-    expect(parseCliArgs(["-m", "openai/gpt-5.2", "acp"])).toEqual({
-      kind: "run",
-      args: { command: "acp", model: "openai/gpt-5.2", resume: null },
+    expect(parseCliArgs(["-p", "--mode", "auto"])).toMatchObject({
+      args: { print: { prompt: null }, mode: "auto" },
     });
+    expect(parseCliArgs(["--print"])).toMatchObject({
+      args: { print: { prompt: null } },
+    });
+    expect(parseCliArgs(["-p", "explain", "-m", "openai/gpt-5.2"])).toMatchObject({
+      args: { print: { prompt: "explain" }, model: "openai/gpt-5.2" },
+    });
+  });
+
+  test("--mode without -p and print+acp combinations are errors", () => {
+    expect(parseCliArgs(["--mode", "auto"])).toEqual({
+      kind: "error",
+      message: "--mode requires -p/--print (use /mode in the TUI)",
+    });
+    expect(parseCliArgs(["--mode"])).toEqual({
+      kind: "error",
+      message: "--mode requires a mode id",
+    });
+    expect(parseCliArgs(["acp", "-p", "hi"])).toEqual({
+      kind: "error",
+      message: "acp and --print are mutually exclusive",
+    });
+  });
+
+  test("--profile carries the name and rejects missing values", () => {
+    expect(parseCliArgs(["--profile", "writer"])).toMatchObject({
+      args: { profile: "writer" },
+    });
+    expect(parseCliArgs(["--profile"])).toEqual({
+      kind: "error",
+      message: "--profile requires a profile name",
+    });
+    expect(parseCliArgs(["--profile", "-c"])).toMatchObject({ kind: "error" });
   });
 
   test("--continue and --resume set the resume target", () => {

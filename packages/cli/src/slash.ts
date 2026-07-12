@@ -6,12 +6,14 @@ import type { SkillInfo } from "@minerva/protocol";
  * able to rebind /exit or /config out from under the user.
  */
 
-const BUILTIN_COMMANDS = [
+export const BUILTIN_COMMANDS = [
   "help",
   "config",
   "mode",
   "compact",
+  "profile",
   "sessions",
+  "resume",
   "new",
   "exit",
   "quit",

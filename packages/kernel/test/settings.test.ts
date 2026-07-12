@@ -19,6 +19,7 @@ import {
   type MinervaSettings,
   persistAllowRule,
   projectSettingsPath,
+  resolveProfile,
   updateGlobalSettings,
 } from "../src";
 
@@ -70,6 +71,93 @@ describe("model + provider settings", () => {
 
     const settings = await loadSettings(defaultRuntime, dataDir, cwd);
     expect(settings.providers.bailian).toEqual({ defaultModel: "qwen-max" });
+  });
+});
+
+describe("profiles settings", () => {
+  test("profiles merge per name project-over-global; the default name prefers project", async () => {
+    const { cwd, dataDir } = tempDirs();
+    writeSettings(globalSettingsPath(dataDir), {
+      profile: "writer",
+      profiles: {
+        writer: { systemPrompt: "global writer", model: "bailian/qwen-plus" },
+        reviewer: { systemPrompt: "global reviewer" },
+      },
+    });
+    mkdirSync(join(cwd, ".minerva"));
+    writeSettings(join(cwd, ".minerva", "settings.json"), {
+      profile: "reviewer",
+      profiles: {
+        writer: { systemPrompt: "project writer" },
+      },
+    });
+
+    const settings = await loadSettings(defaultRuntime, dataDir, cwd);
+    expect(settings.profile).toBe("reviewer");
+    expect(settings.profiles.writer).toEqual({
+      systemPrompt: "project writer",
+      model: "bailian/qwen-plus",
+    });
+    expect(settings.profiles.reviewer).toEqual({ systemPrompt: "global reviewer" });
+  });
+
+  test("resolveProfile prefers the request, falls back to the default, throws on unknown", async () => {
+    const { cwd, dataDir } = tempDirs();
+    writeSettings(globalSettingsPath(dataDir), {
+      profile: "writer",
+      profiles: { writer: { systemPrompt: "w" }, reviewer: { systemPrompt: "r" } },
+    });
+    const settings = await loadSettings(defaultRuntime, dataDir, cwd);
+
+    expect(resolveProfile(settings, "reviewer")).toEqual({ name: "reviewer", systemPrompt: "r" });
+    expect(resolveProfile(settings)).toEqual({ name: "writer", systemPrompt: "w" });
+    expect(() => resolveProfile(settings, "ghost")).toThrow(
+      'unknown profile "ghost" — defined: writer, reviewer',
+    );
+
+    const empty = await loadSettings(defaultRuntime, tempDirs().dataDir, cwd);
+    expect(resolveProfile({ ...empty, profile: undefined })).toBeUndefined();
+  });
+
+  test("resolveProfile rejects inherited names and keeps the canonical name", async () => {
+    const { cwd, dataDir } = tempDirs();
+    writeSettings(globalSettingsPath(dataDir), {
+      // A stray "name" key in the JSON must not overwrite the requested
+      // name — it is persisted to the session log and breaks resume.
+      profiles: { writer: { name: "evil", systemPrompt: "w" } },
+    } as unknown as MinervaSettings);
+    const settings = await loadSettings(defaultRuntime, dataDir, cwd);
+
+    expect(resolveProfile(settings, "writer")).toMatchObject({ name: "writer" });
+    // Object.prototype members are not profiles.
+    expect(() => resolveProfile(settings, "toString")).toThrow('unknown profile "toString"');
+    expect(() => resolveProfile(settings, "hasOwnProperty")).toThrow("unknown profile");
+  });
+
+  test("malformed profiles fail loudly instead of coercing", async () => {
+    const { cwd, dataDir } = tempDirs();
+    writeSettings(globalSettingsPath(dataDir), {
+      profiles: { writer: { systemPrompt: 42 } },
+    } as unknown as MinervaSettings);
+    await expect(loadSettings(defaultRuntime, dataDir, cwd)).rejects.toThrow(
+      "profiles.writer.systemPrompt must be a string",
+    );
+
+    const second = tempDirs();
+    writeSettings(globalSettingsPath(second.dataDir), {
+      profiles: ["writer"],
+    } as unknown as MinervaSettings);
+    await expect(loadSettings(defaultRuntime, second.dataDir, second.cwd)).rejects.toThrow(
+      "profiles must be an object",
+    );
+
+    const third = tempDirs();
+    writeSettings(globalSettingsPath(third.dataDir), {
+      profile: 7,
+    } as unknown as MinervaSettings);
+    await expect(loadSettings(defaultRuntime, third.dataDir, third.cwd)).rejects.toThrow(
+      "profile must be a string",
+    );
   });
 });
 

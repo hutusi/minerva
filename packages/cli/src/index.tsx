@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
 import {
   createKernel,
@@ -22,7 +23,9 @@ import { runAcpHost } from "./acp";
 import { App } from "./app";
 import { parseCliArgs, usage } from "./args";
 import type { ProviderChoice } from "./config-panel";
+import { appendHistoryFile, loadHistoryFile } from "./history-file";
 import { createPermissionBridge } from "./permission-bridge";
+import { runPrintMode } from "./print";
 
 const usageDefault = process.env.MINERVA_MODEL ?? DEFAULT_ANTHROPIC_MODEL;
 const parsed = parseCliArgs(process.argv.slice(2));
@@ -34,7 +37,7 @@ if (parsed.kind === "error") {
   console.error(`${parsed.message}\n\n${usage(usageDefault)}`);
   process.exit(1);
 }
-const { command, resume } = parsed.args;
+const { command, resume, profile: profileFlag } = parsed.args;
 
 const runtime = defaultRuntime;
 const dataDir = process.env.MINERVA_DATA_DIR ?? defaultDataDir(runtime);
@@ -60,9 +63,21 @@ try {
   fail(cause);
 }
 
-// Precedence: --model flag > MINERVA_MODEL > settings > built-in default.
+// Validate the requested profile up front — a typo should fail before any
+// session exists, not on the first prompt.
+const activeProfile = profileFlag ?? settings.profile ?? null;
+if (activeProfile !== null && !settings.profiles[activeProfile]) {
+  const defined = Object.keys(settings.profiles).join(", ") || "(none)";
+  fail(new Error(`unknown profile "${activeProfile}" — defined: ${defined}`));
+}
+
+// Precedence: --model flag > MINERVA_MODEL > profile's model > settings > default.
 const model =
-  parsed.args.model ?? process.env.MINERVA_MODEL ?? settings.model ?? DEFAULT_ANTHROPIC_MODEL;
+  parsed.args.model ??
+  process.env.MINERVA_MODEL ??
+  (activeProfile ? settings.profiles[activeProfile]?.model : undefined) ??
+  settings.model ??
+  DEFAULT_ANTHROPIC_MODEL;
 
 let providerName: string;
 try {
@@ -102,15 +117,18 @@ const kernelOptions = {
   dataDir,
 };
 
+function requireKeyOrExit(): void {
+  if (!missingRequiredKey) return;
+  const keyVar = apiKeyEnvVar(providerName, registry);
+  console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
+  console.error(`  export ${keyVar}="..."`);
+  console.error("or run `minerva` and use /config to store a key in settings.");
+  process.exit(1);
+}
+
 if (command === "acp") {
   // stdout carries the protocol — no UI, so a missing key stays a hard exit.
-  if (missingRequiredKey) {
-    const keyVar = apiKeyEnvVar(providerName, registry);
-    console.error(`${keyVar} is not set (required for ${model}). Export it and try again:`);
-    console.error(`  export ${keyVar}="..."`);
-    console.error("or run `minerva` and use /config to store a key in settings.");
-    process.exit(1);
-  }
+  requireKeyOrExit();
   // runAcpHost awaits kernel.close() on disconnect; a durability failure
   // surfaces here as a nonzero exit rather than a silent success.
   try {
@@ -120,6 +138,31 @@ if (command === "acp") {
     console.error(`minerva: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   }
+}
+
+if (parsed.args.print) {
+  // One-shot output — no UI, so a missing key is a hard exit like acp.
+  requireKeyOrExit();
+  let promptText = parsed.args.print.prompt;
+  if (promptText === null) {
+    // -p with no inline prompt reads stdin, but only when something is
+    // actually piped in — headlessly waiting on a TTY would just hang.
+    if (process.stdin.isTTY) {
+      fail(new Error("-p/--print needs a prompt argument or piped stdin"));
+    }
+    promptText = await Bun.stdin.text();
+  }
+  if (!promptText.trim()) fail(new Error("empty prompt"));
+  const code = await runPrintMode({
+    kernelOptions,
+    cwd,
+    prompt: promptText.trim(),
+    mode: parsed.args.mode,
+    profile: profileFlag,
+    resume,
+    io: { stdout: process.stdout, stderr: process.stderr },
+  });
+  process.exit(code);
 }
 
 // Rows for the /config panel: every registry provider plus where (if
@@ -140,6 +183,11 @@ const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, d
   requiresApiKey: def.requiresApiKey,
 }));
 
+// Input history is frontend-local state (like Ink itself), so it lives here
+// rather than behind the protocol: one JSONL file per data dir, best-effort,
+// compacted at load when it grows past its threshold.
+const historyPath = join(dataDir, "history.jsonl");
+
 // The CLI embeds the kernel, but only across the protocol's in-proc
 // transport — the same messages a Tauri sidecar or remote kernel would see.
 const [clientTransport, kernelTransport] = createInProcTransportPair();
@@ -157,8 +205,11 @@ const app = render(
     model={model}
     cwd={cwd}
     resume={resume}
+    profile={profileFlag}
     providers={providerChoices}
     needsConfig={missingRequiredKey}
+    initialHistory={loadHistoryFile(historyPath)}
+    onHistoryAppend={(text) => appendHistoryFile(historyPath, text)}
   />,
 );
 await app.waitUntilExit();

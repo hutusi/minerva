@@ -41,6 +41,9 @@ export interface ProviderDef {
    * OpenAI-compatible endpoints only (enable_thinking in the request body).
    */
   thinking?: ThinkingConfig | undefined;
+  /** Context window (tokens) of the provider's models; feeds auto-compaction.
+   * A per-provider single number — override in settings when a model differs. */
+  contextWindow?: number | undefined;
 }
 
 export type ProviderRegistry = Record<string, ProviderDef>;
@@ -50,11 +53,13 @@ export const BUILTIN_PROVIDERS: ProviderRegistry = {
     kind: "anthropic",
     apiKeyEnv: "ANTHROPIC_API_KEY",
     defaultModel: DEFAULT_ANTHROPIC_MODEL,
+    contextWindow: 200_000,
   },
   openai: {
     kind: "openai",
     apiKeyEnv: "OPENAI_API_KEY",
     defaultModel: DEFAULT_OPENAI_MODEL,
+    contextWindow: 200_000,
   },
   // Alibaba Bailian (DashScope), OpenAI-compatible mode. China endpoint;
   // override baseUrl in settings for dashscope-intl.aliyuncs.com. Bailian
@@ -65,6 +70,7 @@ export const BUILTIN_PROVIDERS: ProviderRegistry = {
     baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     defaultModel: "qwen-plus",
     models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
+    contextWindow: 131_072,
   },
 };
 
@@ -76,6 +82,7 @@ export interface CustomProviderConfig {
   models?: string[] | undefined;
   requiresApiKey?: boolean | undefined;
   thinking?: ThinkingConfig | undefined;
+  contextWindow?: number | undefined;
 }
 
 /**
@@ -142,6 +149,9 @@ export function buildProviderRegistry(
         ...(config.models !== undefined ? { models: config.models } : {}),
         ...(config.requiresApiKey !== undefined ? { requiresApiKey: config.requiresApiKey } : {}),
         ...(config.thinking !== undefined ? { thinking: config.thinking } : {}),
+        ...(config.contextWindow !== undefined
+          ? { contextWindow: validContextWindow(name, config.contextWindow) }
+          : {}),
       };
       continue;
     }
@@ -161,9 +171,20 @@ export function buildProviderRegistry(
       ...(config.models !== undefined ? { models: config.models } : {}),
       ...(config.requiresApiKey !== undefined ? { requiresApiKey: config.requiresApiKey } : {}),
       ...(config.thinking !== undefined ? { thinking: config.thinking } : {}),
+      ...(config.contextWindow !== undefined
+        ? { contextWindow: validContextWindow(name, config.contextWindow) }
+        : {}),
     };
   }
   return registry;
+}
+
+/** A garbage contextWindow would silently arm (or disarm) auto-compaction. */
+function validContextWindow(name: string, value: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`provider "${name}": contextWindow must be a positive number of tokens`);
+  }
+  return value;
 }
 
 export interface ModelRef {
@@ -260,6 +281,10 @@ export function createProviderFromRef(
   const providers = options.providers ?? BUILTIN_PROVIDERS;
   const { provider, model } = parseModelRef(ref, providers);
   const def = providerDef(provider, providers);
+  // Streaming providers close over their config, so a spread-copy with the
+  // window attached is safe (no `this` in streamTurn).
+  const withWindow = (created: ModelProvider): ModelProvider =>
+    def.contextWindow !== undefined ? { ...created, contextWindow: def.contextWindow } : created;
   switch (def.kind) {
     case "openai": {
       const openai = createOpenAI({
@@ -267,7 +292,7 @@ export function createProviderFromRef(
         ...(def.baseURL ? { baseURL: def.baseURL } : {}),
       });
       const modelId = model || DEFAULT_OPENAI_MODEL;
-      return createAiSdkProvider(openai(modelId), `${provider}/${modelId}`);
+      return withWindow(createAiSdkProvider(openai(modelId), `${provider}/${modelId}`));
     }
     case "openai-compatible": {
       if (!def.baseURL) {
@@ -289,19 +314,23 @@ export function createProviderFromRef(
       // both the raw and camelCased keys but warns (console.warn, which also
       // corrupts the Ink TUI) when a dash/underscore raw key is present.
       const thinking = resolveThinking(def.thinking, model);
-      return createAiSdkProvider(compatible(model), `${provider}/${model}`, {
-        ...(thinking !== undefined
-          ? { providerOptions: { [toCamelCase(provider)]: { enable_thinking: thinking } } }
-          : {}),
-      });
+      return withWindow(
+        createAiSdkProvider(compatible(model), `${provider}/${model}`, {
+          ...(thinking !== undefined
+            ? { providerOptions: { [toCamelCase(provider)]: { enable_thinking: thinking } } }
+            : {}),
+        }),
+      );
     }
     default: {
       const modelId = model || DEFAULT_ANTHROPIC_MODEL;
-      return createAnthropicProvider({
-        model: modelId,
-        ...(options.apiKey ? { apiKey: options.apiKey } : {}),
-        ...(def.baseURL ? { baseURL: def.baseURL } : {}),
-      });
+      return withWindow(
+        createAnthropicProvider({
+          model: modelId,
+          ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+          ...(def.baseURL ? { baseURL: def.baseURL } : {}),
+        }),
+      );
     }
   }
 }

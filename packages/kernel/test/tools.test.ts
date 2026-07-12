@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashTool, defaultRuntime, editFileTool, readFileTool } from "../src";
+import { bashTool, defaultRuntime, editFileTool, readFileTool, writeFileTool } from "../src";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "minerva-tools-"));
@@ -58,6 +58,66 @@ describe("edit_file", () => {
       ctx(cwd),
     );
     expect(result.isError).toBe(true);
+  });
+
+  test("success carries a full-file diff block", async () => {
+    const cwd = tempProject();
+    writeFileSync(join(cwd, "code.ts"), "const a = 1;\n");
+    const result = await editFileTool.execute(
+      { path: "code.ts", old_string: "1", new_string: "2" },
+      ctx(cwd),
+    );
+    expect(result.content).toEqual([
+      {
+        type: "diff",
+        path: join(cwd, "code.ts"),
+        oldText: "const a = 1;\n",
+        newText: "const a = 2;\n",
+      },
+    ]);
+  });
+
+  test("oversize files fall back to text-only output (no diff block)", async () => {
+    const cwd = tempProject();
+    writeFileSync(join(cwd, "big.txt"), `marker\n${"x".repeat(49_000)}`);
+    const result = await editFileTool.execute(
+      { path: "big.txt", old_string: "marker", new_string: "replaced" },
+      ctx(cwd),
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBeUndefined();
+  });
+});
+
+describe("write_file diff blocks", () => {
+  test("a new file diffs against null", async () => {
+    const cwd = tempProject();
+    const result = await writeFileTool.execute(
+      { path: "fresh.txt", content: "brand new\n" },
+      ctx(cwd),
+    );
+    expect(result.content).toEqual([
+      { type: "diff", path: join(cwd, "fresh.txt"), oldText: null, newText: "brand new\n" },
+    ]);
+  });
+
+  test("an overwrite diffs against the previous content", async () => {
+    const cwd = tempProject();
+    writeFileSync(join(cwd, "note.txt"), "before\n");
+    const result = await writeFileTool.execute({ path: "note.txt", content: "after\n" }, ctx(cwd));
+    expect(result.content).toEqual([
+      { type: "diff", path: join(cwd, "note.txt"), oldText: "before\n", newText: "after\n" },
+    ]);
+  });
+
+  test("oversize content omits the diff block", async () => {
+    const cwd = tempProject();
+    const result = await writeFileTool.execute(
+      { path: "big.txt", content: "y".repeat(49_000) },
+      ctx(cwd),
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBeUndefined();
   });
 });
 

@@ -34,6 +34,10 @@ export const MINERVA_METHODS = {
   configSetModel: "minerva/config/set_model",
   /** Frontend → kernel: list the skills available for a project. */
   skillsList: "minerva/skills/list",
+  /** Frontend → kernel: list the named profiles defined in settings. */
+  profilesList: "minerva/profiles/list",
+  /** Frontend → kernel: switch (or clear) a session's active profile. */
+  sessionSetProfile: "minerva/session/set_profile",
 } as const;
 
 /** Kernel → frontend. */
@@ -46,6 +50,9 @@ export const CLIENT_METHODS = {
   sessionRequestPermission: "session/request_permission",
   /** Notification (minerva/* extension): token usage after each completed turn. */
   sessionUsage: "minerva/session/usage",
+  /** Notification (minerva/* extension): the kernel compacted a session on
+   * its own (context-window pressure). */
+  sessionCompacted: "minerva/session/compacted",
 } as const;
 
 // --- Content -----------------------------------------------------------
@@ -96,6 +103,12 @@ export type SessionSetModeResult = null;
 
 export interface SessionNewParams {
   cwd: string;
+  /**
+   * minerva/* extension: named profile (from settings `profiles`) applied to
+   * the session — replaces the base system prompt and may set the default
+   * mode. Unknown names are rejected.
+   */
+  profile?: string;
 }
 
 /**
@@ -111,6 +124,8 @@ export interface SessionNewResult {
   sessionId: string;
   modes?: SessionModeState;
   instructions?: InstructionsInfo;
+  /** minerva/* extension: the profile the session was created with. */
+  profile?: string;
 }
 
 // --- session/load ------------------------------------------------------
@@ -127,6 +142,8 @@ export interface SessionLoadParams {
 export interface SessionLoadResult {
   modes?: SessionModeState;
   instructions?: InstructionsInfo;
+  /** minerva/* extension: the profile restored from the session log. */
+  profile?: string;
 }
 
 // --- minerva/session/compact -------------------------------------------
@@ -154,6 +171,36 @@ export interface SkillInfo {
 export interface SkillsListResult {
   skills: SkillInfo[];
 }
+
+// --- minerva/profiles/list ---------------------------------------------
+
+export interface ProfilesListParams {
+  cwd: string;
+}
+
+export interface ProfileInfo {
+  name: string;
+  model?: string;
+  defaultMode?: string;
+  /** Whether the profile replaces the base system prompt (body not shipped). */
+  hasSystemPrompt: boolean;
+}
+
+export interface ProfilesListResult {
+  profiles: ProfileInfo[];
+  /** The settings-configured default profile, when one is set. */
+  default?: string;
+}
+
+// --- minerva/session/set_profile ---------------------------------------
+
+export interface SessionSetProfileParams {
+  sessionId: string;
+  /** Profile name to activate, or null to clear back to the base prompt. */
+  profile: string | null;
+}
+
+export type SessionSetProfileResult = null;
 
 // --- minerva/config/set_model ------------------------------------------
 
@@ -296,6 +343,16 @@ export interface SessionUsageParams {
   lastTurn?: TokenUsage | undefined;
   /** Totals across every persisted turn of the session, including lastTurn. */
   cumulative: TokenUsage;
+}
+
+// --- minerva/session/compacted -----------------------------------------
+
+/** Kernel-initiated compaction announcement (manual /compact responds to the
+ * requester instead). `reason` is extensible; only "auto" exists today. */
+export interface SessionCompactedParams {
+  sessionId: string;
+  summary: string;
+  reason: "auto";
 }
 
 // --- session/request_permission ----------------------------------------

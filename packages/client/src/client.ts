@@ -8,14 +8,17 @@ import {
   type InstructionsInfo,
   MINERVA_METHODS,
   PROTOCOL_VERSION,
+  type ProfilesListResult,
   type RequestPermissionParams,
   type RequestPermissionResult,
+  type SessionCompactedParams,
   type SessionCompactResult,
   type SessionLoadResult,
   type SessionNewResult,
   type SessionPromptResult,
   type SessionSummary,
   type SessionsListResult,
+  type SessionUpdate,
   type SessionUpdateBatchParams,
   type SessionUpdateParams,
   type SessionUsageParams,
@@ -36,6 +39,12 @@ export interface MinervaClientOptions {
    * from user input; leaving it unset rejects every request (safe default).
    */
   onPermissionRequest?: PermissionHandler;
+  /**
+   * Raw update tap, invoked before store application (batched replay
+   * included, one call per update). Streaming surfaces like print mode
+   * consume this; store-driven UIs don't need it.
+   */
+  onSessionUpdate?: (sessionId: string, update: SessionUpdate) => void;
 }
 
 /**
@@ -55,15 +64,27 @@ export class MinervaClient {
     this.#connection = new Connection(transport);
     this.#connection.handleNotification(CLIENT_METHODS.sessionUpdate, (params) => {
       const { sessionId, update } = params as SessionUpdateParams;
+      options.onSessionUpdate?.(sessionId, update);
       this.#stores.get(sessionId)?.apply(update);
     });
     this.#connection.handleNotification(CLIENT_METHODS.sessionUpdateBatch, (params) => {
       const { sessionId, updates } = params as SessionUpdateBatchParams;
+      if (options.onSessionUpdate) {
+        for (const update of updates) options.onSessionUpdate(sessionId, update);
+      }
       this.#stores.get(sessionId)?.applyBatch(updates);
     });
     this.#connection.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
       const { sessionId, lastTurn, cumulative } = params as SessionUsageParams;
       this.#stores.get(sessionId)?.setUsage(lastTurn, cumulative);
+    });
+    this.#connection.handleNotification(CLIENT_METHODS.sessionCompacted, (params) => {
+      const { sessionId, summary } = params as SessionCompactedParams;
+      // Clip: summaries run long, and this is a notice, not the transcript.
+      const preview = summary.length > 400 ? `${summary.slice(0, 400)}…` : summary;
+      this.#stores
+        .get(sessionId)
+        ?.addInfo(`context auto-compacted (window threshold reached) — summary:\n${preview}`);
     });
     this.#connection.handleRequest(CLIENT_METHODS.sessionRequestPermission, (params) =>
       this.#onPermissionRequest(params as RequestPermissionParams),
@@ -81,15 +102,27 @@ export class MinervaClient {
 
   async newSession(
     cwd: string,
-  ): Promise<{ sessionId: string; store: SessionStore; instructions?: InstructionsInfo }> {
-    const { sessionId, modes, instructions } = await this.#connection.request<SessionNewResult>(
-      AGENT_METHODS.sessionNew,
-      { cwd },
-    );
+    options: { profile?: string | undefined } = {},
+  ): Promise<{
+    sessionId: string;
+    store: SessionStore;
+    instructions?: InstructionsInfo;
+    profile?: string;
+  }> {
+    const { sessionId, modes, instructions, profile } =
+      await this.#connection.request<SessionNewResult>(AGENT_METHODS.sessionNew, {
+        cwd,
+        ...(options.profile !== undefined ? { profile: options.profile } : {}),
+      });
     const store = new SessionStore();
     if (modes) store.setMode(modes.currentModeId);
     this.#stores.set(sessionId, store);
-    return { sessionId, store, ...(instructions ? { instructions } : {}) };
+    return {
+      sessionId,
+      store,
+      ...(instructions ? { instructions } : {}),
+      ...(profile !== undefined ? { profile } : {}),
+    };
   }
 
   /**
@@ -100,7 +133,12 @@ export class MinervaClient {
   async loadSession(
     sessionId: string,
     cwd: string,
-  ): Promise<{ sessionId: string; store: SessionStore; instructions?: InstructionsInfo }> {
+  ): Promise<{
+    sessionId: string;
+    store: SessionStore;
+    instructions?: InstructionsInfo;
+    profile?: string;
+  }> {
     // Overwriting a live registration would detach that session's store from
     // the update stream (and the failure path would delete it outright).
     if (this.#stores.has(sessionId)) {
@@ -109,7 +147,7 @@ export class MinervaClient {
     const store = new SessionStore();
     this.#stores.set(sessionId, store);
     try {
-      const { modes, instructions } = await this.#connection.request<SessionLoadResult>(
+      const { modes, instructions, profile } = await this.#connection.request<SessionLoadResult>(
         AGENT_METHODS.sessionLoad,
         { sessionId, cwd },
       );
@@ -117,11 +155,26 @@ export class MinervaClient {
       // The replayed transcript is settled history — close any item the
       // replay left in the streaming state.
       store.setBusy(false);
-      return { sessionId, store, ...(instructions ? { instructions } : {}) };
+      return {
+        sessionId,
+        store,
+        ...(instructions ? { instructions } : {}),
+        ...(profile !== undefined ? { profile } : {}),
+      };
     } catch (error) {
       this.#stores.delete(sessionId);
       throw error;
     }
+  }
+
+  /**
+   * Detach the client-side store for a session — the kernel session is
+   * untouched, and a later loadSession rebuilds a fresh store from replay.
+   * Frontends call this before re-loading a session they switched away
+   * from, since loadSession refuses to overwrite a live registration.
+   */
+  closeSession(sessionId: string): void {
+    this.#stores.delete(sessionId);
   }
 
   async listSessions(cwd: string): Promise<SessionSummary[]> {
@@ -141,6 +194,17 @@ export class MinervaClient {
 
   async setMode(sessionId: string, modeId: string): Promise<void> {
     await this.#connection.request(AGENT_METHODS.sessionSetMode, { sessionId, modeId });
+  }
+
+  /** List the named profiles defined in settings for this project. */
+  listProfiles(cwd: string): Promise<ProfilesListResult> {
+    return this.#connection.request<ProfilesListResult>(MINERVA_METHODS.profilesList, { cwd });
+  }
+
+  /** Switch (name) or clear (null) the session's active profile; applies from
+   * the next prompt. */
+  async setProfile(sessionId: string, profile: string | null): Promise<void> {
+    await this.#connection.request(MINERVA_METHODS.sessionSetProfile, { sessionId, profile });
   }
 
   /**

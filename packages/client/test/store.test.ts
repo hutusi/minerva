@@ -100,6 +100,41 @@ describe("SessionStore reducer", () => {
     ]);
   });
 
+  test("tool items retain rawInput and the result's diff block", () => {
+    const store = new SessionStore();
+    store.apply({
+      sessionUpdate: "tool_call",
+      toolCallId: "c1",
+      title: "Edit a.ts",
+      kind: "edit",
+      status: "pending",
+      rawInput: { path: "a.ts", old_string: "1", new_string: "2" },
+    });
+    store.apply({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "c1",
+      status: "completed",
+      content: [
+        { type: "diff", path: "a.ts", oldText: "const a = 1;\n", newText: "const a = 2;\n" },
+        { type: "content", content: { type: "text", text: "Edited a.ts" } },
+      ],
+    });
+
+    expect(store.snapshot.items[0]).toMatchObject({
+      kind: "tool",
+      status: "completed",
+      rawInput: { path: "a.ts", old_string: "1", new_string: "2" },
+      diff: { path: "a.ts", oldText: "const a = 1;\n", newText: "const a = 2;\n" },
+      output: "Edited a.ts",
+    });
+
+    // A later status-only update must not drop the retained diff.
+    store.apply({ sessionUpdate: "tool_call_update", toolCallId: "c1", status: "completed" });
+    expect(store.snapshot.items[0]).toMatchObject({
+      diff: { path: "a.ts", oldText: "const a = 1;\n", newText: "const a = 2;\n" },
+    });
+  });
+
   test("plan updates replace the single plan item in place; info items append", () => {
     const store = new SessionStore();
     store.addInfo("welcome");
@@ -115,6 +150,16 @@ describe("SessionStore reducer", () => {
     expect(plans).toHaveLength(1);
     expect(plans[0]).toMatchObject({ entries: [{ content: "a", status: "completed" }] });
     expect(store.snapshot.items[0]).toEqual({ kind: "info", text: "welcome" });
+  });
+
+  test("addError appends an error item distinct from info", () => {
+    const store = new SessionStore();
+    store.addInfo("heads up");
+    store.addError("boom");
+    expect(store.snapshot.items).toEqual([
+      { kind: "info", text: "heads up" },
+      { kind: "error", text: "boom" },
+    ]);
   });
 
   test("current_mode_update is handled", () => {

@@ -7,6 +7,77 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Structured diffs for file edits: `edit_file`/`write_file` results carry a
+  `{ type: "diff", path, oldText, newText }` content entry (ACP semantics,
+  `oldText: null` = new file, either side > 48k chars ⇒ text-only fallback)
+  on `tool_call_update`, persisted in the session log so diffs survive
+  replay. The CLI renders completed edits as a colored line diff (LCS,
+  capped at 20 lines).
+- Informed permission prompts: the CLI prompt now renders the kernel's
+  option list (arrow keys + enter, y/a/n hotkeys by option kind, esc
+  cancels the turn) plus a preview of what the call will do — the command
+  for execute tools, a line diff for edits, all-added content for new
+  files, the URL for fetches.
+- Auto-compaction: providers now declare a `contextWindow` (anthropic and
+  openai 200k, bailian 128k; settings-overridable per provider). When the
+  previous prompt's context — the LAST model call's input tokens, which
+  already include cache reads/writes — crosses 80% of it, the next prompt
+  compacts first and continues from the summary, announced via a new
+  `minerva/session/compacted` notification (`reason: "auto"`) that the CLI
+  shows as an info line. The trigger is persisted per turn, cleared by
+  compaction, and rebuilt on resume — so neither a tool loop's summed
+  billing usage nor the compaction turn's own spend can mis-trigger it. A
+  failed auto-compaction degrades to a warning and the prompt proceeds
+  uncompacted.
+- Print mode: `minerva -p "<prompt>"` runs one prompt and exits — reply on
+  stdout (pipe-clean), tool progress and diagnostics on stderr, exit 0 only
+  when the turn completes. `-p` without an argument reads the prompt from
+  piped stdin; composes with `-c`/`-r`/`-m`/`--profile` (an explicit
+  `--profile` also overrides a resumed session's persisted persona).
+  `--mode <id>` sets the session mode for the run (print-mode only; the TUI
+  keeps `/mode`); the run always uses an explicit mode — `default` unless
+  flagged, overriding session/settings modes — and in `default` every
+  permission request is auto-denied with a stderr note since there is
+  nobody to ask. New client option `onSessionUpdate` taps raw updates
+  before store application for streaming surfaces.
+- `web_fetch` tool: bounded, permission-gated HTTP(S) GET for the model —
+  manual redirects (max 5, scheme re-checked per hop), 30 s default / 120 s
+  max timeout, 1 MiB body cap, 30k char output cap, HTML reduced to plain
+  text. Never auto-allowed (network egress always prompts in default mode);
+  permission rules match the URL, e.g. `web_fetch(https://example.com/*)` —
+  which also applies to MCP tools whose inputs carry a `url`. No
+  private-IP/SSRF blocking in v1 (documented posture).
+- Named profiles: settings `profiles: { <name>: { systemPrompt?, model?,
+  defaultMode? } }` plus a `profile` default. A profile's system prompt
+  replaces the base coding-agent prompt (AGENTS.md instructions still
+  append), opening the kernel to non-coding agents. Select per run with
+  `--profile <name>`, switch mid-session with `/profile <name>` (applies
+  from the next message; `/profile none` clears), list with `/profile`.
+  New protocol surface: `minerva/profiles/list`,
+  `minerva/session/set_profile`, and additive `profile` fields on
+  `session/new` / `session/load`. Sessions log only the profile name and
+  re-resolve it on resume, so prompt edits take effect and a deleted
+  profile degrades to the base persona instead of bricking the session.
+- Interactive session picker: `/sessions` (and the new `/resume` alias)
+  opens an arrow-key list of recent sessions — relative age, first-prompt
+  preview, `(current)` marker — and enter switches to the selected session
+  in place, replaying its transcript. A new client `closeSession` detaches
+  a session's store so a session can be re-entered after switching away.
+- CLI input history and slash autocomplete: ↑/↓ recall prior inputs (with
+  the in-progress draft stashed and restored), persisted across runs to
+  `<dataDir>/history.jsonl` (last 500, file mode 0600). Typing `/prefix`
+  opens a dropdown of built-in commands and skills — ↑/↓ to select, tab or
+  enter to complete.
+- CLI polish: an animated busy spinner with elapsed seconds replaces the
+  static "working…" line; frontend failures render as red `✖` error items
+  distinct from dim info notices; the usage footer becomes a status footer
+  that also shows the session mode when it isn't `default`; and a terminal
+  bell rings when a permission request arrives.
+- CLI: assistant replies render as terminal markdown (headings, lists,
+  fenced code, blockquotes, inline emphasis/links) via `marked`'s lexer and
+  a hand-rolled Ink renderer. Unknown constructs (tables, HTML) fall back
+  to their raw source so content is never dropped; info/user/tool output
+  stays plain.
 - Skills: reusable instructions as `skills/<name>/SKILL.md` directories
   (project `.minerva/` and global `~/.minerva/`, project winning name
   collisions). The model discovers them through a read-only `skill` tool

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
@@ -58,10 +58,16 @@ function renderTui(
     resolveProvider?: KernelOptions["resolveProvider"];
     providers?: ProviderChoice[];
     needsConfig?: boolean;
+    /** Written to cwd/.minerva/settings.json before the app boots. */
+    projectSettings?: object;
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-ui-proj-"));
   const dataDir = mkdtempSync(join(tmpdir(), "minerva-ui-data-"));
+  if (options.projectSettings) {
+    mkdirSync(join(cwd, ".minerva"), { recursive: true });
+    writeFileSync(join(cwd, ".minerva", "settings.json"), JSON.stringify(options.projectSettings));
+  }
   const [clientTransport, kernelTransport] = createInProcTransportPair();
   kernels.push(
     createKernel(kernelTransport, {
@@ -220,6 +226,67 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.unmount();
   }, 20_000);
 
+  test("an edit permission previews the diff; arrow keys navigate the options", async () => {
+    const ui = renderTui([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "edit_file",
+          input: { path: "code.ts", old_string: "const a = 1;", new_string: "const a = 2;" },
+        },
+        FINISH_TOOLS,
+      ],
+      [{ type: "text-delta", text: "Understood." }, FINISH_STOP],
+    ]);
+    writeFileSync(join(ui.cwd, "code.ts"), "const a = 1;\n");
+    await ready(ui);
+
+    await type(ui, "bump the constant");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Permission required"), "permission");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("- const a = 1;");
+    expect(frame).toContain("+ const a = 2;");
+    expect(frame).toContain("❯ Allow");
+
+    // ↓ ↓ walks to Reject; enter selects the highlighted option.
+    await Bun.sleep(50);
+    ui.stdin.write("[B[B");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("❯ Reject"), "reject highlighted");
+    ui.stdin.write("\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Understood."), "turn continued");
+    expect(ui.lastFrame()).toContain("[failed]");
+    ui.unmount();
+  }, 20_000);
+
+  test("an approved edit renders its file diff in the transcript", async () => {
+    const ui = renderTui([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "edit_file",
+          input: { path: "code.ts", old_string: "const a = 1;", new_string: "const a = 2;" },
+        },
+        FINISH_TOOLS,
+      ],
+      [{ type: "text-delta", text: "Edited." }, FINISH_STOP],
+    ]);
+    writeFileSync(join(ui.cwd, "code.ts"), "const a = 1;\nconst keep = true;\n");
+    await ready(ui);
+
+    await type(ui, "bump the constant");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Permission required"), "permission");
+    ui.stdin.write("y");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Edited."), "turn finished");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("[completed]");
+    expect(frame).toContain("- const a = 1;");
+    expect(frame).toContain("+ const a = 2;");
+    expect(frame).toContain("  const keep = true;");
+    ui.unmount();
+  }, 20_000);
+
   test("/config switches the provider live and persists to global settings", async () => {
     const ui = renderTui([], {
       providers: [BAILIAN_CHOICE],
@@ -295,6 +362,18 @@ describe("TUI (ink-testing-library, full stack)", () => {
     await type(ui, "/config");
     await waitFor(() => (ui.lastFrame() ?? "").includes("Configure model"), "config reopened");
     expect(ui.lastFrame()).not.toContain("No API key found");
+    ui.unmount();
+  }, 20_000);
+
+  test("assistant markdown renders as terminal formatting", async () => {
+    const ui = renderTui([[{ type: "text-delta", text: "# Done\n\n- x" }, FINISH_STOP]]);
+    await ready(ui);
+
+    await type(ui, "summarize");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("• x"), "markdown list");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("Done");
+    expect(frame).not.toContain("# Done"); // heading marker consumed by the renderer
     ui.unmount();
   }, 20_000);
 
@@ -379,6 +458,163 @@ describe("TUI (ink-testing-library, full stack)", () => {
 
     await type(ui, "/mode plan");
     await waitFor(() => (ui.lastFrame() ?? "").includes("[plan]"), "mode indicator");
+    // The status footer reports the non-default mode too.
+    expect(ui.lastFrame()).toContain("mode plan");
+    ui.unmount();
+  }, 20_000);
+
+  test("the session picker switches sessions and back, replaying transcripts", async () => {
+    const ui = renderTui([[{ type: "text-delta", text: "alpha reply" }, FINISH_STOP]]);
+    await ready(ui);
+
+    await type(ui, "alpha prompt");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("alpha reply"), "first turn");
+
+    await type(ui, "/new");
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("alpha reply"), "fresh session");
+
+    await type(ui, "/sessions");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Sessions"), "picker open");
+    expect(ui.lastFrame()).toContain("(current)");
+    expect(ui.lastFrame()).toContain("alpha prompt"); // old session's preview
+
+    // Row 0 is the newest (current, empty) session; ↓ + enter resumes the older one.
+    await Bun.sleep(50);
+    ui.stdin.write("[B");
+    await Bun.sleep(30);
+    ui.stdin.write("\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("alpha reply"), "old transcript replayed");
+
+    // Switch back to the empty session: its store registration from /new must
+    // not block the reload (closeSession clears it). Row 0 is now the just-
+    // resumed session (the index orders by most-recent use), so ↓ once.
+    await type(ui, "/resume");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Sessions"), "picker reopened");
+    await Bun.sleep(50);
+    ui.stdin.write("\u001B[B");
+    await Bun.sleep(30);
+    ui.stdin.write("\r");
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("alpha reply"), "empty session again");
+    await waitFor(() => (ui.lastFrame() ?? "").includes(">"), "composer back");
+    ui.unmount();
+  }, 20_000);
+
+  test("up-arrow recalls submitted input into the composer", async () => {
+    const ui = renderTui([[{ type: "text-delta", text: "ok one" }, FINISH_STOP]]);
+    await ready(ui);
+
+    await type(ui, "remember me");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("ok one"), "turn done");
+    await Bun.sleep(50);
+    ui.stdin.write("[A");
+    // Twice in the frame: once as the transcript echo, once in the composer.
+    await waitFor(
+      () => (ui.lastFrame() ?? "").split("remember me").length - 1 >= 2,
+      "history recalled",
+    );
+    ui.unmount();
+  }, 20_000);
+
+  test("/he opens the dropdown and tab completes the command", async () => {
+    const ui = renderTui([]);
+    await ready(ui);
+
+    await Bun.sleep(50);
+    ui.stdin.write("/he");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("❯ /help"), "dropdown");
+    expect(ui.lastFrame()).toContain("show help");
+    ui.stdin.write("\t");
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("❯ /help"), "dropdown closed");
+    expect(ui.lastFrame()).toContain("> /help");
+    ui.unmount();
+  }, 20_000);
+
+  test("enter completes the highlighted suggestion instead of submitting", async () => {
+    const ui = renderTui([]);
+    await ready(ui);
+
+    await Bun.sleep(50);
+    ui.stdin.write("/he");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("❯ /help"), "dropdown");
+    await pressEnter(ui);
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("❯ /help"), "completed, not submitted");
+    expect(ui.lastFrame()).not.toContain("/compact"); // help output absent
+    await pressEnter(ui);
+    await waitFor(() => (ui.lastFrame() ?? "").includes("/compact"), "second enter submits");
+    ui.unmount();
+  }, 20_000);
+
+  test("/profile lists, switches, and clears the persona", async () => {
+    const ui = renderTui([], {
+      projectSettings: {
+        profile: "writer",
+        profiles: {
+          writer: { systemPrompt: "You write.", model: "bailian/qwen-plus" },
+          minimal: {},
+        },
+      },
+    });
+    await ready(ui);
+    // The settings default applied at session creation shows in the header.
+    expect(ui.lastFrame()).toContain("profile writer");
+
+    await type(ui, "/profile");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("minimal"), "profile list");
+    const listing = ui.lastFrame() ?? "";
+    expect(listing).toContain("(active)");
+    expect(listing).toContain("(default)");
+    expect(listing).toContain("model bailian/qwen-plus");
+
+    await type(ui, "/profile minimal");
+    await waitFor(
+      () => (ui.lastFrame() ?? "").includes("profile minimal active from the next message"),
+      "switched",
+    );
+    expect(ui.lastFrame()).toContain("profile minimal ·"); // header updated
+
+    await type(ui, "/profile none");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("profile cleared"), "cleared");
+    expect(ui.lastFrame()).not.toContain("· profile");
+    ui.unmount();
+  }, 20_000);
+
+  test("switching to a profile that prefers another model prints a hint", async () => {
+    const ui = renderTui([], {
+      projectSettings: {
+        profiles: { writer: { systemPrompt: "You write.", model: "bailian/qwen-plus" } },
+      },
+    });
+    await ready(ui);
+
+    await type(ui, "/profile writer");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("prefers bailian/qwen-plus"), "model hint");
+    ui.unmount();
+  }, 20_000);
+
+  test("a failed command renders as a red ✖ error item", async () => {
+    const ui = renderTui([]);
+    await ready(ui);
+
+    await type(ui, "/mode yolo");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("✖"), "error item");
+    expect(ui.lastFrame()).toContain("unknown mode");
+    ui.unmount();
+  }, 20_000);
+
+  test("the busy indicator spins while a prompt runs", async () => {
+    const ui = renderTui([
+      [
+        { type: "text-delta", text: "chunk one " },
+        { type: "text-delta", text: "chunk two" },
+        FINISH_STOP,
+      ],
+    ]);
+    await ready(ui);
+
+    await type(ui, "work");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("chunk two"), "turn done");
+    // Loose assertion (no frame timing): some frame showed the spinner.
+    expect(ui.frames.some((frame) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] working…/.test(frame))).toBe(true);
     ui.unmount();
   }, 20_000);
 });

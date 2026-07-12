@@ -7,7 +7,7 @@ import { withFileLock } from "./file-lock";
 import { DEFAULT_MODE, isSessionModeId, PermissionEngine, type SessionModeId } from "./permissions";
 import { type ReplayResult, replayEvents } from "./replay";
 import type { Runtime } from "./runtime";
-import { loadSettings } from "./settings";
+import { loadSettings, resolveProfile } from "./settings";
 import type { KernelTool } from "./tools";
 import { addUsage } from "./usage";
 
@@ -39,6 +39,9 @@ export interface SessionOptions {
   dataDir: string;
   providerId: string;
   runtime: Runtime;
+  /** Named profile to create the session with (create only; load re-resolves
+   * the name recorded in the log). Unknown names throw. */
+  profile?: string | undefined;
 }
 
 /**
@@ -53,8 +56,19 @@ export class Session {
   readonly permissions: PermissionEngine;
   mode: SessionModeId;
   todos: PlanEntry[] = [];
+  /** Active persona: its systemPrompt REPLACES the base prompt (AGENTS.md
+   * instructions still append). Undefined = base persona. */
+  profile?: { name: string; systemPrompt?: string | undefined } | undefined;
   /** Token spend across every completed turn, incl. pre-resume history. */
   usage: TurnUsage = {};
+  /**
+   * Context size of the LAST completed prompt (input + cache read/write
+   * tokens), the auto-compaction trigger. Deliberately NOT the running
+   * total: the compaction turn's own input is ≈ the over-threshold context,
+   * so a naive signal would re-trigger on every prompt after. Set by the
+   * agent loop's finish, cleared by runCompact, rebuilt on replay.
+   */
+  lastTurnContext?: number | undefined;
   promptActive = false;
 
   #dir: string;
@@ -101,8 +115,21 @@ export class Session {
     const dir = projectDir(options.dataDir, options.cwd);
     await options.runtime.mkdirp(dir, { mode: DATA_DIR_MODE });
     const settings = await loadSettings(options.runtime, options.dataDir, options.cwd);
-    const mode = isSessionModeId(settings.defaultMode) ? settings.defaultMode : DEFAULT_MODE;
+    // Throws on an unknown name — an explicit request AND a settings default
+    // both fail loudly rather than silently running the base persona.
+    const profile = resolveProfile(settings, options.profile);
+    const mode = isSessionModeId(profile?.defaultMode)
+      ? profile.defaultMode
+      : isSessionModeId(settings.defaultMode)
+        ? settings.defaultMode
+        : DEFAULT_MODE;
     const session = new Session(id, options, new PermissionEngine(settings.rules), mode);
+    if (profile) {
+      session.profile = {
+        name: profile.name,
+        ...(profile.systemPrompt !== undefined ? { systemPrompt: profile.systemPrompt } : {}),
+      };
+    }
 
     const createdAt = now();
     await appendSessionIndex(options.runtime, dir, { sessionId: id, cwd: options.cwd, createdAt });
@@ -111,6 +138,10 @@ export class Session {
       sessionId: id,
       cwd: options.cwd,
       provider: options.providerId,
+      ...(profile ? { profile: profile.name } : {}),
+      // Persisted so replay is authoritative for the initial mode — a mode
+      // set by a profile default must survive resume.
+      mode,
       at: createdAt,
     });
     return session;
@@ -161,6 +192,25 @@ export class Session {
     session.messages.push(...replay.messages);
     session.todos = replay.todos;
     session.usage = replay.usage;
+    session.lastTurnContext = replay.lastTurnContext;
+    // Re-resolve the logged profile NAME against current settings, so prompt
+    // edits take effect on resume. A vanished profile degrades to the base
+    // persona with a warning — it must never brick resume.
+    if (replay.profile !== undefined) {
+      try {
+        const profile = resolveProfile(settings, replay.profile);
+        if (profile) {
+          session.profile = {
+            name: profile.name,
+            ...(profile.systemPrompt !== undefined ? { systemPrompt: profile.systemPrompt } : {}),
+          };
+        }
+      } catch (error) {
+        process.stderr.write(
+          `minerva: session ${sessionId}: ${error instanceof Error ? error.message : String(error)} — continuing without a profile\n`,
+        );
+      }
+    }
     // Re-append to the index so "latest session" means most recently used, not
     // most recently created (the list handler dedupes by id), carrying the
     // first user message forward as a preview so the picker needn't read the

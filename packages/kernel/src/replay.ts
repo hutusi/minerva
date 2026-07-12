@@ -18,8 +18,14 @@ export interface ReplayResult {
   todos: PlanEntry[];
   /** Last mode recorded in the log, if any. */
   modeId?: string | undefined;
+  /** Last active profile NAME (undefined = none/cleared); the caller
+   * re-resolves it against current settings. */
+  profile?: string | undefined;
   /** Token spend summed over every completed turn in the log. */
   usage: TurnUsage;
+  /** Context size of the last completed turn — the auto-compaction signal,
+   * reset by a session.compacted event (see Session.lastTurnContext). */
+  lastTurnContext?: number | undefined;
 }
 
 /**
@@ -33,8 +39,13 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   const messages: ProviderMessage[] = [];
   const updates: SessionUpdate[] = [];
   let todos: PlanEntry[] = [];
+  /** From session.created — the mode the session started in. */
+  let initialMode: string | undefined;
+  /** From session.mode_changed — explicit switches only. */
   let modeId: string | undefined;
+  let profile: string | undefined;
   let usage: TurnUsage = {};
+  let lastTurnContext: number | undefined;
 
   let expected: ProviderToolCall[] = [];
   let results: ProviderToolResult[] = [];
@@ -124,11 +135,16 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
             isError: event.isError,
           });
         }
+        // Stored diff blocks re-emit ahead of the text, mirroring the live
+        // tool_call_update — diffs survive replay.
         updates.push({
           sessionUpdate: "tool_call_update",
           toolCallId: event.toolCallId,
           status: event.isError ? "failed" : "completed",
-          content: [{ type: "content", content: { type: "text", text: event.output } }],
+          content: [
+            ...(event.content ?? []),
+            { type: "content", content: { type: "text", text: event.output } },
+          ],
         });
         if (expected.length > 0 && results.length === expected.length) {
           messages.push({ role: "tool", results });
@@ -147,11 +163,22 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         modeId = event.modeId;
         break;
 
+      case "session.created":
+        profile = event.profile;
+        initialMode = event.mode;
+        break;
+
+      case "session.profile_changed":
+        profile = event.profile ?? undefined;
+        break;
+
       case "session.compacted":
         // The model context restarts from the summary; the UI transcript
         // (already emitted above) keeps the full history. Restore the
         // summarization turn's spend so the session total survives resume.
         usage = addUsage(usage, event.usage);
+        // Compaction resets the trigger, live and on replay alike.
+        lastTurnContext = undefined;
         flushToolBatch();
         messages.length = 0;
         messages.push(compactedContextMessage(event.summary));
@@ -161,6 +188,9 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         // Spend telemetry survives compaction: session.compacted resets the
         // model context above, but not what the session has already cost.
         usage = addUsage(usage, event.usage);
+        // The persisted last-call context — NOT recomputed from `usage`,
+        // whose inputTokens accumulate across a tool loop's model calls.
+        lastTurnContext = event.context ?? lastTurnContext;
         flushToolBatch();
         break;
 
@@ -179,8 +209,19 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   }
   flushToolBatch();
 
+  // Only an EXPLICIT switch emits a mode update — the initial mode already
+  // reaches clients via the session/load result, and replaying it as an
+  // update would change the transcript stream for every session.
   if (modeId) updates.push({ sessionUpdate: "current_mode_update", currentModeId: modeId });
-  return { messages, updates, todos, modeId, usage };
+  return {
+    messages,
+    updates,
+    todos,
+    modeId: modeId ?? initialMode,
+    profile,
+    usage,
+    lastTurnContext,
+  };
 }
 
 function titleFor(tool: KernelTool | undefined, toolName: string, input: unknown): string {

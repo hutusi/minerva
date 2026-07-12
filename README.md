@@ -35,12 +35,32 @@ Commands:
   acp                  Host the kernel on stdio (ACP framing) for editors
 
 Options:
+  -p, --print [text]   One-shot mode: run the prompt (or stdin when piped),
+                       print the reply, exit 0 on a completed turn
+  --mode <id>          Session mode for -p (plan | default | acceptEdits | auto)
   -c, --continue       Resume the most recent session for this directory
   -r, --resume <id>    Resume a specific session
   -m, --model <ref>    Model as [provider/]model, e.g. openai/gpt-5.2 or
                        claude-opus-4-8 (bare ids default to Anthropic)
+  --profile <name>     Named profile from settings (system prompt, model, mode)
   -h, --help           Show help
 ```
+
+One-shot print mode composes with pipes — only the model's reply lands on
+stdout (tool progress and diagnostics go to stderr):
+
+```sh
+minerva -p "explain this repo" --mode auto
+git diff | minerva -p              # prompt read from stdin
+minerva -c -p "and now add tests"  # continue the latest session
+```
+
+Print mode always runs in an **explicit** mode — `default` unless `--mode`
+says otherwise — overriding the session's or settings' mode, so a session
+left in `auto` (or a `defaultMode: "auto"` in settings) can never execute
+tools silently in a headless run. In `default` mode every permission request
+is **auto-denied** (there is nobody to ask); the model is told and continues.
+Use `--mode acceptEdits` or `--mode auto` to let tools run unattended.
 
 Inside the TUI:
 
@@ -50,13 +70,17 @@ Inside the TUI:
 | `/config` | Choose provider, API key, and model — applies to the next prompt, no restart |
 | `/mode [id]` | Show or set the session mode (`plan` \| `default` \| `acceptEdits` \| `auto`) |
 | `/compact` | Summarize the conversation and reset the model context |
-| `/sessions` | List recent sessions for this directory |
+| `/profile [name]` | List profiles, switch persona (`none` clears) |
+| `/sessions`, `/resume` | Pick a recent session and switch to it in place |
 | `/new` | Start a fresh session |
 | `/exit` | Quit |
 
-`esc` cancels the running turn — including while a permission prompt is open.
-Permission prompts accept `y` (allow once), `a` (allow always — persisted as a
-project rule), `n` (reject), `esc` (cancel the turn).
+The composer recalls input history with ↑/↓ (persisted across runs) and
+autocompletes `/commands` and skills with tab/enter. `esc` cancels the running
+turn — including while a permission prompt is open. Permission prompts show
+what the call will do (command, file diff, URL), navigate with ↑/↓ + enter,
+and keep the `y` / `a` (allow always — persisted as a project rule) / `n`
+hotkeys; `esc` cancels the turn.
 
 ## Providers
 
@@ -109,7 +133,15 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer ..." }
     }
-  }
+  },
+  "profiles": {
+    "writer": {
+      "systemPrompt": "You are a technical writing assistant. ...",
+      "model": "bailian/qwen-plus",
+      "defaultMode": "plan"
+    }
+  },
+  "profile": "writer"
 }
 ```
 
@@ -121,6 +153,22 @@ defaults to `<NAME>_API_KEY`. Keyless endpoints (e.g. a local Ollama) set
 panel writes this automatically when you save a custom provider without one.
 **API keys are honored from the global file only** (never the shareable
 project file), and any file that may hold keys is written with mode `0600`.
+
+`profiles` defines named personas: `systemPrompt` **replaces** the base
+coding-agent prompt (AGENTS.md instructions still append after it), `model`
+is the model the profile prefers (used at startup unless `--model` /
+`MINERVA_MODEL` override it), and `defaultMode` sets the session's initial
+mode. `profile` names the one applied by default; `--profile <name>` picks
+one per run, and `/profile` lists or switches mid-session (from the next
+message). Per-name entries merge project-over-global like `providers`.
+
+`"contextWindow"` (tokens, per provider) drives auto-compaction: when the
+previous prompt's context crosses 80% of the window, the next prompt runs a
+summarization turn first and continues from the summary (the transcript keeps
+the full history). Built-ins carry defaults (anthropic/openai 200k, bailian
+128k); override per provider — e.g.
+`"bailian": { "contextWindow": 1000000 }` for a long-context model — and
+custom providers without one never auto-compact.
 
 `"thinking"` asks the model to reason before answering: `true` sends
 `enable_thinking: true` to the endpoint (needed by Qwen models, which default
@@ -151,8 +199,9 @@ that fails to connect degrades to a startup warning; the session still opens.
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:
 **deny** → **ask** → read-only auto-allow → **plan mode deny** → **allow** →
-mode default. Rules match the bash command string or the file path; MCP tools
-are named `mcp__<server>__<tool>` and are never auto-allowed.
+mode default. Rules match the bash command string, the URL for fetch-shaped
+tools (`web_fetch(https://example.com/*)`), or the file path; MCP tools are
+named `mcp__<server>__<tool>` and are never auto-allowed.
 
 > **Bash rules are advisory, not a sandbox.** They match the raw command
 > string, not a parsed argv, so a `bash(rm -rf *)` deny is evaded by
@@ -160,6 +209,13 @@ are named `mcp__<server>__<tool>` and are never auto-allowed.
 > wildcard allow can match a compound `cmd; <anything>`. Treat them as friction
 > that catches honest mistakes; use OS-level sandboxing for real isolation, and
 > avoid `auto` mode with untrusted input.
+
+> **web_fetch is permission-gated, not network-sandboxed.** It is never
+> auto-allowed (network egress can exfiltrate context via the URL), so default
+> mode always shows the exact URL before fetching, and `deny` rules can block
+> URL ranges. There is no private-IP/SSRF blocking in v1 — same posture as the
+> bash rules above; be deliberate about `auto` mode on machines with sensitive
+> internal endpoints.
 
 > **Opening a third-party repository activates its configuration.** The
 > project's `AGENTS.md` enters the system prompt, `.minerva/skills/` becomes

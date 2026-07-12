@@ -24,9 +24,14 @@ export type ViewItem =
       toolKind: ToolKind;
       status: ToolCallStatus;
       output?: string | undefined;
+      /** Tool input as the model sent it — permission prompts preview from it. */
+      rawInput?: unknown;
+      /** First diff block from the result, for UIs that render file changes. */
+      diff?: { path: string; oldText: string | null; newText: string } | undefined;
     }
   | { kind: "plan"; entries: PlanEntry[] }
-  | { kind: "info"; text: string };
+  | { kind: "info"; text: string }
+  | { kind: "error"; text: string };
 
 export interface SessionViewModel {
   items: ViewItem[];
@@ -60,6 +65,12 @@ export class SessionStore {
     this.#push({ kind: "info", text });
   }
 
+  /** Frontend-side failures (rejected commands, transport errors) — styled
+   * distinctly from informational notices. */
+  addError(text: string): void {
+    this.#push({ kind: "error", text });
+  }
+
   setBusy(busy: boolean): void {
     const items = busy ? this.#viewModel.items : this.#viewModel.items.map(finalizeStreamingItem);
     // Spread, don't rebuild: status state (currentModeId, usage) set while
@@ -68,40 +79,10 @@ export class SessionStore {
   }
 
   apply(update: SessionUpdate): void {
-    switch (update.sessionUpdate) {
-      case "agent_message_chunk":
-        this.#appendStreamingText("assistant", update.content.text);
-        break;
-      case "user_message_chunk":
-        this.addUserMessage(update.content.text);
-        break;
-      case "agent_thought_chunk":
-        this.#appendStreamingText("thought", update.content.text);
-        break;
-      case "tool_call":
-        this.#push({
-          kind: "tool",
-          toolCallId: update.toolCallId,
-          title: update.title,
-          toolKind: update.kind,
-          status: update.status,
-        });
-        break;
-      case "tool_call_update":
-        this.#updateToolCall(update.toolCallId, (item) => ({
-          ...item,
-          status: update.status ?? item.status,
-          title: update.title ?? item.title,
-          output: extractText(update.content) ?? item.output,
-        }));
-        break;
-      case "plan":
-        this.#upsertPlan(update.entries);
-        break;
-      case "current_mode_update":
-        this.setMode(update.currentModeId);
-        break;
-    }
+    // A batch of one: reduceInto is the single reducer, so the live path and
+    // batched replay can never drift (this used to duplicate the whole
+    // switch, and every new ViewItem field had to be added twice).
+    this.applyBatch([update]);
   }
 
   /**
@@ -131,31 +112,6 @@ export class SessionStore {
   /** Latest wins; a resume announcement carries no lastTurn and clears it. */
   setUsage(lastTurn: TokenUsage | undefined, cumulative: TokenUsage): void {
     this.#set({ ...this.#viewModel, usage: { lastTurn, cumulative } });
-  }
-
-  /** One live plan per session: the latest update replaces it in place. */
-  #upsertPlan(entries: PlanEntry[]): void {
-    const items = [...this.#viewModel.items];
-    upsertPlanInto(items, entries);
-    this.#set({ ...this.#viewModel, items });
-  }
-
-  /** Shared by assistant text and thoughts: chunks coalesce into the last
-   * item while it streams; a chunk of the other kind finalizes it first —
-   * that switch is what collapses a thought when the answer starts. */
-  #appendStreamingText(kind: "assistant" | "thought", text: string): void {
-    const items = [...this.#viewModel.items];
-    appendStreamingInto(items, kind, text);
-    this.#set({ ...this.#viewModel, items });
-  }
-
-  #updateToolCall(
-    toolCallId: string,
-    change: (item: Extract<ViewItem, { kind: "tool" }>) => ViewItem,
-  ): void {
-    const items = [...this.#viewModel.items];
-    updateToolCallInto(items, toolCallId, change);
-    this.#set({ ...this.#viewModel, items });
   }
 
   #push(item: ViewItem): void {
@@ -194,6 +150,7 @@ function reduceInto(items: ViewItem[], update: SessionUpdate): string | undefine
         title: update.title,
         toolKind: update.kind,
         status: update.status,
+        ...("rawInput" in update ? { rawInput: update.rawInput } : {}),
       });
       return undefined;
     case "tool_call_update":
@@ -202,6 +159,7 @@ function reduceInto(items: ViewItem[], update: SessionUpdate): string | undefine
         status: update.status ?? item.status,
         title: update.title ?? item.title,
         output: extractText(update.content) ?? item.output,
+        diff: extractDiff(update.content) ?? item.diff,
       }));
       return undefined;
     case "plan":
@@ -261,4 +219,12 @@ function extractText(content: ToolCallContent[] | undefined): string | undefined
     .map((entry) => (entry.type === "content" ? entry.content.text : undefined))
     .filter((text): text is string => typeof text === "string");
   return texts.length > 0 ? texts.join("\n") : undefined;
+}
+
+function extractDiff(
+  content: ToolCallContent[] | undefined,
+): Extract<ViewItem, { kind: "tool" }>["diff"] {
+  const entry = content?.find((block) => block.type === "diff");
+  if (entry?.type !== "diff") return undefined;
+  return { path: entry.path, oldText: entry.oldText, newText: entry.newText };
 }

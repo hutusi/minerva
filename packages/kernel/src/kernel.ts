@@ -11,7 +11,9 @@ import {
   JSON_RPC_ERROR_CODES,
   MINERVA_METHODS,
   PROTOCOL_VERSION,
+  type ProfilesListResult,
   RpcError,
+  type SessionCompactedParams,
   type SessionCompactResult,
   type SessionLoadResult,
   type SessionModeState,
@@ -43,6 +45,7 @@ import {
   defaultDataDir,
   loadSettings,
   type ProviderSettings,
+  resolveProfile,
   updateGlobalSettings,
 } from "./settings";
 import { loadSkills, readSkillBody, type SkillRegistry } from "./skills";
@@ -60,6 +63,9 @@ import { hasUsage, toTokenUsage } from "./usage";
  */
 const REPLAY_BATCH_MAX_BYTES = 4 * 1024 * 1024;
 const REPLAY_BATCH_MAX_UPDATES = 1000;
+
+/** Auto-compact when the last prompt's context crossed this share of the window. */
+const AUTO_COMPACT_THRESHOLD = 0.8;
 
 export function chunkReplayUpdates<T>(updates: T[]): T[][] {
   const chunks: T[][] = [];
@@ -151,6 +157,8 @@ export class MinervaKernel {
     this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
     this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
     this.#register(MINERVA_METHODS.skillsList, (params) => this.#skillsList(params));
+    this.#register(MINERVA_METHODS.profilesList, (params) => this.#profilesList(params));
+    this.#register(MINERVA_METHODS.sessionSetProfile, (params) => this.#sessionSetProfile(params));
     // Cancel is a notification, deliberately unwrapped: it carries no state to
     // persist and must keep working during shutdown — close() relies on it.
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
@@ -186,22 +194,36 @@ export class MinervaKernel {
   }
 
   async #sessionNew(params: unknown): Promise<SessionNewResult> {
-    const { cwd } = (params ?? {}) as { cwd?: string };
+    const { cwd, profile } = (params ?? {}) as { cwd?: string; profile?: string };
     if (typeof cwd !== "string" || cwd.length === 0) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "session/new requires cwd");
     }
-    const session = await Session.create({
-      cwd,
-      dataDir: this.#dataDir,
-      providerId: this.#provider.id,
-      runtime: this.#runtime,
-    });
+    if (profile !== undefined && typeof profile !== "string") {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "profile must be a string");
+    }
+    let session: Session;
+    try {
+      session = await Session.create({
+        cwd,
+        dataDir: this.#dataDir,
+        providerId: this.#provider.id,
+        runtime: this.#runtime,
+        ...(profile !== undefined ? { profile } : {}),
+      });
+    } catch (error) {
+      // Unknown profile (explicit or the settings default) — a client error.
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     this.#sessions.set(session.id, session);
     const instructions = await this.#prepareSession(session.id, cwd);
     return {
       sessionId: session.id,
       modes: modeState(session),
       ...(instructions ? { instructions } : {}),
+      ...(session.profile ? { profile: session.profile.name } : {}),
     };
   }
 
@@ -332,7 +354,82 @@ export class MinervaKernel {
       };
       this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
     }
-    return { modes: modeState(loaded.session), ...(instructions ? { instructions } : {}) };
+    return {
+      modes: modeState(loaded.session),
+      ...(instructions ? { instructions } : {}),
+      ...(loaded.session.profile ? { profile: loaded.session.profile.name } : {}),
+    };
+  }
+
+  async #profilesList(params: unknown): Promise<ProfilesListResult> {
+    const { cwd } = (params ?? {}) as { cwd?: string };
+    if (typeof cwd !== "string" || cwd.length === 0) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "profiles/list requires cwd");
+    }
+    // Fresh from disk (like skills/list): needs no session, and a frontend
+    // can pick up a just-edited settings file without a restart.
+    const settings = await loadSettings(this.#runtime, this.#dataDir, cwd);
+    return {
+      profiles: Object.entries(settings.profiles).map(([name, profile]) => ({
+        name,
+        ...(profile.model !== undefined ? { model: profile.model } : {}),
+        ...(profile.defaultMode !== undefined ? { defaultMode: profile.defaultMode } : {}),
+        hasSystemPrompt: typeof profile.systemPrompt === "string",
+      })),
+      ...(settings.profile !== undefined ? { default: settings.profile } : {}),
+    };
+  }
+
+  async #sessionSetProfile(params: unknown): Promise<null> {
+    const { sessionId, profile } = (params ?? {}) as {
+      sessionId?: string;
+      profile?: string | null;
+    };
+    const session = sessionId ? this.#sessions.get(sessionId) : undefined;
+    if (!session) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, `unknown session: ${sessionId}`);
+    }
+    if (profile !== null && typeof profile !== "string") {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        "profile must be a string or null (to clear)",
+      );
+    }
+    // Resolve BEFORE the promptActive guard: loadSettings awaits, and a
+    // prompt claiming the lease during that await would otherwise see the
+    // session mutated despite the guard (same no-await-between-guard-and-
+    // mutation invariant as sessionPrompt/compact).
+    let resolved: ReturnType<typeof resolveProfile>;
+    if (profile === null) {
+      resolved = undefined;
+    } else {
+      const settings = await loadSettings(this.#runtime, this.#dataDir, session.cwd);
+      try {
+        resolved = resolveProfile(settings, profile);
+      } catch (error) {
+        throw new RpcError(
+          JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    if (session.promptActive) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        "cannot switch profile while a prompt is running",
+      );
+    }
+    session.profile = resolved
+      ? {
+          name: resolved.name,
+          ...(resolved.systemPrompt !== undefined ? { systemPrompt: resolved.systemPrompt } : {}),
+        }
+      : undefined;
+    session.append({ type: "session.profile_changed", profile, at: now() });
+    // Settle the write before acknowledging, like set_mode: a persona switch
+    // that vanishes on restart is a policy surprise.
+    await session.flush();
+    return null;
   }
 
   async #sessionSetMode(params: unknown): Promise<SessionSetModeResult> {
@@ -459,6 +556,21 @@ export class MinervaKernel {
     if (!text) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "prompt has no text content");
     }
+    // Context-pressure compaction happens BEFORE the lease is claimed. The
+    // trigger check is synchronous so the common no-compaction path adds no
+    // await between the promptActive guard and beginPrompt — an added yield
+    // there would reorder same-tick prompt/compact races.
+    if (this.#autoCompactNeeded(session)) {
+      await this.#autoCompact(session);
+      // Re-check: another request may have claimed the lease while the
+      // compaction turn ran.
+      if (session.promptActive) {
+        throw new RpcError(
+          JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+          "a prompt is already running in this session",
+        );
+      }
+    }
     // Claim the prompt lease synchronously: an await between the promptActive
     // guard above and this claim would let two same-tick requests both pass
     // the guard and interleave their events. runPrompt releases the lease.
@@ -479,9 +591,11 @@ export class MinervaKernel {
     try {
       // AGENTS.md instructions append to the host's base prompt rather than
       // replacing it; loaded at session establish, so edits need a
-      // new/reloaded session to take effect.
+      // new/reloaded session to take effect. A profile REPLACES the base
+      // prompt (instructions still append); rebuilt per prompt, so a
+      // mid-session profile switch simply applies from the next message.
       const instructions = this.#instructions.get(session.id)?.text;
-      const base = this.#systemPrompt(session.cwd);
+      const base = session.profile?.systemPrompt ?? this.#systemPrompt(session.cwd);
       providerText = await this.#expandSkillInvocation(session, text);
       context = {
         session,
@@ -594,6 +708,47 @@ export class MinervaKernel {
       this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
     }
     return { summary };
+  }
+
+  /** Synchronous trigger check — inert unless the provider declares a window. */
+  #autoCompactNeeded(session: Session): boolean {
+    const window = this.#provider.contextWindow;
+    return (
+      window !== undefined &&
+      !session.promptActive &&
+      session.messages.length > 0 &&
+      session.lastTurnContext !== undefined &&
+      session.lastTurnContext > AUTO_COMPACT_THRESHOLD * window
+    );
+  }
+
+  /**
+   * Compact ahead of a prompt when the previous one's context crossed the
+   * threshold. Failure degrades to a stderr warning and the prompt proceeds
+   * uncompacted — auto-compaction must never brick prompting.
+   */
+  async #autoCompact(session: Session): Promise<void> {
+    try {
+      // runCompact claims its own prompt lease synchronously; a same-tick
+      // prompt racing it still gets the friendly promptActive RpcError.
+      const { summary, usage } = await runCompact(session, this.#provider);
+      if (usage && hasUsage(usage)) {
+        const usageParams: SessionUsageParams = {
+          sessionId: session.id,
+          lastTurn: toTokenUsage(usage),
+          cumulative: toTokenUsage(session.usage),
+        };
+        this.#connection.notify(CLIENT_METHODS.sessionUsage, usageParams);
+      }
+      const params: SessionCompactedParams = { sessionId: session.id, summary, reason: "auto" };
+      this.#connection.notify(CLIENT_METHODS.sessionCompacted, params);
+    } catch (error) {
+      process.stderr.write(
+        `minerva: auto-compaction failed, continuing uncompacted: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
   }
 
   async #configSetModel(params: unknown): Promise<ConfigSetModelResult> {

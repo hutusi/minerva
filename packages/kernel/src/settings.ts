@@ -55,6 +55,19 @@ export interface ProviderSettings {
    * model. OpenAI-compatible providers only.
    */
   thinking?: ThinkingConfig | undefined;
+  /** Context window (tokens) override; feeds auto-compaction. */
+  contextWindow?: number | undefined;
+}
+
+/**
+ * A named persona: replaces the base system prompt (AGENTS.md instructions
+ * still append after it) and may prefer a model and a default session mode.
+ */
+export interface ProfileSettings {
+  systemPrompt?: string | undefined;
+  /** Model ref the profile prefers, e.g. "bailian/qwen-plus". */
+  model?: string | undefined;
+  defaultMode?: string | undefined;
 }
 
 export interface MinervaSettings {
@@ -64,6 +77,9 @@ export interface MinervaSettings {
   /** Default model ref, e.g. "bailian/qwen-plus". */
   model?: string | undefined;
   providers?: Record<string, ProviderSettings>;
+  profiles?: Record<string, ProfileSettings>;
+  /** Name of the profile applied to new sessions when none is requested. */
+  profile?: string | undefined;
 }
 
 export interface ResolvedSettings {
@@ -72,6 +88,8 @@ export interface ResolvedSettings {
   mcpServers: Record<string, McpServerConfig>;
   model?: string | undefined;
   providers: Record<string, ProviderSettings>;
+  profiles: Record<string, ProfileSettings>;
+  profile?: string | undefined;
 }
 
 export function globalSettingsPath(dataDir: string): string {
@@ -100,7 +118,44 @@ export async function loadSettings(
     mcpServers: { ...global.mcpServers, ...project.mcpServers },
     model: project.model ?? global.model,
     providers: mergeProviders(global.providers, project.providers),
+    profiles: mergeByName(global.profiles, project.profiles),
+    profile: project.profile ?? global.profile,
   };
+}
+
+/** The active profile for a session: an explicit request wins over the
+ * settings default; no name anywhere means no profile. Unknown names throw —
+ * a typo must not silently fall back to the base persona. */
+export function resolveProfile(
+  settings: ResolvedSettings,
+  requested?: string | undefined,
+): ({ name: string } & ProfileSettings) | undefined {
+  const name = requested ?? settings.profile;
+  if (name === undefined) return undefined;
+  // Own-property check: a bare index would accept inherited names like
+  // "toString" as bogus empty profiles instead of failing as unknown.
+  const profile = Object.hasOwn(settings.profiles, name) ? settings.profiles[name] : undefined;
+  if (!profile) {
+    const defined = Object.keys(settings.profiles).join(", ") || "(none)";
+    throw new Error(`unknown profile "${name}" — defined: ${defined}`);
+  }
+  // Canonical name LAST: a stray "name" key in the profile JSON must not
+  // overwrite it — the name is persisted to the session log and a wrong one
+  // breaks resume.
+  return { ...profile, name };
+}
+
+/** Per-name shallow merge, project over global. */
+function mergeByName<T extends object>(
+  global: Record<string, T> | undefined,
+  project: Record<string, T> | undefined,
+): Record<string, T> {
+  const merged: Record<string, T> = { ...global };
+  for (const [name, entry] of Object.entries(project ?? {})) {
+    const base = merged[name];
+    merged[name] = base ? { ...base, ...entry } : entry;
+  }
+  return merged;
 }
 
 /**
@@ -214,7 +269,37 @@ async function readSettingsFile(runtime: Runtime, path: string): Promise<Minerva
   }
   if (typeof parsed !== "object" || parsed === null) return {};
   validatePermissions(parsed as Record<string, unknown>, path);
+  validateProfiles(parsed as Record<string, unknown>, path);
   return parsed as MinervaSettings;
+}
+
+/**
+ * Same rationale as validatePermissions: a malformed `profiles` entry must
+ * fail loudly rather than pass a garbage system prompt to the model or crash
+ * deep inside session creation.
+ */
+function validateProfiles(settings: Record<string, unknown>, path: string): void {
+  if ("profile" in settings && settings.profile !== undefined) {
+    if (typeof settings.profile !== "string") {
+      throw new Error(`invalid settings in ${path}: profile must be a string`);
+    }
+  }
+  if (!("profiles" in settings) || settings.profiles === undefined) return;
+  const profiles = settings.profiles;
+  if (typeof profiles !== "object" || profiles === null || Array.isArray(profiles)) {
+    throw new Error(`invalid settings in ${path}: profiles must be an object`);
+  }
+  for (const [name, entry] of Object.entries(profiles)) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error(`invalid settings in ${path}: profiles.${name} must be an object`);
+    }
+    for (const key of ["systemPrompt", "model", "defaultMode"] as const) {
+      const value = (entry as Record<string, unknown>)[key];
+      if (value !== undefined && typeof value !== "string") {
+        throw new Error(`invalid settings in ${path}: profiles.${name}.${key} must be a string`);
+      }
+    }
+  }
 }
 
 /**

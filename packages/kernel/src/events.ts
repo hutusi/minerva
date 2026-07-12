@@ -1,4 +1,4 @@
-import type { PlanEntry, StopReason } from "@minerva/protocol";
+import type { PlanEntry, StopReason, ToolCallContent } from "@minerva/protocol";
 import type { ProviderToolCall, TurnUsage } from "@minerva/providers";
 
 /**
@@ -14,10 +14,23 @@ export type SessionEvent =
       sessionId: string;
       cwd: string;
       provider: string;
+      /** Profile name the session was created with; body re-resolves on load. */
+      profile?: string | undefined;
+      /**
+       * The mode the session was created in (profile default > settings
+       * default > DEFAULT). Persisted so replay is authoritative for the
+       * initial mode — without it, a mode set by a profile silently degraded
+       * to the settings default on resume. Optional: old logs replay
+       * unchanged (load falls back to settings).
+       */
+      mode?: string | undefined;
       at: string;
     }
   | { type: "session.resumed"; provider: string; at: string }
   | { type: "session.mode_changed"; modeId: string; at: string }
+  /** The active profile switched (null = cleared). Only the NAME is logged;
+   * load re-resolves it against current settings so edits take effect. */
+  | { type: "session.profile_changed"; profile: string | null; at: string }
   // Audit trail for a live model switch (minerva/config/set_model). Replay
   // skips unknown/informational events, so logs carrying it stay resumable.
   | { type: "session.model_changed"; provider: string; at: string }
@@ -54,7 +67,19 @@ export type SessionEvent =
       at: string;
     }
   | { type: "tool.call"; toolCallId: string; toolName: string; input: unknown; at: string }
-  | { type: "tool.result"; toolCallId: string; output: string; isError: boolean; at: string }
+  | {
+      type: "tool.result";
+      toolCallId: string;
+      output: string;
+      isError: boolean;
+      /**
+       * Structured blocks (file diffs) the tool emitted alongside its text
+       * output, so replay re-renders them. Optional: old logs replay
+       * unchanged, and text-only results add no field.
+       */
+      content?: ToolCallContent[] | undefined;
+      at: string;
+    }
   | {
       type: "permission.decision";
       toolCallId: string;
@@ -84,7 +109,20 @@ export type SessionEvent =
       usage?: TurnUsage | undefined;
       at: string;
     }
-  | { type: "turn.completed"; stopReason: StopReason; usage?: TurnUsage | undefined; at: string }
+  | {
+      type: "turn.completed";
+      stopReason: StopReason;
+      /** Whole-prompt spend, accumulated across every model call (billing). */
+      usage?: TurnUsage | undefined;
+      /**
+       * Context tokens of the LAST model call — the auto-compaction signal.
+       * Kept separate from `usage`: a tool loop's accumulated inputTokens sum
+       * to a multiple of the real context, which would trigger compaction at
+       * a fraction of the intended threshold.
+       */
+      context?: number | undefined;
+      at: string;
+    }
   | { type: "turn.failed"; error: string; at: string };
 
 export function now(): string {
