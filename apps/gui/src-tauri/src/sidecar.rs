@@ -48,7 +48,10 @@ fn kernel_command() -> Result<Command, String> {
             .map_err(|e| format!("cannot resolve repo root: {e}"))?;
         let entry = repo_root.join("packages/cli/src/index.tsx");
         let mut cmd = Command::new("bun");
-        cmd.arg("run").arg(entry).arg("acp");
+        cmd.arg("run")
+            .arg(entry)
+            .arg("acp")
+            .arg("--allow-unconfigured");
         cmd.current_dir(repo_root);
         Ok(cmd)
     } else {
@@ -57,7 +60,7 @@ fn kernel_command() -> Result<Command, String> {
             .parent()
             .ok_or("app executable has no parent directory")?;
         let mut cmd = Command::new(dir.join("minerva"));
-        cmd.arg("acp");
+        cmd.arg("acp").arg("--allow-unconfigured");
         Ok(cmd)
     }
 }

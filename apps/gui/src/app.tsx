@@ -2,8 +2,10 @@ import type { MinervaClient, SessionStore } from "@minerva/client";
 import { useEffect, useRef, useState } from "react";
 import { Transcript } from "./components/chat/Transcript";
 import { UsageFooter } from "./components/chat/UsageFooter";
+import { PermissionDialog } from "./components/PermissionDialog";
 import { useSessionStore } from "./hooks/use-session-store";
 import { connectKernel } from "./lib/kernel-connection";
+import { createPermissionQueue, type PermissionQueue } from "./lib/permission-queue";
 import { createTauriSidecarBridge, fetchDefaultCwd } from "./lib/sidecar-bridge";
 
 interface Session {
@@ -14,6 +16,7 @@ interface Session {
 interface Ready {
   client: MinervaClient;
   session: Session;
+  permissions: PermissionQueue;
 }
 
 // Connection lives outside React: StrictMode double-effects and HMR reloads
@@ -23,10 +26,11 @@ let setupPromise: Promise<Ready> | null = null;
 function setup(): Promise<Ready> {
   setupPromise ??= (async () => {
     const bridge = createTauriSidecarBridge();
-    const client = await connectKernel(bridge);
+    const permissions = createPermissionQueue();
+    const client = await connectKernel(bridge, { onPermissionRequest: permissions.handler });
     const cwd = await fetchDefaultCwd();
     const { sessionId, store } = await client.newSession(cwd);
-    return { client, session: { id: sessionId, store } };
+    return { client, session: { id: sessionId, store }, permissions };
   })();
   return setupPromise;
 }
@@ -64,7 +68,12 @@ export function App() {
       </Centered>
     );
   }
-  return <Chat client={ready.client} session={ready.session} />;
+  return (
+    <>
+      <Chat client={ready.client} session={ready.session} />
+      <PermissionDialog queue={ready.permissions} />
+    </>
+  );
 }
 
 function Centered({ children }: { children: React.ReactNode }) {

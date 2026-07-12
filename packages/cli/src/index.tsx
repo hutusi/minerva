@@ -132,8 +132,9 @@ function requireKeyOrExit(): void {
 }
 
 if (command === "acp") {
-  // stdout carries the protocol — no UI, so a missing key stays a hard exit.
-  requireKeyOrExit();
+  // stdout carries the protocol — no UI, so a missing key stays a hard exit
+  // unless a GUI host asked to drive configuration over the protocol.
+  if (!parsed.args.allowUnconfigured) requireKeyOrExit();
   // runAcpHost awaits kernel.close() on disconnect; a durability failure
   // surfaces here as a nonzero exit rather than a silent success.
   try {

@@ -15,6 +15,9 @@ interface CliArgs {
   print: { prompt: string | null } | null;
   /** --mode for print mode's non-interactive permission story. */
   mode: string | null;
+  /** acp only: start without an API key — a GUI host drives configuration
+   * over the protocol (minerva/config/set_model) instead of exiting. */
+  allowUnconfigured: boolean;
 }
 
 export type ParsedCli =
@@ -31,6 +34,8 @@ Usage: minerva [command] [options]
 Commands:
   (default)            Interactive terminal UI
   acp                  Host the kernel on stdio (ACP framing) for editors
+                       (--allow-unconfigured starts without an API key so a
+                       GUI host can drive setup over the protocol)
 
 Options:
   -p, --print [text]   One-shot mode: run the prompt (or stdin when piped),
@@ -63,6 +68,7 @@ export function parseCliArgs(argv: string[]): ParsedCli {
   let print: CliArgs["print"] = null;
   let mode: string | null = null;
   let command: CliArgs["command"] = "tui";
+  let allowUnconfigured = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -83,6 +89,8 @@ export function parseCliArgs(argv: string[]): ParsedCli {
         return { kind: "error", message: "--mode requires a mode id" };
       }
       mode = value;
+    } else if (arg === "--allow-unconfigured") {
+      allowUnconfigured = true;
     } else if (arg === "--continue" || arg === "-c") {
       resume = "latest";
     } else if (arg === "--resume" || arg === "-r") {
@@ -119,5 +127,10 @@ export function parseCliArgs(argv: string[]): ParsedCli {
   if (print !== null && command === "acp") {
     return { kind: "error", message: "acp and --print are mutually exclusive" };
   }
-  return { kind: "run", args: { command, model, resume, profile, print, mode } };
+  // Only the stdio host may start keyless: the TUI has its own config panel
+  // and print mode has no way to configure anything mid-run.
+  if (allowUnconfigured && command !== "acp") {
+    return { kind: "error", message: "--allow-unconfigured requires the acp command" };
+  }
+  return { kind: "run", args: { command, model, resume, profile, print, mode, allowUnconfigured } };
 }

@@ -5,7 +5,15 @@ describe("parseCliArgs", () => {
   test("no arguments runs the TUI with no model override", () => {
     expect(parseCliArgs([])).toEqual({
       kind: "run",
-      args: { command: "tui", model: null, resume: null, profile: null, print: null, mode: null },
+      args: {
+        command: "tui",
+        model: null,
+        resume: null,
+        profile: null,
+        print: null,
+        mode: null,
+        allowUnconfigured: false,
+      },
     });
   });
 
@@ -17,9 +25,29 @@ describe("parseCliArgs", () => {
       profile: null,
       print: null,
       mode: null,
+      allowUnconfigured: false,
     };
     expect(parseCliArgs(["acp", "-m", "openai/gpt-5.2"])).toEqual({ kind: "run", args });
     expect(parseCliArgs(["-m", "openai/gpt-5.2", "acp"])).toEqual({ kind: "run", args });
+  });
+
+  test("--allow-unconfigured is acp-only", () => {
+    expect(parseCliArgs(["acp", "--allow-unconfigured"])).toMatchObject({
+      kind: "run",
+      args: { command: "acp", allowUnconfigured: true },
+    });
+    expect(parseCliArgs(["--allow-unconfigured", "acp"])).toMatchObject({
+      kind: "run",
+      args: { command: "acp", allowUnconfigured: true },
+    });
+    expect(parseCliArgs(["--allow-unconfigured"])).toEqual({
+      kind: "error",
+      message: "--allow-unconfigured requires the acp command",
+    });
+    expect(parseCliArgs(["-p", "hi", "--allow-unconfigured"])).toEqual({
+      kind: "error",
+      message: "--allow-unconfigured requires the acp command",
+    });
   });
 
   test("-p captures a prompt, or defers to stdin when followed by a flag", () => {
@@ -106,7 +134,15 @@ describe("parseCliArgs", () => {
     const text = usage(DEFAULT);
     expect(text).toContain("Usage: minerva");
     expect(text).toContain(DEFAULT);
-    for (const flag of ["--continue", "--resume", "--model", "--help", "--version", "acp"]) {
+    for (const flag of [
+      "--continue",
+      "--resume",
+      "--model",
+      "--help",
+      "--version",
+      "acp",
+      "--allow-unconfigured",
+    ]) {
       expect(text).toContain(flag);
     }
     for (const keyVar of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY"]) {
