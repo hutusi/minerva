@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultRuntime, isNotFoundError } from "../src";
+import { defaultRuntime, execPtyCaptured, isNotFoundError } from "../src";
 
 function tmpFile(content: string | Buffer): string {
   const dir = mkdtempSync(join(tmpdir(), "minerva-rt-"));
@@ -55,5 +55,62 @@ describe("readTextFilePrefix", () => {
     } catch (error) {
       expect((error as { code?: string }).code).toBe("EISDIR");
     }
+  });
+});
+
+// POSIX-only: the wrapper is script(1); Windows always takes the pipes
+// fallback (covered below via the platform override).
+describe.if(process.platform !== "win32")("execPty", () => {
+  const cwd = () => mkdtempSync(join(tmpdir(), "minerva-pty-"));
+  const options = (timeoutMs = 10_000) => ({ cwd: cwd(), timeoutMs });
+
+  test("the command sees a TTY on stdin and stdout, merged onto stdout", async () => {
+    const result = await defaultRuntime.execPty(
+      'test -t 0 && echo IN_TTY; test -t 1 && echo OUT_TTY; echo "to stderr" >&2',
+      options(),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.ptyFallback).toBeUndefined();
+    expect(result.stdout).toContain("IN_TTY");
+    expect(result.stdout).toContain("OUT_TTY");
+    // A PTY merges the streams; stderr text arrives on stdout.
+    expect(result.stdout).toContain("to stderr");
+    expect(result.stderr).toBe("");
+  });
+
+  test("exit codes propagate through the wrapper", async () => {
+    const result = await defaultRuntime.execPty("exit 7", options());
+    expect(result.exitCode).toBe(7);
+  });
+
+  test("the timeout kills a PTY-wrapped command tree", async () => {
+    const result = await defaultRuntime.execPty("sleep 30", options(300));
+    expect(result.timedOut).toBe(true);
+  }, 10_000);
+
+  test("an abort signal kills a PTY-wrapped command", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+    const result = await defaultRuntime.execPty("sleep 30", {
+      cwd: cwd(),
+      timeoutMs: 10_000,
+      signal: controller.signal,
+    });
+    expect(result.aborted).toBe(true);
+  }, 10_000);
+
+  test("a missing wrapper degrades to pipes with the fallback flag", async () => {
+    const result = await execPtyCaptured("test -t 1 && echo tty; echo ran", options(), {
+      wrapper: "/nonexistent/script-binary",
+    });
+    expect(result.ptyFallback).toBe(true);
+    expect(result.stdout).toContain("ran");
+    expect(result.stdout).not.toContain("tty"); // pipes: no terminal granted
+  });
+
+  test("win32 always takes the pipes fallback", async () => {
+    const result = await execPtyCaptured("echo ran", options(), { platform: "win32" });
+    expect(result.ptyFallback).toBe(true);
+    expect(result.stdout).toContain("ran");
   });
 });

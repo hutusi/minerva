@@ -29,6 +29,8 @@ export interface ExecResult {
   exitCode: number;
   timedOut: boolean;
   aborted: boolean;
+  /** Set when execPty could not grant a PTY and ran with pipes instead. */
+  ptyFallback?: boolean | undefined;
 }
 
 export interface ExecOptions {
@@ -98,6 +100,15 @@ export interface Runtime {
   unlink(path: string): Promise<void>;
   /** Run a shell command line (`bash -c`). Untrusted args must use runProcess. */
   exec(command: string, options: ExecOptions): Promise<ExecResult>;
+  /**
+   * Like exec, but under a pseudo-terminal (script(1) wrapper — no native
+   * module, so `bun build --compile` stays a single binary): the command
+   * sees a TTY on stdin/stdout, and stdout carries the MERGED output
+   * (`stderr` comes back empty). POSIX only — on Windows, or when the
+   * wrapper is missing (minimal images), falls back to exec() with
+   * `ptyFallback: true` on the result.
+   */
+  execPty(command: string, options: ExecOptions): Promise<ExecResult>;
   /** Spawn a binary by argv — no shell, so arguments are never interpreted. */
   runProcess(file: string, args: string[], options: ExecOptions): Promise<ExecResult>;
   homedir(): string;
@@ -215,10 +226,51 @@ export const defaultRuntime: Runtime = {
     return spawnCaptured("/bin/bash", ["-c", command], options);
   },
 
+  execPty(command, options) {
+    return execPtyCaptured(command, options);
+  },
+
   runProcess(file, args, options) {
     return spawnCaptured(file, args, options);
   },
 };
+
+/**
+ * script(1) grants the command a real PTY without any native module; the
+ * process-group kill, timeout, abort, and stream caps all come from the same
+ * spawnCaptured path as exec. Exported with overrides so tests can drive the
+ * win32 and missing-wrapper fallbacks on any host.
+ *
+ * Wrapper forms differ per platform: util-linux is `script -qec <cmd> <file>`
+ * (-e propagates the exit code), BSD/macOS is `script -q <file> <shell> -c
+ * <cmd>` (exit code propagates by default). Both verified to report the
+ * child's exit status and a TTY on stdin and stdout.
+ */
+export async function execPtyCaptured(
+  command: string,
+  options: ExecOptions,
+  overrides: { platform?: NodeJS.Platform | undefined; wrapper?: string | undefined } = {},
+): Promise<ExecResult> {
+  const platform = overrides.platform ?? process.platform;
+  const wrapper = overrides.wrapper ?? "/usr/bin/script";
+  const pipes = async (): Promise<ExecResult> => ({
+    ...(await spawnCaptured("/bin/bash", ["-c", command], options)),
+    ptyFallback: true,
+  });
+  if (platform === "win32") return pipes(); // no ConPTY story yet
+  const args =
+    platform === "linux"
+      ? ["-qec", command, "/dev/null"]
+      : ["-q", "/dev/null", "/bin/bash", "-c", command];
+  try {
+    return await spawnCaptured(wrapper, args, options);
+  } catch (error) {
+    // ENOENT = no script(1) on this box (minimal containers) — degrade to
+    // pipes rather than failing the command; anything else is a real error.
+    if (!isNotFoundError(error)) throw error;
+    return pipes();
+  }
+}
 
 function spawnCaptured(file: string, args: string[], options: ExecOptions): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
