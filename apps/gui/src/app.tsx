@@ -1,5 +1,7 @@
 import type { MinervaClient, SessionStore } from "@minerva/client";
+import type { ConfigSetModelParams, ConfigStateResult } from "@minerva/protocol";
 import { useEffect, useRef, useState } from "react";
+import { ConfigDialog } from "./components/ConfigDialog";
 import { Transcript } from "./components/chat/Transcript";
 import { UsageFooter } from "./components/chat/UsageFooter";
 import { PermissionDialog } from "./components/PermissionDialog";
@@ -13,42 +15,59 @@ interface Session {
   store: SessionStore;
 }
 
-interface Ready {
+interface Boot {
   client: MinervaClient;
-  session: Session;
   permissions: PermissionQueue;
+  config: ConfigStateResult;
 }
 
 // Connection lives outside React: StrictMode double-effects and HMR reloads
-// re-enter setup(), which must attach to the running kernel, not respawn it.
-let setupPromise: Promise<Ready> | null = null;
+// re-enter boot(), which must attach to the running kernel, not respawn it.
+// The session is created separately — first run configures a model first.
+let bootPromise: Promise<Boot> | null = null;
+let sessionPromise: Promise<Session> | null = null;
 
-function setup(): Promise<Ready> {
-  setupPromise ??= (async () => {
+function boot(): Promise<Boot> {
+  bootPromise ??= (async () => {
     const bridge = createTauriSidecarBridge();
     const permissions = createPermissionQueue();
     const client = await connectKernel(bridge, { onPermissionRequest: permissions.handler });
+    const config = await client.getConfigState();
+    return { client, permissions, config };
+  })();
+  return bootPromise;
+}
+
+function openSession(client: MinervaClient): Promise<Session> {
+  sessionPromise ??= (async () => {
     const cwd = await fetchDefaultCwd();
     const { sessionId, store } = await client.newSession(cwd);
-    return { client, session: { id: sessionId, store }, permissions };
+    return { id: sessionId, store };
   })();
-  return setupPromise;
+  return sessionPromise;
 }
 
 export function App() {
-  const [ready, setReady] = useState<Ready | null>(null);
+  const [ready, setReady] = useState<Boot | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [configState, setConfigState] = useState<ConfigStateResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setup().then(
-      (value) => {
-        if (!cancelled) setReady(value);
-      },
-      (cause: unknown) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
-      },
-    );
+    const fail = (cause: unknown) => {
+      if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+    };
+    boot().then((value) => {
+      if (cancelled) return;
+      setReady(value);
+      if (value.config.needsApiKey) {
+        // First run: no usable key — configure before any session exists.
+        setConfigState(value.config);
+      } else {
+        openSession(value.client).then((s) => !cancelled && setSession(s), fail);
+      }
+    }, fail);
     return () => {
       cancelled = true;
     };
@@ -68,9 +87,37 @@ export function App() {
       </Centered>
     );
   }
+
+  const applyConfig = async (params: ConfigSetModelParams) => {
+    await ready.client.setModel(params);
+    setConfigState(null);
+    if (!session) setSession(await openSession(ready.client));
+  };
+
+  const openConfig = () => {
+    ready.client.getConfigState().then(setConfigState, (cause: unknown) => {
+      session?.store.addError(cause instanceof Error ? cause.message : String(cause));
+    });
+  };
+
   return (
     <>
-      <Chat client={ready.client} session={ready.session} />
+      {session ? (
+        <Chat client={ready.client} session={session} onOpenConfig={openConfig} />
+      ) : (
+        <Centered>
+          <p className="text-sm text-muted-foreground">
+            {configState ? "Configure a model to get started." : "Opening session…"}
+          </p>
+        </Centered>
+      )}
+      {configState ? (
+        <ConfigDialog
+          state={configState}
+          onSubmit={applyConfig}
+          onClose={session ? () => setConfigState(null) : undefined}
+        />
+      ) : null}
       <PermissionDialog queue={ready.permissions} />
     </>
   );
@@ -80,7 +127,15 @@ function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex h-screen items-center justify-center">{children}</div>;
 }
 
-function Chat({ client, session }: { client: MinervaClient; session: Session }) {
+function Chat({
+  client,
+  session,
+  onOpenConfig,
+}: {
+  client: MinervaClient;
+  session: Session;
+  onOpenConfig: () => void;
+}) {
   const vm = useSessionStore(session.store);
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLElement>(null);
@@ -156,7 +211,17 @@ function Chat({ client, session }: { client: MinervaClient; session: Session }) 
               </button>
             )}
           </div>
-          <UsageFooter modeId={vm.currentModeId} usage={vm.usage} context={vm.context} />
+          <div className="flex items-center justify-between">
+            <UsageFooter modeId={vm.currentModeId} usage={vm.usage} context={vm.context} />
+            <button
+              type="button"
+              onClick={onOpenConfig}
+              title="Model & provider settings"
+              className="ml-auto rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-secondary"
+            >
+              ⚙ model
+            </button>
+          </div>
         </div>
       </footer>
     </div>

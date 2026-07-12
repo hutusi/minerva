@@ -3,6 +3,7 @@ import {
   CLIENT_METHODS,
   type ConfigSetModelParams,
   type ConfigSetModelResult,
+  type ConfigStateResult,
   Connection,
   type InitializeResult,
   type InstructionsInfo,
@@ -224,6 +225,11 @@ export class MinervaClient {
       params,
     );
     return result.providerId;
+  }
+
+  /** Current model + selectable providers with key status (first-run flows). */
+  async getConfigState(): Promise<ConfigStateResult> {
+    return await this.#connection.request<ConfigStateResult>(MINERVA_METHODS.configState, {});
   }
 
   /** Summarize and reset the model context; returns the summary. */

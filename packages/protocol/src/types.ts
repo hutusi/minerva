@@ -32,6 +32,10 @@ export const MINERVA_METHODS = {
   sessionCompact: "minerva/session/compact",
   /** Frontend → kernel: persist model/provider config and swap the live provider. */
   configSetModel: "minerva/config/set_model",
+  /** Frontend → kernel: current model + selectable providers with key status.
+   * Exists for hosts on the far side of a pipe (GUI sidecar): the TUI computes
+   * this host-side, a remote frontend can't. */
+  configState: "minerva/config/state",
   /** Frontend → kernel: list the skills available for a project. */
   skillsList: "minerva/skills/list",
   /** Frontend → kernel: list the named profiles defined in settings. */
@@ -226,6 +230,32 @@ export interface ConfigSetModelParams {
 
 export interface ConfigSetModelResult {
   providerId: string;
+}
+
+// --- minerva/config/state ----------------------------------------------
+
+/** One selectable provider: registry definition plus where (if anywhere) a
+ * usable API key was found. Blank env/settings values count as absent. */
+export interface ConfigProviderState {
+  name: string;
+  defaultModel?: string | undefined;
+  /** Env var the provider reads (e.g. DASHSCOPE_API_KEY). */
+  keyVar: string;
+  keySource: "env" | "settings" | "none";
+  baseUrl?: string | undefined;
+  /** Known model ids — selector suggestions; any id remains valid free text. */
+  models?: string[] | undefined;
+  /** false = keyless endpoint; an empty key entry is fine, not a gap. */
+  requiresApiKey?: boolean | undefined;
+}
+
+export interface ConfigStateResult {
+  /** The live provider's id, i.e. the model ref the kernel actually runs. */
+  model: string;
+  /** True when the live provider requires a key and none was found — the
+   * signal for a frontend to open its first-run config flow. */
+  needsApiKey: boolean;
+  providers: ConfigProviderState[];
 }
 
 // --- minerva/sessions/list ---------------------------------------------

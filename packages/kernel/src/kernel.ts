@@ -2,8 +2,10 @@ import { join } from "node:path";
 import {
   AGENT_METHODS,
   CLIENT_METHODS,
+  type ConfigProviderState,
   type ConfigSetModelParams,
   type ConfigSetModelResult,
+  type ConfigStateResult,
   Connection,
   type InitializeParams,
   type InitializeResult,
@@ -27,7 +29,12 @@ import {
   type SkillsListResult,
   type Transport,
 } from "@minerva/protocol";
-import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
+import {
+  buildProviderRegistry,
+  type ModelProvider,
+  parseModelRef,
+  resolveApiKey,
+} from "@minerva/providers";
 import { type LoopContext, runPrompt } from "./agent-loop";
 import { runCompact } from "./compact";
 import { now } from "./events";
@@ -158,6 +165,7 @@ export class MinervaKernel {
     this.#register(MINERVA_METHODS.sessionsList, (params) => this.#sessionsList(params));
     this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
     this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
+    this.#register(MINERVA_METHODS.configState, () => this.#configState());
     this.#register(MINERVA_METHODS.skillsList, (params) => this.#skillsList(params));
     this.#register(MINERVA_METHODS.profilesList, (params) => this.#profilesList(params));
     this.#register(MINERVA_METHODS.sessionSetProfile, (params) => this.#sessionSetProfile(params));
@@ -771,6 +779,47 @@ export class MinervaKernel {
         }\n`,
       );
     }
+  }
+
+  /**
+   * Current model + selectable providers with key status — the read half of
+   * config/set_model, a direct port of the TUI's host-side providerChoices
+   * computation for frontends on the far side of a pipe. Settings are
+   * re-read per call so a key stored moments ago is reflected.
+   */
+  async #configState(): Promise<ConfigStateResult> {
+    const settings = await loadSettings(this.#runtime, this.#dataDir, process.cwd());
+    const registry = buildProviderRegistry(settings.providers);
+    const storedKeys = Object.fromEntries(
+      Object.entries(settings.providers).map(([name, entry]) => [name, entry.apiKey]),
+    );
+    const providers: ConfigProviderState[] = Object.entries(registry).map(([name, def]) => ({
+      name,
+      ...(def.defaultModel !== undefined ? { defaultModel: def.defaultModel } : {}),
+      keyVar: def.apiKeyEnv,
+      // Blank-aware, matching resolveApiKey — an exported-but-empty env var
+      // must not display as a usable key.
+      keySource: process.env[def.apiKeyEnv]?.trim()
+        ? ("env" as const)
+        : settings.providers[name]?.apiKey?.trim()
+          ? ("settings" as const)
+          : ("none" as const),
+      ...(def.baseURL !== undefined ? { baseUrl: def.baseURL } : {}),
+      ...(def.models !== undefined ? { models: def.models } : {}),
+      ...(def.requiresApiKey !== undefined ? { requiresApiKey: def.requiresApiKey } : {}),
+    }));
+
+    let needsApiKey = false;
+    try {
+      const { provider } = parseModelRef(this.#provider.id, registry);
+      needsApiKey =
+        registry[provider]?.requiresApiKey !== false &&
+        !resolveApiKey(provider, registry, { env: process.env, storedKeys });
+    } catch {
+      // Live provider outside the registry (tests, exotic hosts): nothing a
+      // config dialog could usefully demand a key for.
+    }
+    return { model: this.#provider.id, needsApiKey, providers };
   }
 
   async #configSetModel(params: unknown): Promise<ConfigSetModelResult> {
