@@ -6,6 +6,8 @@ All notable changes to Minerva are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-12
+
 ### Added
 - Releases now ship installable binaries: an artifacts job builds on Linux
   and macOS runners and attaches `minerva-<tag>-<os>-<arch>.tar.gz`
