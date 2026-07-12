@@ -128,50 +128,64 @@ describe("web_fetch", () => {
     expect(result.output).toContain("gone fishing");
   });
 
-  test("readBoundedFrom: a chunk landing exactly on the cap is handled precisely", async () => {
+  test("readBoundedFrom: reaching the cap cancels immediately, never reading again", async () => {
     const chunk = (size: number) => new Uint8Array(size).fill(120); // "x"
-    const fakeReader = (chunks: Uint8Array[], moreAfter: boolean) => {
+    const fakeReader = (chunks: Uint8Array[]) => {
       let cancelled = false;
       let index = 0;
       const reader: BodyReader = {
-        read: async () => {
-          if (index < chunks.length) return { done: false, value: chunks[index++] };
-          // After the scripted chunks: either EOF or one more pending chunk.
-          if (moreAfter && index === chunks.length) {
-            index++;
-            return { done: false, value: chunk(1) };
-          }
-          return { done: true };
+        read: () => {
+          if (index < chunks.length)
+            return Promise.resolve({ done: false, value: chunks[index++] });
+          index++;
+          // Past the scripted chunks the stream is HELD OPEN: a read here
+          // (e.g. a probe for EOF at the boundary) would hang forever. The
+          // test itself times out if readBoundedFrom ever waits on it.
+          return new Promise(() => {});
         },
         cancel: async () => {
           cancelled = true;
         },
       };
-      return { reader, wasCancelled: () => cancelled };
+      return { reader, wasCancelled: () => cancelled, reads: () => index };
     };
 
-    // Exactly at the cap, then clean EOF: complete read, nothing to cancel.
-    const eof = fakeReader([chunk(6), chunk(4)], false);
-    const atCap = await readBoundedFrom(eof.reader, 10);
-    expect(atCap).toEqual({ text: "x".repeat(10), truncated: false });
-    expect(eof.wasCancelled()).toBe(false);
-
-    // Exactly at the cap with more data pending: truncated AND cancelled.
-    const pending = fakeReader([chunk(6), chunk(4)], true);
-    const cut = await readBoundedFrom(pending.reader, 10);
-    expect(cut).toEqual({ text: "x".repeat(10), truncated: true });
-    expect(pending.wasCancelled()).toBe(true);
+    // Exactly at the cap: resolve immediately with the capped content —
+    // conservatively marked truncated (EOF-at-boundary is indistinguishable
+    // without a read that could park until the fetch timeout) — and cancel.
+    const atCap = fakeReader([chunk(6), chunk(4)]);
+    expect(await readBoundedFrom(atCap.reader, 10)).toEqual({
+      text: "x".repeat(10),
+      truncated: true,
+    });
+    expect(atCap.wasCancelled()).toBe(true);
+    expect(atCap.reads()).toBe(2); // never read past the cap
 
     // A chunk crossing the cap: trimmed, truncated, cancelled.
-    const over = fakeReader([chunk(6), chunk(7)], false);
-    const trimmed = await readBoundedFrom(over.reader, 10);
-    expect(trimmed).toEqual({ text: "x".repeat(10), truncated: true });
+    const over = fakeReader([chunk(6), chunk(7)]);
+    expect(await readBoundedFrom(over.reader, 10)).toEqual({
+      text: "x".repeat(10),
+      truncated: true,
+    });
     expect(over.wasCancelled()).toBe(true);
 
-    // EOF under the cap: everything read, not truncated.
-    const short = fakeReader([chunk(3)], false);
-    expect(await readBoundedFrom(short.reader, 10)).toEqual({ text: "xxx", truncated: false });
-    expect(short.wasCancelled()).toBe(false);
+    // EOF under the cap: everything read, not truncated, no cancel.
+    let eofCancelled = false;
+    const short: BodyReader = {
+      read: (() => {
+        let sent = false;
+        return () => {
+          if (sent) return Promise.resolve({ done: true });
+          sent = true;
+          return Promise.resolve({ done: false, value: chunk(3) });
+        };
+      })(),
+      cancel: async () => {
+        eofCancelled = true;
+      },
+    };
+    expect(await readBoundedFrom(short, 10)).toEqual({ text: "xxx", truncated: false });
+    expect(eofCancelled).toBe(false);
   });
 
   test("permissionValue matches rules against the URL", () => {

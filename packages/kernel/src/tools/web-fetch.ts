@@ -168,11 +168,13 @@ export async function readBoundedFrom(
       total += value.byteLength;
     }
   }
-  if (!finished && total === maxBytes) {
-    // A chunk landed exactly on the cap: probe once to tell a clean EOF at
-    // the boundary from a body that actually continues.
-    finished = (await reader.read()).done;
-  }
+  // At the cap without EOF: cancel immediately — NEVER read again. A stream
+  // sitting exactly at the cap and held open would park a probe read until
+  // the overall fetch timeout, turning a fully capped body into a timeout
+  // error. The price is a conservative "truncated" label on a body that
+  // would have EOF'd exactly at the boundary. (Content-Length can't settle
+  // it either: with Content-Encoding it counts compressed bytes while the
+  // reader yields decompressed ones.)
   const truncated = !finished;
   if (!finished) await reader.cancel().catch(() => {});
   const merged = new Uint8Array(Math.min(total, maxBytes));
