@@ -103,7 +103,12 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
     "ask": ["bash(git push*)"]
   },
   "mcpServers": {
-    "calc": { "command": "bun", "args": ["run", "./tools/mcp-calc.ts"] }
+    "calc": { "command": "bun", "args": ["run", "./tools/mcp-calc.ts"] },
+    "remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." }
+    }
   }
 }
 ```
@@ -135,6 +140,14 @@ tool loops, which Minerva doesn't do yet). Reasoning the model streams is shown
 dimmed while it thinks and collapses to a one-line summary once the answer
 starts; either way it is display-only and never re-sent to the model.
 
+`mcpServers` entries are stdio by default (`command` + optional `args`/`env`,
+launched in the project directory); `"type": "http"` entries connect to a
+remote server over Streamable HTTP (with an SSE fallback for older servers)
+and may carry extra request `headers`. Header values often hold tokens —
+unlike provider API keys they are honored from both settings layers, so keep
+tokened servers in the **global** file, not a shared project one. A server
+that fails to connect degrades to a startup warning; the session still opens.
+
 Permission rules are `tool` or `tool(pattern)` where `*` matches any run of
 characters, `?` one character, and `\*` a literal asterisk. Precedence:
 **deny** → **ask** → read-only auto-allow → **plan mode deny** → **allow** →
@@ -148,9 +161,57 @@ are named `mcp__<server>__<tool>` and are never auto-allowed.
 > that catches honest mistakes; use OS-level sandboxing for real isolation, and
 > avoid `auto` mode with untrusted input.
 
+> **Opening a third-party repository activates its configuration.** The
+> project's `AGENTS.md` enters the system prompt, `.minerva/skills/` becomes
+> invocable instructions, and `.minerva/settings.json` contributes permission
+> allow rules and MCP server definitions the moment a session starts. Project
+> files that resolve outside the workspace (symlinks) are refused, and project
+> API keys are never honored — but prompt-shaping text is trusted by design.
+> Skim those files before working in an unfamiliar repo, and prefer `default`
+> or `plan` mode over `acceptEdits`/`auto` there.
+
 Every session is an append-only JSONL event log under
 `~/.minerva/projects/<project>/` — the audit trail and the source of truth for
 `--resume`.
+
+## Project instructions (AGENTS.md)
+
+Put per-project guidance in an `AGENTS.md` at the project root (the
+[agents.md](https://agents.md) convention) and per-user guidance in
+`~/.minerva/AGENTS.md`; both are appended to the system prompt — global
+first, then project — when a session starts, and the CLI notes which files
+loaded. Only those two locations are read (no per-subdirectory files), each
+capped at 24k characters, and edits take effect on the next new or resumed
+session.
+
+## Skills
+
+Skills are reusable instructions the agent can pull in on demand: a
+`SKILL.md` per skill under `.minerva/skills/<name>/` (project) or
+`~/.minerva/skills/<name>/` (global), with frontmatter naming and describing
+it:
+
+```markdown
+---
+name: release-checklist
+description: Steps for cutting a release safely
+---
+
+1. Run the full verify gate.
+2. Tag with the CHANGELOG version.
+...
+```
+
+Two ways in: the model sees every skill's name and description through a
+read-only `skill` tool and loads the full instructions when one matches the
+task (only names and descriptions ride in each request — bodies stay on disk
+until invoked), and you can invoke one directly as `/release-checklist <args>`
+— the transcript keeps what you typed while the model receives the skill body.
+`/help` lists the available skills; project skills override same-named global
+ones, and built-in commands always beat a same-named skill. Frontmatter is
+parsed as simple `key: value` lines (no multiline YAML). A `deny: ["skill"]`
+permission rule blocks skills for the model **and** for `/name` invocations;
+ask rules don't apply to `/name` — typing the command is consent.
 
 ## Editors (ACP)
 

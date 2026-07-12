@@ -7,6 +7,34 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Skills: reusable instructions as `skills/<name>/SKILL.md` directories
+  (project `.minerva/` and global `~/.minerva/`, project winning name
+  collisions). The model discovers them through a read-only `skill` tool
+  whose description lists names+descriptions only — those ride in each
+  request, while bodies are read from disk at invoke time — and model
+  invocations are permission-gated and audited like any other tool. Users
+  invoke one as `/name args`: the kernel expands it for the model while the
+  transcript keeps the literal line (a new `providerText` field on
+  `user.message` events; old logs replay unchanged), so skills behave the
+  same from the CLI and ACP hosts. `/name` honors deny permission rules and
+  skips ask rules (typing the command is consent); the expansion is audited
+  via `providerText`. A new `minerva/skills/list` method feeds the CLI's
+  slash dispatch and `/help`, which now lists skills.
+- AGENTS.md project instructions: a project-root `AGENTS.md` (and a global
+  `~/.minerva/AGENTS.md`) is appended to the system prompt at session
+  establish, so per-project guidance no longer requires forking the host's
+  system prompt. `session/new`/`session/load` report which files loaded via a
+  new optional `instructions` result field (generic ACP clients ignore it),
+  and the CLI prints a dimmed "project instructions loaded" line. Root +
+  global only, 24k chars per file with a truncation marker; instructions are
+  never persisted to the transcript, so resumed sessions pick up edits.
+- Remote MCP servers over Streamable HTTP: an `mcpServers` entry with
+  `"type": "http"` and a `url` (plus optional `headers` for bearer tokens)
+  connects to a hosted server, falling back to SSE once for pre-2025-03
+  servers; entries with a `command` remain stdio, so existing configs are
+  untouched. Remote tools flow through the same `mcp__server__tool`
+  permission gating, and an unreachable server still degrades to a startup
+  warning instead of failing the session.
 - Streamed model reasoning end-to-end: `agent_thought_chunk` (reserved since
   v0.1) is now emitted live and on `session/load` replay, backed by a new
   `assistant.thought` session event; the CLI shows the thought dimmed while
@@ -46,7 +74,72 @@ All notable changes to Minerva are documented here. The format follows
 - Ink UI test suite (ink-testing-library) and PTY e2e scripts in `scripts/`.
 - `CONTRIBUTING.md`, `docs/PROTOCOL.md`, this changelog.
 
+### Security
+- Project-layer `AGENTS.md` and `.minerva/skills/` files must now resolve
+  inside the workspace: a repo-planted symlink can no longer pull outside
+  files (`~/.ssh/...`) into the model prompt. Skills re-check confinement at
+  every read, so a symlink swapped in after discovery is refused too. Global
+  `~/.minerva` files stay unconfined — they are user-owned, and symlinking
+  them from a dotfiles repo is legitimate.
+- Instruction and skill files are read through a new bounded-read runtime
+  primitive: discovery reads only an 8 KiB frontmatter prefix, bodies read at
+  most 4× their character cap, and a huge or sparse file can no longer
+  exhaust memory before truncation applies. Skill descriptions are capped at
+  500 chars and discovery scans at most 64 entries per directory. Remote MCP
+  tool output is capped at 50k chars and server-provided descriptions at 2k.
+
+- Confined reads are now atomic with their check: the bounded read pins the
+  inode it actually read (via the open fd) and the path must still resolve
+  inside the workspace to that same inode, closing the residual
+  check-then-open TOCTOU for project AGENTS.md/SKILL.md files. Reads also
+  refuse non-regular files (a planted FIFO can no longer hang session start;
+  opens are non-blocking).
+
 ### Fixed
+- The SSE fallback now uses a fresh MCP client for the retry — the SDK
+  fail-fasts (`AlreadyConnected`) when a client that bound a transport is
+  reused, so the fallback could hit dirty state; failed clients are closed.
+  A test also pins that configured headers reach the SSE probe's initial GET
+  (they do — via the SDK's common-headers path), so authenticated legacy
+  servers can accept the fallback.
+- Truncation cuts (instruction files, skill bodies, MCP tool output) are now
+  surrogate-safe: a cut can no longer split an astral character and emit a
+  lone surrogate, which is invalid Unicode and can break JSON encoding to
+  providers.
+- Session establish runs MCP connect, AGENTS.md loading, and skill discovery
+  concurrently — a slow MCP server no longer delays instruction/skill
+  loading it doesn't depend on.
+- A throwing host `systemPrompt` callback (or any failure between claiming
+  the prompt lease and handing it to the turn loop) no longer locks the
+  session permanently — all fallible pre-work now sits inside a
+  release-on-throw block, and the lease is never touched again after the
+  loop takes ownership.
+- `/name` skill invocation now reads the registry fresh from disk every
+  time, matching what `minerva/skills/list` advertises: a project override
+  added after the session started shadows the cached global skill, and a
+  deleted override falls back to the global one instead of erroring.
+- MCP session startup is bounded: connect and tool discovery share a
+  15-second per-server deadline (the SDK's 60s-per-request default put up to
+  two minutes on the session-establish critical path), and a client whose
+  discovery fails is closed immediately instead of lingering until teardown.
+- Remote MCP tool output is accumulated incrementally up to the 50k cap
+  instead of being fully joined first, so the kernel's copy of a huge
+  response stays bounded (the SDK's parse of the wire response is accepted
+  as-is).
+- Two prompts arriving in the same tick can no longer interleave one
+  session's state: the prompt lease is claimed synchronously before the
+  kernel awaits anything (the skills change had opened a window between the
+  guard and the claim), and `beginPrompt` now throws instead of silently
+  replacing the live AbortController.
+- A skill added after a session was established now expands on `/name`
+  instead of passing the literal line to the model — the kernel reloads the
+  registry on a miss, matching what `minerva/skills/list` advertises.
+- The MCP SSE fallback only fires when the server answered Streamable HTTP
+  with a 4xx (the actual "legacy server" signal); DNS failures, timeouts, and
+  5xx no longer trigger a second connection attempt that doubled the
+  worst-case session-start delay.
+- A host-injected tool named `skill` is no longer duplicated by the generated
+  one (host tools win).
 - `turn.completed` events now record usage summed across every model turn of
   a prompt; previously only the final model turn's tokens were persisted, so
   tool-call round-trips went uncounted (and `max_turn_requests` exits dropped

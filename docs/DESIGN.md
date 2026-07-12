@@ -18,12 +18,14 @@ must be protocol-fronted and out-of-process from day one.
 | 3 | Protocol | **ACP (Agent Client Protocol) core + `minerva/*` extensions**. ACP verbatim for sessions / prompts / streaming updates / permission requests; namespaced extension methods for session browsing, usage/cost telemetry, config. Zed/Neovim become free frontends and conformance testers |
 | 4 | Model layer | **Vercel AI SDK v5** behind a kernel-owned `ModelProvider` interface (only the adapter package imports `ai`). Anthropic first, then OpenAI; Bedrock/Vertex/Azure/Ollama are cheap adds later |
 | 5 | Permissions | **Kernel-enforced rule engine + session modes** (plan / default / accept-edits / auto). Allow/deny/ask patterns like `Bash(git *)`, `Edit(src/**)`. Unmatched → ACP permission request to the frontend. Every decision appended to the audit log. "Always allow" persists as a rule |
-| 6 | Tools | Built-ins: ReadFile, WriteFile, EditFile (string-replace), Glob, Grep, Bash (`spawn` pipes — **no PTY in v1**), Todo. Plus **MCP client in v1** (stdio transport first); MCP tools flow through the same permission engine |
+| 6 | Tools | Built-ins: ReadFile, WriteFile, EditFile (string-replace), Glob, Grep, Bash (`spawn` pipes — **no PTY in v1**), Todo. Plus **MCP client in v1** (stdio and Streamable HTTP with SSE fallback); MCP tools flow through the same permission engine |
 | 7 | Sessions | **Append-only JSONL event logs** per session under `~/.minerva/projects/<project-slug>/`; the event stream is the source of truth (replay → model context or UI view). Index file for fast session lists. Resume = replay. Manual `/compact` in v1; auto-compaction later |
 | 8 | Frontends | **CLI first** (Ink). `@minerva/client` shared package: protocol client + session state reducer (events in → renderable view-model out, zero UI imports). Tauri 2 GUI is M2, reusing `@minerva/client`; webview = React + Vite |
 | 9 | Runtime & dist | **Bun-first, Node-tolerant**: Bun is the blessed runtime; kernel core accesses spawn/fs through a thin runtime-adapter seam so a Node build stays cheap. CLI ships as `bun build --compile` single binaries; Tauri bundles the same binary as sidecar |
 | 10 | v0.1 scope | **Full CLI feature set as the single public milestone.** No intermediate releases; integration risk managed via internal vertical slices |
 | 11 | License | Private repo for now; open/closed + license decided at v0.1 (Apache-2.0 + CLA is the default candidate if opened) |
+| 12 | Project instructions | **AGENTS.md open standard**: `<dataDir>/AGENTS.md` (global) + project-root `AGENTS.md` only — nested per-directory files deferred. Appended to the base system prompt (host override stays the base), loaded at session establish, never persisted (the system prompt isn't in the event log). Repo-controlled text entering the prompt matches the existing trust posture — project settings already inject allow rules |
+| 13 | Skills | **`skills/<name>/SKILL.md` dirs** (global under dataDir, project under `.minerva/`; project wins collisions like `mcpServers`). Frontmatter is `key: value` lines only — hand-rolled parser, no YAML dep. Model-invoked via one **`skill` tool** (progressive disclosure: names+descriptions in the tool description, body read at invoke; read-only but deniable, audited like any tool). User-invoked `/name` expands **kernel-side** (transcript keeps the literal text, the provider sees the body) so skills work identically from ACP hosts; the CLI's built-in slash commands stay client-side and win name collisions. `/name` honors deny rules, skips ask (typing it is consent), audited via `providerText`. Project-layer files (AGENTS.md and skills) are symlink-confined to the workspace with an invoke-time recheck; global files are user-owned and unconfined |
 
 Explicitly **not** in v1: subagents, PTY shells, OS sandboxing, auto-compaction,
 WS/remote transport (designed-for, not built), web frontend.
@@ -36,10 +38,10 @@ minerva/
     protocol/    # ACP types + minerva/* extensions, JSON-RPC framing,
                  # Transport interface + in-proc & stdio implementations
     kernel/      # agent loop, session engine (JSONL event log), tool registry,
-                 # built-in tools, permission engine + modes, audit log,
+                 # built-in tools, MCP client (stdio + Streamable HTTP),
+                 # permission engine + modes, audit log,
                  # runtime-adapter seam (spawn/fs)
     providers/   # ModelProvider interface + AI SDK v5 adapter (sole importer of `ai`)
-    mcp/         # MCP client (stdio first), tool bridging into the registry
     client/      # frontend-agnostic protocol client + session view-model reducer
     cli/         # Ink app: REPL, streaming render, approval prompts, slash commands
   apps/

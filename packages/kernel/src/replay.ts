@@ -66,7 +66,9 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
     switch (event.type) {
       case "user.message":
         flushToolBatch();
-        messages.push({ role: "user", content: event.text });
+        // The model sees the expanded text (skill invocations); the UI keeps
+        // what the user typed.
+        messages.push({ role: "user", content: event.providerText ?? event.text });
         updates.push({
           sessionUpdate: "user_message_chunk",
           content: { type: "text", text: event.text },

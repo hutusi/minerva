@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { PlanEntry, ToolKind } from "@minerva/protocol";
-import { isNotFoundError, type Runtime } from "../runtime";
+import { type BoundedRead, isNotFoundError, type Runtime } from "../runtime";
 
 export interface ToolContext {
   cwd: string;
@@ -77,6 +77,32 @@ export async function resolveWithinWorkspace(
     throw new Error(`path is outside the workspace: ${resolved}`);
   }
   return resolved;
+}
+
+/**
+ * Bounded read confined to `root`, closing the check-then-open TOCTOU that a
+ * bare resolveWithinWorkspace + read pair has: the pre-check rejects paths
+ * that already resolve outside, the read pins an inode via its open fd, and
+ * the path is then re-validated as (still) resolving inside the root AND
+ * still pointing at that same inode. A symlink swapped in at any point either
+ * fails a validation or changes the inode — bytes from a losing race are
+ * discarded, never returned. Repos cannot carry hardlinks, so symlinks are
+ * the entire escape vector an inode match rules out.
+ */
+export async function readConfinedTextFilePrefix(
+  runtime: Runtime,
+  root: string,
+  path: string,
+  maxBytes: number,
+): Promise<BoundedRead> {
+  await resolveWithinWorkspace(runtime, root, path);
+  const bounded = await runtime.readTextFilePrefix(path, maxBytes);
+  await resolveWithinWorkspace(runtime, root, path);
+  const current = await runtime.statFile(path);
+  if (current.dev !== bounded.dev || current.ino !== bounded.ino) {
+    throw new Error(`path is outside the workspace: ${path}`);
+  }
+  return bounded;
 }
 
 // Mirrors the OS SYMLOOP_MAX: a self-evident termination bound so the

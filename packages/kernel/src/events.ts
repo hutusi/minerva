@@ -21,7 +21,18 @@ export type SessionEvent =
   // Audit trail for a live model switch (minerva/config/set_model). Replay
   // skips unknown/informational events, so logs carrying it stay resumable.
   | { type: "session.model_changed"; provider: string; at: string }
-  | { type: "user.message"; text: string; at: string }
+  | {
+      type: "user.message";
+      /** What the user typed — the transcript/UI text. */
+      text: string;
+      /**
+       * What the model receives instead of `text`, when they differ — e.g. a
+       * `/skill` invocation expanded to the skill's instructions. Absent for
+       * ordinary prompts; replay falls back to `text`.
+       */
+      providerText?: string | undefined;
+      at: string;
+    }
   | {
       /**
        * Reasoning the model streamed before answering. Display-only: replay

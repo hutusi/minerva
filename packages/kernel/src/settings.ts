@@ -17,12 +17,28 @@ export interface PermissionRules {
   ask: string[];
 }
 
-/** How to launch an MCP server (stdio transport). */
-export interface McpServerConfig {
+/** A local MCP server launched as a child process over stdio. */
+export interface McpStdioServerConfig {
+  /** Optional discriminant; an entry with `command` and no `type` is stdio. */
+  type?: "stdio" | undefined;
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
+
+/** A remote MCP server reached over Streamable HTTP (SSE fallback). */
+export interface McpHttpServerConfig {
+  type: "http";
+  url: string;
+  /**
+   * Extra request headers, e.g. `{ "Authorization": "Bearer …" }`. Unlike
+   * provider apiKeys these merge from BOTH layers — keep tokened servers in
+   * the global settings file, not a shared project one.
+   */
+  headers?: Record<string, string>;
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
 
 /** A model provider entry — built-in override or custom OpenAI-compatible endpoint. */
 export interface ProviderSettings {

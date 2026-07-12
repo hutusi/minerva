@@ -7,6 +7,7 @@ import {
   Connection,
   type InitializeParams,
   type InitializeResult,
+  type InstructionsInfo,
   JSON_RPC_ERROR_CODES,
   MINERVA_METHODS,
   PROTOCOL_VERSION,
@@ -20,12 +21,14 @@ import {
   type SessionSummary,
   type SessionsListResult,
   type SessionUsageParams,
+  type SkillsListResult,
   type Transport,
 } from "@minerva/protocol";
 import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
-import { runPrompt } from "./agent-loop";
+import { type LoopContext, runPrompt } from "./agent-loop";
 import { runCompact } from "./compact";
 import { now } from "./events";
+import { loadProjectInstructions, type ProjectInstructions } from "./instructions";
 import { connectMcpServers, type McpConnection } from "./mcp";
 import { isSessionModeId, SESSION_MODES } from "./permissions";
 import { defaultRuntime, isNotFoundError, type Runtime } from "./runtime";
@@ -42,7 +45,8 @@ import {
   type ProviderSettings,
   updateGlobalSettings,
 } from "./settings";
-import { builtinTools, type KernelTool } from "./tools";
+import { loadSkills, readSkillBody, type SkillRegistry } from "./skills";
+import { builtinTools, createSkillTool, type KernelTool } from "./tools";
 import { hasUsage, toTokenUsage } from "./usage";
 
 /**
@@ -108,6 +112,8 @@ export class MinervaKernel {
   #connection: Connection;
   #sessions = new Map<string, Session>();
   #mcp = new Map<string, McpConnection>();
+  #instructions = new Map<string, ProjectInstructions>();
+  #skills = new Map<string, SkillRegistry>();
   #provider: ModelProvider;
   #resolveProvider: KernelOptions["resolveProvider"];
   #runtime: Runtime;
@@ -144,6 +150,7 @@ export class MinervaKernel {
     this.#register(MINERVA_METHODS.sessionsList, (params) => this.#sessionsList(params));
     this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
     this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
+    this.#register(MINERVA_METHODS.skillsList, (params) => this.#skillsList(params));
     // Cancel is a notification, deliberately unwrapped: it carries no state to
     // persist and must keep working during shutdown — close() relies on it.
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
@@ -190,8 +197,37 @@ export class MinervaKernel {
       runtime: this.#runtime,
     });
     this.#sessions.set(session.id, session);
-    await this.#connectMcp(session.id, cwd);
-    return { sessionId: session.id, modes: modeState(session) };
+    const instructions = await this.#prepareSession(session.id, cwd);
+    return {
+      sessionId: session.id,
+      modes: modeState(session),
+      ...(instructions ? { instructions } : {}),
+    };
+  }
+
+  /**
+   * Per-session context beyond the transcript: MCP connections and AGENTS.md
+   * instructions, established on session/new and re-established on
+   * session/load. Every failure degrades to a stderr warning — a broken
+   * config file must not brick sessions.
+   */
+  async #prepareSession(sessionId: string, cwd: string): Promise<InstructionsInfo | undefined> {
+    // Independent I/O — run concurrently so one slow MCP server doesn't
+    // delay instruction/skill loading (each degrades to warnings internally).
+    const [, instructions, skills] = await Promise.all([
+      this.#connectMcp(sessionId, cwd),
+      loadProjectInstructions(this.#runtime, this.#dataDir, cwd),
+      loadSkills(this.#runtime, this.#dataDir, cwd),
+    ]);
+    for (const warning of [...instructions.warnings, ...skills.warnings]) {
+      process.stderr.write(`minerva: ${warning}\n`);
+    }
+    this.#instructions.set(sessionId, instructions);
+    this.#skills.set(sessionId, skills);
+    if (instructions.files.length === 0) return undefined;
+    return {
+      files: instructions.files.map(({ path, scope, truncated }) => ({ path, scope, truncated })),
+    };
   }
 
   /**
@@ -215,7 +251,16 @@ export class MinervaKernel {
 
   #toolsFor(sessionId: string): KernelTool[] {
     const mcpTools = this.#mcp.get(sessionId)?.tools ?? [];
-    return mcpTools.length > 0 ? [...this.#tools, ...mcpTools] : this.#tools;
+    const skills = this.#skills.get(sessionId);
+    // The skill tool only exists when the session has skills: an empty
+    // listing would just burn prompt tokens and invite bogus calls. A host
+    // that injected its own "skill" tool wins — providers reject duplicate
+    // definitions, and the execute map would silently shadow the host's.
+    const hostHasSkillTool = this.#tools.some((tool) => tool.name === "skill");
+    const skillTools =
+      !hostHasSkillTool && skills && skills.skills.length > 0 ? [createSkillTool(skills)] : [];
+    if (mcpTools.length === 0 && skillTools.length === 0) return this.#tools;
+    return [...this.#tools, ...skillTools, ...mcpTools];
   }
 
   async #sessionLoad(params: unknown): Promise<SessionLoadResult> {
@@ -262,7 +307,7 @@ export class MinervaKernel {
       );
     }
     this.#sessions.set(sessionId, loaded.session);
-    await this.#connectMcp(sessionId, cwd);
+    const instructions = await this.#prepareSession(sessionId, cwd);
     // Replay the conversation so the frontend can rebuild its transcript. A
     // client that advertised batch support gets it in one message (one
     // apply+render instead of the O(n²) per-update path); a generic ACP client
@@ -287,7 +332,7 @@ export class MinervaKernel {
       };
       this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
     }
-    return { modes: modeState(loaded.session) };
+    return { modes: modeState(loaded.session), ...(instructions ? { instructions } : {}) };
   }
 
   async #sessionSetMode(params: unknown): Promise<SessionSetModeResult> {
@@ -309,6 +354,23 @@ export class MinervaKernel {
       update: { sessionUpdate: "current_mode_update", currentModeId: modeId },
     });
     return null;
+  }
+
+  async #skillsList(params: unknown): Promise<SkillsListResult> {
+    const { cwd } = (params ?? {}) as { cwd?: string };
+    if (typeof cwd !== "string" || cwd.length === 0) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "skills/list requires cwd");
+    }
+    // Fresh from disk rather than a per-session cache: needs no session, is
+    // two readdirs, and lets a frontend refresh after the user adds a skill.
+    const registry = await loadSkills(this.#runtime, this.#dataDir, cwd);
+    return {
+      skills: registry.skills.map(({ name, description, source }) => ({
+        name,
+        description,
+        source,
+      })),
+    };
   }
 
   async #sessionsList(params: unknown): Promise<SessionsListResult> {
@@ -397,21 +459,96 @@ export class MinervaKernel {
     if (!text) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "prompt has no text content");
     }
+    // Claim the prompt lease synchronously: an await between the promptActive
+    // guard above and this claim would let two same-tick requests both pass
+    // the guard and interleave their events. runPrompt releases the lease.
+    const signal = session.beginPrompt();
+
     // Persist the first prompt as the session's index preview (once), so the
     // picker doesn't have to read the log to show it.
     void session.recordPreview(text).catch(() => {});
 
-    return runPrompt(
-      {
+    // ALL fallible pre-work must sit inside this block: the host-supplied
+    // systemPrompt callback, skill expansion, and tool assembly can each
+    // throw, and a leaked lease locks the session forever. Never release
+    // AFTER runPrompt is called — it owns the lease from that point (its
+    // finally releases), and a late endPrompt here could free a successor
+    // prompt's freshly claimed lease.
+    let context: LoopContext;
+    let providerText: string | undefined;
+    try {
+      // AGENTS.md instructions append to the host's base prompt rather than
+      // replacing it; loaded at session establish, so edits need a
+      // new/reloaded session to take effect.
+      const instructions = this.#instructions.get(session.id)?.text;
+      const base = this.#systemPrompt(session.cwd);
+      providerText = await this.#expandSkillInvocation(session, text);
+      context = {
         session,
         connection: this.#connection,
         provider: this.#provider,
         tools: this.#toolsFor(session.id),
-        system: this.#systemPrompt(session.cwd),
+        system: instructions ? `${base}\n\n${instructions}` : base,
         runtime: this.#runtime,
-      },
-      text,
-    );
+        signal,
+      };
+    } catch (error) {
+      // Nothing was logged yet; the failed prompt leaves no trace.
+      session.endPrompt();
+      throw error;
+    }
+    // runPrompt is async — it cannot throw synchronously, so the handoff is
+    // unconditional once we reach this line.
+    return runPrompt(context, text, providerText);
+  }
+
+  /**
+   * A `/name args` prompt naming a session skill expands kernel-side: the
+   * transcript keeps the literal line while the provider receives the skill
+   * body — so skills work identically from the CLI and ACP hosts. Slash text
+   * matching no skill passes through to the model unchanged (today's
+   * behavior for stray slashes).
+   */
+  async #expandSkillInvocation(session: Session, text: string): Promise<string | undefined> {
+    const match = text.match(/^\/([a-z0-9][a-z0-9_-]*)\s*([\s\S]*)$/i);
+    if (!match) return undefined;
+    const [, name = "", args = ""] = match;
+    // Always resolve against a fresh read: skills/list reads fresh from disk,
+    // so anything less here lets a stale session cache diverge from what the
+    // frontend offered (a later-added project override would expand the
+    // cached global body; a deleted one would error instead of falling back).
+    // Bounded cost — only slash-shaped prompts get here, and discovery reads
+    // 8 KiB frontmatter prefixes at most.
+    const registry = await loadSkills(this.#runtime, this.#dataDir, session.cwd);
+    for (const warning of registry.warnings) {
+      process.stderr.write(`minerva: ${warning}\n`);
+    }
+    this.#skills.set(session.id, registry);
+    const skill = registry.skills.find((entry) => entry.name === name);
+    if (!skill) return undefined;
+    // Deny rules block even explicit user invocations; "ask" is skipped —
+    // typing the command is consent, and the expansion is audited via the
+    // user.message providerText field.
+    const verdict = session.permissions.evaluate(createSkillTool(registry), { name }, session.mode);
+    if (verdict.action === "deny") {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        `skill "${name}" is blocked by a deny permission rule`,
+      );
+    }
+    let body: string;
+    try {
+      body = await readSkillBody(this.#runtime, skill);
+    } catch (error) {
+      // Unlike discovery, the user explicitly asked for this skill — a
+      // vanished/unreadable file should fail the prompt loudly.
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        `skill "${name}": ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const invocation = args.trim() ? `with: ${args.trim()}` : "with no arguments";
+    return `${body}\n\n---\nThe user invoked the "${name}" skill ${invocation}`;
   }
 
   /**
@@ -444,6 +581,8 @@ export class MinervaKernel {
     if (session.messages.length === 0) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, "nothing to compact yet");
     }
+    // No await may sit between the guard above and runCompact's synchronous
+    // beginPrompt(), or a same-tick prompt could claim the lease in between.
     const { summary, usage } = await runCompact(session, this.#provider);
     // Reflect the summarization spend immediately, like a completed turn does.
     if (usage && hasUsage(usage)) {
