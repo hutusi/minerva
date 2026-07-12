@@ -39,6 +39,8 @@ export interface SessionViewModel {
   currentModeId?: string;
   /** Persistent status like currentModeId — not a transcript item. */
   usage?: { lastTurn?: TokenUsage | undefined; cumulative: TokenUsage };
+  /** Context-window utilization from ACP usage_update — status, not transcript. */
+  context?: { used: number; size: number };
 }
 
 const EMPTY: SessionViewModel = { items: [], busy: false };
@@ -94,14 +96,17 @@ export class SessionStore {
   applyBatch(updates: SessionUpdate[]): void {
     const items = [...this.#viewModel.items];
     let currentModeId = this.#viewModel.currentModeId;
+    let context = this.#viewModel.context;
     for (const update of updates) {
-      const modeId = reduceInto(items, update);
-      if (modeId !== undefined) currentModeId = modeId;
+      const patch = reduceInto(items, update);
+      if (patch?.modeId !== undefined) currentModeId = patch.modeId;
+      if (patch?.context !== undefined) context = patch.context;
     }
     this.#set({
       ...this.#viewModel,
       items,
       ...(currentModeId !== undefined ? { currentModeId } : {}),
+      ...(context !== undefined ? { context } : {}),
     });
   }
 
@@ -126,13 +131,19 @@ export class SessionStore {
   }
 }
 
+/** Non-transcript state an update carries — merged onto the view model. */
+interface StatusPatch {
+  modeId?: string;
+  context?: { used: number; size: number };
+}
+
 /**
  * The item-array reductions below mutate the array they are given IN PLACE.
  * Callers pass a fresh clone (never a live snapshot), so the previously exposed
  * snapshot is never touched — that is what keeps updates immutable-safe while
  * letting a batch reuse one array across many updates.
  */
-function reduceInto(items: ViewItem[], update: SessionUpdate): string | undefined {
+function reduceInto(items: ViewItem[], update: SessionUpdate): StatusPatch | undefined {
   switch (update.sessionUpdate) {
     case "agent_message_chunk":
       appendStreamingInto(items, "assistant", update.content.text);
@@ -166,7 +177,9 @@ function reduceInto(items: ViewItem[], update: SessionUpdate): string | undefine
       upsertPlanInto(items, update.entries);
       return undefined;
     case "current_mode_update":
-      return update.currentModeId;
+      return { modeId: update.currentModeId };
+    case "usage_update":
+      return { context: { used: update.used, size: update.size } };
   }
 }
 

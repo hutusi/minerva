@@ -65,10 +65,25 @@ describe("SessionStore reducer", () => {
     store.setBusy(true);
     store.setMode("plan");
     store.setUsage({ inputTokens: 1, outputTokens: 2 }, { inputTokens: 1, outputTokens: 2 });
+    store.apply({ sessionUpdate: "usage_update", used: 800, size: 1_000 });
     store.setBusy(false);
 
     expect(store.snapshot.currentModeId).toBe("plan");
     expect(store.snapshot.usage?.cumulative).toEqual({ inputTokens: 1, outputTokens: 2 });
+    expect(store.snapshot.context).toEqual({ used: 800, size: 1_000 });
+  });
+
+  test("usage_update is status state, latest wins, never a transcript item", () => {
+    const store = new SessionStore();
+    store.apply({ sessionUpdate: "usage_update", used: 100, size: 1_000 });
+    expect(store.snapshot.context).toEqual({ used: 100, size: 1_000 });
+
+    store.applyBatch([
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+      { sessionUpdate: "usage_update", used: 250, size: 1_000 },
+    ]);
+    expect(store.snapshot.context).toEqual({ used: 250, size: 1_000 });
+    expect(store.snapshot.items).toEqual([{ kind: "assistant", text: "hi", streaming: true }]);
   });
 
   test("tool_call_update merges status and text output", () => {

@@ -60,6 +60,8 @@ function renderTui(
     needsConfig?: boolean;
     /** Written to cwd/.minerva/settings.json before the app boots. */
     projectSettings?: object;
+    /** Declare a context window on the scripted provider (arms usage_update). */
+    contextWindow?: number;
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-ui-proj-"));
@@ -68,11 +70,15 @@ function renderTui(
     mkdirSync(join(cwd, ".minerva"), { recursive: true });
     writeFileSync(join(cwd, ".minerva", "settings.json"), JSON.stringify(options.projectSettings));
   }
+  const scripted = createScriptedProvider(turns);
   const [clientTransport, kernelTransport] = createInProcTransportPair();
   kernels.push(
     createKernel(kernelTransport, {
       dataDir,
-      provider: createScriptedProvider(turns),
+      provider:
+        options.contextWindow !== undefined
+          ? { ...scripted, contextWindow: options.contextWindow }
+          : scripted,
       ...(options.resolveProvider ? { resolveProvider: options.resolveProvider } : {}),
     }),
   );
@@ -399,20 +405,23 @@ describe("TUI (ink-testing-library, full stack)", () => {
   }, 20_000);
 
   test("token usage footer shows last-turn and session totals", async () => {
-    const ui = renderTui([
+    const ui = renderTui(
       [
-        { type: "text-delta", text: "First answer." },
-        {
-          type: "finish",
-          finishReason: "stop",
-          usage: { inputTokens: 1000, outputTokens: 5, cacheReadTokens: 100 },
-        },
+        [
+          { type: "text-delta", text: "First answer." },
+          {
+            type: "finish",
+            finishReason: "stop",
+            usage: { inputTokens: 1000, outputTokens: 5, cacheReadTokens: 100 },
+          },
+        ],
+        [
+          { type: "text-delta", text: "Second answer." },
+          { type: "finish", finishReason: "stop", usage: { inputTokens: 250, outputTokens: 8 } },
+        ],
       ],
-      [
-        { type: "text-delta", text: "Second answer." },
-        { type: "finish", finishReason: "stop", usage: { inputTokens: 250, outputTokens: 8 } },
-      ],
-    ]);
+      { contextWindow: 10_000 },
+    );
     await ready(ui);
     // Nothing reported yet — no footer.
     expect(ui.lastFrame()).not.toContain("tokens ·");
@@ -421,11 +430,14 @@ describe("TUI (ink-testing-library, full stack)", () => {
     await waitFor(() => (ui.lastFrame() ?? "").includes("tokens ·"), "usage footer");
     expect(ui.lastFrame()).toContain("last 1k in / 5 out");
     expect(ui.lastFrame()).toContain("session 1k in / 5 out (100 cached)");
+    // usage_update: 1000 of the declared 10k window.
+    expect(ui.lastFrame()).toContain("ctx 10%");
 
     await type(ui, "second");
     await waitFor(() => (ui.lastFrame() ?? "").includes("Second answer."), "second turn");
     expect(ui.lastFrame()).toContain("last 250 in / 8 out");
     expect(ui.lastFrame()).toContain("session 1.3k in / 13 out (100 cached)");
+    expect(ui.lastFrame()).toContain("ctx 3%");
     ui.unmount();
   }, 20_000);
 

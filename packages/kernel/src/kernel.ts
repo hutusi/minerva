@@ -22,6 +22,7 @@ import {
   type SessionSetModeResult,
   type SessionSummary,
   type SessionsListResult,
+  type SessionUpdateParams,
   type SessionUsageParams,
   type SkillsListResult,
   type Transport,
@@ -353,6 +354,21 @@ export class MinervaKernel {
         cumulative: toTokenUsage(loaded.session.usage),
       };
       this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
+    }
+    // Same for window utilization: lastTurnContext is rebuilt by replay, so a
+    // resumed frontend can show the context meter before the next turn.
+    if (
+      loaded.session.lastTurnContext !== undefined &&
+      this.#provider.contextWindow !== undefined
+    ) {
+      this.#connection.notify(CLIENT_METHODS.sessionUpdate, {
+        sessionId,
+        update: {
+          sessionUpdate: "usage_update",
+          used: loaded.session.lastTurnContext,
+          size: this.#provider.contextWindow,
+        },
+      } satisfies SessionUpdateParams);
     }
     return {
       modes: modeState(loaded.session),

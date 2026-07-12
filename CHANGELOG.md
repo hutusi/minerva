@@ -7,6 +7,12 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- ACP `usage_update`: `session/update` now carries context-window
+  utilization (`used`/`size`, per the ACP session-usage RFD) after each
+  turn and once after a `session/load` replay — emitted only when the
+  provider declares a `contextWindow`, so the numbers are never a guess.
+  The richer `minerva/session/usage` notification is unchanged. The CLI
+  footer shows it as `ctx N%`.
 - Built-in `ollama` provider: keyless OpenAI-compatible endpoint at
   `http://localhost:11434/v1` (`ollama/<model>`). No default model or
   context window is assumed — locally pulled models vary — so

@@ -311,7 +311,12 @@ export type SessionUpdate =
   | ToolCallStart
   | ToolCallUpdate
   | { sessionUpdate: "plan"; entries: PlanEntry[] }
-  | { sessionUpdate: "current_mode_update"; currentModeId: string };
+  | { sessionUpdate: "current_mode_update"; currentModeId: string }
+  /** ACP session-usage RFD: context-window utilization after a turn. `used`
+   * is the last model call's context (input tokens incl. cache), `size` the
+   * provider's declared window. Only emitted when the provider declares one;
+   * richer token detail stays on minerva/session/usage. */
+  | { sessionUpdate: "usage_update"; used: number; size: number };
 
 export interface SessionUpdateParams {
   sessionId: string;

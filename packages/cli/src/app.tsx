@@ -468,7 +468,11 @@ function Chat({
           modeId={viewModel.currentModeId}
         />
       )}
-      <StatusFooter modeId={viewModel.currentModeId} usage={viewModel.usage} />
+      <StatusFooter
+        modeId={viewModel.currentModeId}
+        usage={viewModel.usage}
+        context={viewModel.context}
+      />
     </Box>
   );
 }
@@ -578,13 +582,15 @@ function BusyIndicator() {
   );
 }
 
-/** Session status line: mode (when not default) and token usage. */
+/** Session status line: mode (when not default), token usage, and context. */
 function StatusFooter({
   modeId,
   usage,
+  context,
 }: {
   modeId: string | undefined;
   usage: SessionViewModel["usage"];
+  context: SessionViewModel["context"];
 }) {
   const parts: string[] = [];
   if (modeId && modeId !== "default") parts.push(`mode ${modeId}`);
@@ -603,6 +609,9 @@ function StatusFooter({
         : []),
       `session ${formatTokens(cumulative.inputTokens)} in / ${formatTokens(cumulative.outputTokens)} out${cached}`,
     );
+  }
+  if (context && context.size > 0) {
+    parts.push(`ctx ${Math.round((100 * context.used) / context.size)}%`);
   }
   if (parts.length === 0) return null;
   return <Text dimColor>{parts.join(" · ")}</Text>;

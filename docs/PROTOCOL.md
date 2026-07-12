@@ -98,6 +98,7 @@ Params `{ sessionId, update }`. `update.sessionUpdate` variants:
 | `tool_call_update` | `toolCallId, status?, title?, content?, rawOutput?` | Progress → `in_progress`, then `completed`/`failed` with output |
 | `plan` | `entries: [{ content, priority, status }]` | Todo list replaced |
 | `current_mode_update` | `currentModeId` | Session mode changed |
+| `usage_update` | `used, size` | Context-window utilization (ACP session-usage RFD): the last model call's context vs the provider's declared window. Emitted after each turn and once after a `session/load` replay — only when the provider declares a `contextWindow` |
 
 `kind ∈ read | edit | delete | move | search | execute | think | fetch | other`;
 `content` entries are `{ type: "content", content: { type: "text", text } }` or
@@ -205,10 +206,12 @@ breaking changes to existing shapes do, with a migration note in CHANGELOG.
 The ACP-shaped subset tracks ACP v1; divergences must be recorded here.
 
 Recorded divergences:
-- **Usage telemetry.** ACP's session-usage RFD added a `usage_update` variant
-  to `session/update` carrying context-window utilization (`used`/`size`,
-  optional `cost`). Minerva instead emits the richer per-turn/cumulative
-  token counts as the separate `minerva/session/usage` notification: emitting
-  a truthful `used`/`size` needs per-model context-window metadata the open
-  provider registry doesn't carry. ACP `usage_update` alignment is deferred
-  until providers declare a context window.
+- **Usage telemetry** *(resolved in 0.3)*. ACP's session-usage RFD added a
+  `usage_update` variant to `session/update` carrying context-window
+  utilization (`used`/`size`, optional `cost`). Alignment was deferred until
+  providers declared a context window; they do since 0.2.0 (auto-compaction),
+  so Minerva now emits `usage_update` for providers with a declared
+  `contextWindow` — and keeps the separate `minerva/session/usage`
+  notification for the richer per-turn/cumulative token counts the ACP shape
+  doesn't carry. No `cost` field: pricing for the open provider registry
+  can't be bundled truthfully.

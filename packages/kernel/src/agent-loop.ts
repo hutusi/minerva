@@ -515,6 +515,16 @@ function finish(
     at: now(),
   });
   if (turnContext !== undefined) session.lastTurnContext = turnContext;
+  // ACP usage_update: window utilization for generic clients. Needs both a
+  // measured context and a declared window — absent either, say nothing
+  // rather than something misleading.
+  if (turnContext !== undefined && context.provider.contextWindow !== undefined) {
+    sendUpdate(context, {
+      sessionUpdate: "usage_update",
+      used: turnContext,
+      size: context.provider.contextWindow,
+    });
+  }
   // Providers that report nothing (scripted fixtures, some proxies) get no
   // notification rather than a misleading all-zero one.
   if (hasUsage(usage)) {
