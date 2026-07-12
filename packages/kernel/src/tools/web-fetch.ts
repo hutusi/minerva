@@ -1,4 +1,6 @@
+import { loadSettings } from "../settings";
 import { truncateCodePointSafe } from "../text";
+import { assertPublicHost, type LookupFn, PrivateHostError } from "./net-guard";
 import type { KernelTool } from "./types";
 import { asRecord, requireString } from "./types";
 
@@ -9,10 +11,14 @@ import { asRecord, requireString } from "./types";
  * mode always prompts with the URL, and deny/allow rules match it
  * (`web_fetch(https://example.com/*)`).
  *
- * SSRF stance (v1): no private-IP blocking. The permission prompt shows the
- * exact URL before anything is fetched, and deny rules can blacklist ranges
- * by pattern — same "friction, not a cage" posture as the bash rules
- * (see permissions.ts).
+ * SSRF stance: hosts that are (or resolve to) private/loopback addresses are
+ * refused by default — the check runs on the initial URL and on every
+ * redirect hop, so a public page can't bounce the fetch to a metadata
+ * endpoint. `{ "webFetch": { "allowPrivate": true } }` in settings lifts it
+ * (localhost development). This is friction against ACCIDENTAL SSRF-shaped
+ * fetches, same posture as the bash rules (see permissions.ts), not a
+ * sandbox: fetch re-resolves DNS after the check, so a rebinding race
+ * between check and connect remains possible.
  */
 
 const MAX_REDIRECTS = 5;
@@ -21,100 +27,122 @@ const MAX_OUTPUT_CHARS = 30_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 120_000;
 
-export const webFetchTool: KernelTool = {
-  name: "web_fetch",
-  description:
-    "Fetch a URL over HTTP(S) GET and return its textual content. HTML is " +
-    "reduced to plain text; JSON, XML, and text/* pass through. Bodies are " +
-    "capped at 1 MiB and output at 30000 characters.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      url: { type: "string", description: "The http(s) URL to fetch" },
-      timeout_ms: {
-        type: "number",
-        description: "Timeout in milliseconds (default 30000, max 120000)",
+/** The DNS seam exists for tests; production uses the default resolver. */
+export function createWebFetchTool(options: { lookup?: LookupFn } = {}): KernelTool {
+  return {
+    name: "web_fetch",
+    description:
+      "Fetch a URL over HTTP(S) GET and return its textual content. HTML is " +
+      "reduced to plain text; JSON, XML, and text/* pass through. Bodies are " +
+      "capped at 1 MiB and output at 30000 characters. Hosts on private or " +
+      "loopback addresses are refused unless settings permit them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The http(s) URL to fetch" },
+        timeout_ms: {
+          type: "number",
+          description: "Timeout in milliseconds (default 30000, max 120000)",
+        },
       },
+      required: ["url"],
     },
-    required: ["url"],
-  },
-  kind: "fetch",
-  readOnly: false,
-  title(input) {
-    return requireString(asRecord(input), "url");
-  },
-  async execute(input, context) {
-    const record = asRecord(input);
-    const rawUrl = requireString(record, "url");
-    const timeoutMs =
-      typeof record.timeout_ms === "number" &&
-      Number.isFinite(record.timeout_ms) &&
-      record.timeout_ms > 0
-        ? Math.min(record.timeout_ms, MAX_TIMEOUT_MS)
-        : DEFAULT_TIMEOUT_MS;
+    kind: "fetch",
+    readOnly: false,
+    title(input) {
+      return requireString(asRecord(input), "url");
+    },
+    async execute(input, context) {
+      const record = asRecord(input);
+      const rawUrl = requireString(record, "url");
+      const timeoutMs =
+        typeof record.timeout_ms === "number" &&
+        Number.isFinite(record.timeout_ms) &&
+        record.timeout_ms > 0
+          ? Math.min(record.timeout_ms, MAX_TIMEOUT_MS)
+          : DEFAULT_TIMEOUT_MS;
 
-    let url: URL;
-    try {
-      url = new URL(rawUrl);
-    } catch {
-      return { output: `invalid URL: ${rawUrl}`, isError: true };
-    }
-    if (!isHttpScheme(url)) {
-      return { output: `only http(s) URLs are supported: ${rawUrl}`, isError: true };
-    }
-
-    const timeout = AbortSignal.timeout(timeoutMs);
-    const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
-
-    try {
-      // Manual redirects: each hop's scheme is re-checked, so a redirect to
-      // file:// or an unbounded loop can't slip past the initial validation.
-      let response = await fetch(url, { redirect: "manual", signal });
-      for (let hops = 0; isRedirect(response.status); hops++) {
-        if (hops >= MAX_REDIRECTS) {
-          await response.body?.cancel();
-          return { output: `too many redirects (limit ${MAX_REDIRECTS})`, isError: true };
-        }
-        const location = response.headers.get("location");
-        if (!location) break; // 3xx without a target — treat as the final response
-        await response.body?.cancel();
-        url = new URL(location, url);
-        if (!isHttpScheme(url)) {
-          return { output: `redirect to unsupported scheme: ${url.href}`, isError: true };
-        }
-        response = await fetch(url, { redirect: "manual", signal });
+      let url: URL;
+      try {
+        url = new URL(rawUrl);
+      } catch {
+        return { output: `invalid URL: ${rawUrl}`, isError: true };
       }
+      if (!isHttpScheme(url)) {
+        return { output: `only http(s) URLs are supported: ${rawUrl}`, isError: true };
+      }
+      // No dataDir (direct-call tests) means no settings — the guard stays on.
+      const allowPrivate =
+        context.dataDir !== undefined &&
+        (await loadSettings(context.runtime, context.dataDir, context.cwd)).webFetch
+          .allowPrivate === true;
 
-      const contentType = response.headers.get("content-type") ?? "";
-      const kind = classifyContentType(contentType);
-      if (kind === "binary") {
-        await response.body?.cancel();
+      const timeout = AbortSignal.timeout(timeoutMs);
+      const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
+
+      try {
+        if (!allowPrivate) await assertPublicHost(url, options.lookup);
+        // Manual redirects: each hop's scheme and host are re-checked, so a
+        // redirect to file:// or into a private range can't slip past the
+        // initial validation, and an unbounded loop is cut off.
+        let response = await fetch(url, { redirect: "manual", signal });
+        for (let hops = 0; isRedirect(response.status); hops++) {
+          if (hops >= MAX_REDIRECTS) {
+            await response.body?.cancel();
+            return { output: `too many redirects (limit ${MAX_REDIRECTS})`, isError: true };
+          }
+          const location = response.headers.get("location");
+          if (!location) break; // 3xx without a target — treat as the final response
+          await response.body?.cancel();
+          url = new URL(location, url);
+          if (!isHttpScheme(url)) {
+            return { output: `redirect to unsupported scheme: ${url.href}`, isError: true };
+          }
+          if (!allowPrivate) await assertPublicHost(url, options.lookup);
+          response = await fetch(url, { redirect: "manual", signal });
+        }
+
+        const contentType = response.headers.get("content-type") ?? "";
+        const kind = classifyContentType(contentType);
+        if (kind === "binary") {
+          await response.body?.cancel();
+          return {
+            output: `unsupported content-type: ${contentType} — web_fetch handles text, JSON, XML, and HTML`,
+            isError: true,
+          };
+        }
+        const { text, truncated } = await readBounded(response, MAX_BODY_BYTES);
+        const content = kind === "html" ? htmlToText(text) : text;
+        const header = response.ok ? "" : `[HTTP ${response.status}]\n`;
+        let output = `${header}${content}`;
+        if (output.length > MAX_OUTPUT_CHARS) {
+          output = `${truncateCodePointSafe(output, MAX_OUTPUT_CHARS)}\n[truncated at ${MAX_OUTPUT_CHARS} characters]`;
+        } else if (truncated) {
+          output += `\n[body truncated at ${MAX_BODY_BYTES} bytes]`;
+        }
+        return { output, isError: !response.ok };
+      } catch (error) {
+        if (error instanceof PrivateHostError) {
+          return {
+            output:
+              `refused: ${error.message} — set { "webFetch": { "allowPrivate": true } } ` +
+              "in settings to permit fetching private hosts",
+            isError: true,
+          };
+        }
+        if (timeout.aborted) {
+          return { output: `fetch timed out after ${timeoutMs}ms: ${url.href}`, isError: true };
+        }
         return {
-          output: `unsupported content-type: ${contentType} — web_fetch handles text, JSON, XML, and HTML`,
+          output: `fetch failed: ${error instanceof Error ? error.message : String(error)}`,
           isError: true,
         };
       }
-      const { text, truncated } = await readBounded(response, MAX_BODY_BYTES);
-      const content = kind === "html" ? htmlToText(text) : text;
-      const header = response.ok ? "" : `[HTTP ${response.status}]\n`;
-      let output = `${header}${content}`;
-      if (output.length > MAX_OUTPUT_CHARS) {
-        output = `${truncateCodePointSafe(output, MAX_OUTPUT_CHARS)}\n[truncated at ${MAX_OUTPUT_CHARS} characters]`;
-      } else if (truncated) {
-        output += `\n[body truncated at ${MAX_BODY_BYTES} bytes]`;
-      }
-      return { output, isError: !response.ok };
-    } catch (error) {
-      if (timeout.aborted) {
-        return { output: `fetch timed out after ${timeoutMs}ms: ${url.href}`, isError: true };
-      }
-      return {
-        output: `fetch failed: ${error instanceof Error ? error.message : String(error)}`,
-        isError: true,
-      };
-    }
-  },
-};
+    },
+  };
+}
+
+export const webFetchTool: KernelTool = createWebFetchTool();
 
 function isHttpScheme(url: URL): boolean {
   return url.protocol === "http:" || url.protocol === "https:";

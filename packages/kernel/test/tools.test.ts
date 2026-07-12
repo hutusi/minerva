@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashTool, defaultRuntime, editFileTool, readFileTool, writeFileTool } from "../src";
+import {
+  bashTool,
+  defaultRuntime,
+  editFileTool,
+  normalizePtyOutput,
+  readFileTool,
+  writeFileTool,
+} from "../src";
 
 function tempProject(): string {
   return mkdtempSync(join(tmpdir(), "minerva-tools-"));
@@ -149,5 +156,98 @@ describe("bash", () => {
     const result = await bashTool.execute({ command: "pwd" }, ctx(cwd));
     // macOS tmpdir may resolve through /private; compare suffix.
     expect(result.output.trim().endsWith(cwd.replace("/private", ""))).toBe(true);
+  });
+
+  test("pty: true routes through execPty and normalizes the output", async () => {
+    const calls: string[] = [];
+    const runtime = {
+      ...defaultRuntime,
+      exec: async () => {
+        throw new Error("must not use pipes");
+      },
+      execPty: async (command: string) => {
+        calls.push(command);
+        return {
+          stdout: "\u001b[32mgreen\u001b[0m line\r\ndownloading 10%\rdownloading 100%\r\n",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          aborted: false,
+        };
+      },
+    };
+    const result = await bashTool.execute(
+      { command: "fancy --color", pty: true },
+      { cwd: tempProject(), runtime },
+    );
+    expect(calls).toEqual(["fancy --color"]);
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe("green line\ndownloading 100%\n");
+  });
+
+  test("pty fallback is disclosed in the output", async () => {
+    const runtime = {
+      ...defaultRuntime,
+      execPty: async () => ({
+        stdout: "ran\n",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        aborted: false,
+        ptyFallback: true,
+      }),
+    };
+    const result = await bashTool.execute(
+      { command: "echo ran", pty: true },
+      { cwd: tempProject(), runtime },
+    );
+    expect(result.output).toContain("[pty unavailable on this platform — ran with pipes]");
+    expect(result.isError).toBe(false);
+  });
+
+  test.if(process.platform !== "win32")("pty: true grants a real TTY end to end", async () => {
+    const result = await bashTool.execute(
+      { command: "test -t 1 && echo IS_TTY" },
+      ctx(tempProject()),
+    );
+    // Pipes by default: no terminal.
+    expect(result.output).not.toContain("IS_TTY");
+    const pty = await bashTool.execute(
+      { command: "test -t 1 && echo IS_TTY", pty: true },
+      ctx(tempProject()),
+    );
+    expect(pty.output).toContain("IS_TTY");
+    expect(pty.isError).toBe(false);
+  });
+});
+
+describe("normalizePtyOutput", () => {
+  test("CRLF, ANSI CSI/OSC, and charset escapes are stripped", () => {
+    expect(normalizePtyOutput("a\r\nb\r\n")).toBe("a\nb\n");
+    expect(normalizePtyOutput("\u001b[1;32mok\u001b[0m")).toBe("ok");
+    expect(normalizePtyOutput("\u001b]0;window title\u0007body")).toBe("body");
+    expect(normalizePtyOutput("\u001b]2;t\u001b\\body")).toBe("body");
+    expect(normalizePtyOutput("\u001b(Btext\u001b=more\u001b>")).toBe("textmore");
+  });
+
+  test("backspace erasure and the script ^D echo resolve to final state", () => {
+    expect(normalizePtyOutput("abc\b\b")).toBe("a");
+    // macOS script echoes ^D then erases it with backspaces on stdin EOF.
+    expect(normalizePtyOutput("output\n^D\b\b")).toBe("output\n");
+  });
+
+  test("carriage-return overwrites keep only the final line state", () => {
+    expect(normalizePtyOutput("progress 10%\rprogress 50%\rprogress done\nnext")).toBe(
+      "progress done\nnext",
+    );
+  });
+
+  test("stray control characters go; tabs, newlines, and unicode stay", () => {
+    expect(normalizePtyOutput("ab\tc\nd — ✓")).toBe("ab\tc\nd — ✓");
+  });
+
+  test("plain output passes through untouched", () => {
+    const text = "line one\nline two\n";
+    expect(normalizePtyOutput(text)).toBe(text);
   });
 });

@@ -60,6 +60,8 @@ function renderTui(
     needsConfig?: boolean;
     /** Written to cwd/.minerva/settings.json before the app boots. */
     projectSettings?: object;
+    /** Declare a context window on the scripted provider (arms usage_update). */
+    contextWindow?: number;
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-ui-proj-"));
@@ -68,11 +70,15 @@ function renderTui(
     mkdirSync(join(cwd, ".minerva"), { recursive: true });
     writeFileSync(join(cwd, ".minerva", "settings.json"), JSON.stringify(options.projectSettings));
   }
+  const scripted = createScriptedProvider(turns);
   const [clientTransport, kernelTransport] = createInProcTransportPair();
   kernels.push(
     createKernel(kernelTransport, {
       dataDir,
-      provider: createScriptedProvider(turns),
+      provider:
+        options.contextWindow !== undefined
+          ? { ...scripted, contextWindow: options.contextWindow }
+          : scripted,
       ...(options.resolveProvider ? { resolveProvider: options.resolveProvider } : {}),
     }),
   );
@@ -223,6 +229,51 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.stdin.write("n");
     await waitFor(() => (ui.lastFrame() ?? "").includes("Understood"), "denial handled");
     expect(ui.lastFrame()).toContain("[failed]");
+    ui.unmount();
+  }, 20_000);
+
+  test("a task call shows live subagent progress and attributes its permission prompt", async () => {
+    const ui = renderTui([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "t1",
+          toolName: "task",
+          input: { description: "check something", prompt: "Run the echo and report." },
+        },
+        FINISH_TOOLS,
+      ],
+      // Child: one gated tool call, then its report.
+      [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "bash",
+          input: { command: "echo child-e2e" },
+        },
+        FINISH_TOOLS,
+      ],
+      [{ type: "text-delta", text: "Child report ready." }, FINISH_STOP],
+      [{ type: "text-delta", text: "Task finished." }, FINISH_STOP],
+    ]);
+    await ready(ui);
+
+    await type(ui, "delegate the check");
+    // The child's bash call prompts under the parent, attributed to the task.
+    await waitFor(
+      () => (ui.lastFrame() ?? "").includes("Permission required (from subagent)"),
+      "subagent permission",
+    );
+    expect(ui.lastFrame()).toContain("echo child-e2e");
+
+    ui.stdin.write("y");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Task finished."), "final text");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("task: check something");
+    // The collapsed progress line survives in the settled transcript.
+    expect(frame).toContain("↳ 1 tool call");
+    // The child's report is the task tool's output preview.
+    expect(frame).toContain("Child report ready.");
     ui.unmount();
   }, 20_000);
 
@@ -399,20 +450,23 @@ describe("TUI (ink-testing-library, full stack)", () => {
   }, 20_000);
 
   test("token usage footer shows last-turn and session totals", async () => {
-    const ui = renderTui([
+    const ui = renderTui(
       [
-        { type: "text-delta", text: "First answer." },
-        {
-          type: "finish",
-          finishReason: "stop",
-          usage: { inputTokens: 1000, outputTokens: 5, cacheReadTokens: 100 },
-        },
+        [
+          { type: "text-delta", text: "First answer." },
+          {
+            type: "finish",
+            finishReason: "stop",
+            usage: { inputTokens: 1000, outputTokens: 5, cacheReadTokens: 100 },
+          },
+        ],
+        [
+          { type: "text-delta", text: "Second answer." },
+          { type: "finish", finishReason: "stop", usage: { inputTokens: 250, outputTokens: 8 } },
+        ],
       ],
-      [
-        { type: "text-delta", text: "Second answer." },
-        { type: "finish", finishReason: "stop", usage: { inputTokens: 250, outputTokens: 8 } },
-      ],
-    ]);
+      { contextWindow: 10_000 },
+    );
     await ready(ui);
     // Nothing reported yet — no footer.
     expect(ui.lastFrame()).not.toContain("tokens ·");
@@ -421,11 +475,14 @@ describe("TUI (ink-testing-library, full stack)", () => {
     await waitFor(() => (ui.lastFrame() ?? "").includes("tokens ·"), "usage footer");
     expect(ui.lastFrame()).toContain("last 1k in / 5 out");
     expect(ui.lastFrame()).toContain("session 1k in / 5 out (100 cached)");
+    // usage_update: 1000 of the declared 10k window.
+    expect(ui.lastFrame()).toContain("ctx 10%");
 
     await type(ui, "second");
     await waitFor(() => (ui.lastFrame() ?? "").includes("Second answer."), "second turn");
     expect(ui.lastFrame()).toContain("last 250 in / 8 out");
     expect(ui.lastFrame()).toContain("session 1.3k in / 13 out (100 cached)");
+    expect(ui.lastFrame()).toContain("ctx 3%");
     ui.unmount();
   }, 20_000);
 

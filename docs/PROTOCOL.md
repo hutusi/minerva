@@ -98,6 +98,7 @@ Params `{ sessionId, update }`. `update.sessionUpdate` variants:
 | `tool_call_update` | `toolCallId, status?, title?, content?, rawOutput?` | Progress → `in_progress`, then `completed`/`failed` with output |
 | `plan` | `entries: [{ content, priority, status }]` | Todo list replaced |
 | `current_mode_update` | `currentModeId` | Session mode changed |
+| `usage_update` | `used, size` | Context-window utilization (ACP session-usage RFD): the last model call's context vs the provider's declared window. Emitted after each turn and once after a `session/load` replay — only when the provider declares a `contextWindow`. After a model switch, `used` (measured under the previous model's tokenizer) is deliberately compared against the CURRENT window — the same comparison auto-compaction makes, because the question both answer is whether the next prompt fits the window it will actually hit. The cross-tokenizer approximation is bounded: it lives for exactly ONE prompt (the first turn under the new provider refreshes the measurement), the 80% compaction threshold absorbs typical tokenizer variance, and suppressing the signal on a switch would be strictly worse in the dangerous direction — moving a large history to a smaller-window model is precisely when the (approximate) trigger must fire. A value past 100% honestly signals imminent compaction |
 
 `kind ∈ read | edit | delete | move | search | execute | think | fetch | other`;
 `content` entries are `{ type: "content", content: { type: "text", text } }` or
@@ -131,10 +132,24 @@ crossed 80% of it, the next `session/prompt` runs a compaction turn first. Manua
 notification. A `minerva/session/usage` notification for the summarization
 turn's spend precedes it.
 
+### `minerva/session/task_update` *(notification)*
+Params `{ sessionId, toolCallId, childSessionId, update }`: a subagent's raw
+`SessionUpdate`, re-scoped to the PARENT session (`sessionId`) and the task
+tool call that spawned it (`toolCallId`). Full fidelity on purpose — the wire
+shape stays stable while each frontend decides how much of the nested stream
+to render (the CLI shows a collapsed status line under the task tool call). A
+client that doesn't handle the method still sees the task as an ordinary
+`tool_call` → `tool_call_update` pair on `session/update`; the child's own
+transcript is persisted in its child session log (`session.created` records
+`parent`), and child sessions are excluded from `minerva/sessions/list`.
+
 ### `session/request_permission` *(kernel → frontend request)*
 Params `{ sessionId, toolCall: { toolCallId, title, kind, rawInput }, options }`
 where `options` are `{ optionId, name, kind }`, kinds
-`allow_once | allow_always | reject_once | reject_always`. Result:
+`allow_once | allow_always | reject_once | reject_always`. When the request
+originates from a subagent's tool call, `sessionId` is the PARENT session and
+an additive `taskToolCallId` names the parent's task tool call, so frontends
+can attribute the prompt (generic ACP clients ignore it). Result:
 
 ```json
 { "outcome": { "outcome": "selected", "optionId": "allow" } }
@@ -205,10 +220,12 @@ breaking changes to existing shapes do, with a migration note in CHANGELOG.
 The ACP-shaped subset tracks ACP v1; divergences must be recorded here.
 
 Recorded divergences:
-- **Usage telemetry.** ACP's session-usage RFD added a `usage_update` variant
-  to `session/update` carrying context-window utilization (`used`/`size`,
-  optional `cost`). Minerva instead emits the richer per-turn/cumulative
-  token counts as the separate `minerva/session/usage` notification: emitting
-  a truthful `used`/`size` needs per-model context-window metadata the open
-  provider registry doesn't carry. ACP `usage_update` alignment is deferred
-  until providers declare a context window.
+- **Usage telemetry** *(resolved in 0.3)*. ACP's session-usage RFD added a
+  `usage_update` variant to `session/update` carrying context-window
+  utilization (`used`/`size`, optional `cost`). Alignment was deferred until
+  providers declared a context window; they do since 0.2.0 (auto-compaction),
+  so Minerva now emits `usage_update` for providers with a declared
+  `contextWindow` — and keeps the separate `minerva/session/usage`
+  notification for the richer per-turn/cumulative token counts the ACP shape
+  doesn't carry. No `cost` field: pricing for the open provider registry
+  can't be bundled truthfully.

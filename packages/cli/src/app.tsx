@@ -468,7 +468,11 @@ function Chat({
           modeId={viewModel.currentModeId}
         />
       )}
-      <StatusFooter modeId={viewModel.currentModeId} usage={viewModel.usage} />
+      <StatusFooter
+        modeId={viewModel.currentModeId}
+        usage={viewModel.usage}
+        context={viewModel.context}
+      />
     </Box>
   );
 }
@@ -578,13 +582,15 @@ function BusyIndicator() {
   );
 }
 
-/** Session status line: mode (when not default) and token usage. */
+/** Session status line: mode (when not default), token usage, and context. */
 function StatusFooter({
   modeId,
   usage,
+  context,
 }: {
   modeId: string | undefined;
   usage: SessionViewModel["usage"];
+  context: SessionViewModel["context"];
 }) {
   const parts: string[] = [];
   if (modeId && modeId !== "default") parts.push(`mode ${modeId}`);
@@ -603,6 +609,9 @@ function StatusFooter({
         : []),
       `session ${formatTokens(cumulative.inputTokens)} in / ${formatTokens(cumulative.outputTokens)} out${cached}`,
     );
+  }
+  if (context && context.size > 0) {
+    parts.push(`ctx ${Math.round((100 * context.used) / context.size)}%`);
   }
   if (parts.length === 0) return null;
   return <Text dimColor>{parts.join(" · ")}</Text>;
@@ -681,6 +690,15 @@ function ToolView({ item }: { item: Extract<ViewItem, { kind: "tool" }> }) {
         <Text bold>{item.title}</Text>
         <Text dimColor> [{item.status}]</Text>
       </Text>
+      {item.task ? (
+        <Box marginLeft={2}>
+          <Text dimColor>
+            ↳ {item.task.toolCalls} tool call{item.task.toolCalls === 1 ? "" : "s"}
+            {item.task.failed > 0 ? ` (${item.task.failed} failed)` : ""}
+            {item.task.lastActivity ? ` · ${item.task.lastActivity}` : ""}
+          </Text>
+        </Box>
+      ) : null}
       {item.diff ? (
         <DiffView
           lines={clipDiff(diffLines(item.diff.oldText, item.diff.newText), DIFF_LINE_CAP)}
@@ -859,7 +877,7 @@ function PermissionPrompt({ pending }: { pending: PendingPermission }) {
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="yellow" paddingX={1}>
       <Text color="yellow" bold>
-        Permission required
+        Permission required{pending.request.taskToolCallId ? " (from subagent)" : ""}
       </Text>
       <Text>{pending.request.toolCall.title}</Text>
       <PermissionPreview toolCall={pending.request.toolCall} />

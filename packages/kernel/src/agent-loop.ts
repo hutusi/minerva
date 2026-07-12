@@ -1,7 +1,9 @@
 import {
   CLIENT_METHODS,
   type Connection,
+  type RequestPermissionParams,
   type RequestPermissionResult,
+  type SessionTaskUpdateParams,
   type SessionUpdate,
   type SessionUsageParams,
   type StopReason,
@@ -25,6 +27,15 @@ import { addUsage, contextSize, hasUsage, toTokenUsage } from "./usage";
 /** Backstop against runaway loops; becomes configurable with modes in slice 2. */
 const MAX_MODEL_TURNS = 40;
 
+/**
+ * Subagent spawns allowed per prompt. The task tool is readOnly (auto-
+ * allowed — every mutating child action is gated by the parent's policy
+ * instead), so without a budget a single injected response could fan out
+ * unbounded 40-turn child loops of permission-free spend. Counted across
+ * the whole prompt, not per model turn.
+ */
+const MAX_TASKS_PER_PROMPT = 10;
+
 export interface LoopContext {
   session: Session;
   connection: Connection;
@@ -32,13 +43,44 @@ export interface LoopContext {
   tools: KernelTool[];
   system: string;
   runtime: Runtime;
+  /** Config/session root — settings-reading tools resolve their layers from it. */
+  dataDir: string;
   /**
    * From the session's prompt lease, claimed by the CALLER synchronously
    * after its promptActive guard (an await between guard and claim opens a
    * same-tick race). runPrompt releases the lease when it settles.
    */
   signal: AbortSignal;
+  /**
+   * Host-injected subagent runner (kernel wires ./subagent's runSubagent;
+   * injection rather than a direct import keeps agent-loop ↔ subagent
+   * acyclic). Deliberately NOT forwarded to child loops — the belt against
+   * recursive spawning; the child toolset lacking `task` is the suspenders.
+   */
+  spawnSubagent?: SubagentRunner | undefined;
+  /**
+   * Permission policy owner. Child loops point this at the PARENT session so
+   * every child tool call is judged by the parent's rule engine and live
+   * mode, and an allow_always granted mid-task covers both sessions.
+   */
+  policySession?: Session | undefined;
+  /**
+   * Set on child (subagent) loops: reroutes session/update into the
+   * parent-scoped minerva/session/task_update notification, attributes
+   * permission requests to the parent session, and mutes the child's own
+   * usage notifications (the parent roll-up reports them).
+   */
+  task?: { parentSessionId: string; toolCallId: string } | undefined;
+  /** Subagents spawned so far in this prompt (contexts are per-prompt);
+   * mutated by the loop to enforce MAX_TASKS_PER_PROMPT. */
+  tasksSpawned?: number | undefined;
 }
+
+type SubagentRunner = (
+  parent: LoopContext,
+  toolCallId: string,
+  input: { description: string; prompt: string },
+) => Promise<{ output: string; isError?: boolean }>;
 
 export async function runPrompt(
   context: LoopContext,
@@ -306,15 +348,36 @@ async function executeToolCall(
   });
 
   try {
+    const spawn = context.spawnSubagent;
     const result = await tool.execute(call.input, {
       cwd: session.cwd,
       runtime: context.runtime,
+      dataDir: context.dataDir,
       signal: context.signal,
       updateTodos: (entries) => {
         session.todos = entries;
         session.append({ type: "todo.updated", entries, at: now() });
         sendUpdate(context, { sessionUpdate: "plan", entries });
       },
+      // Never handed to a child loop (context.task set) — no nesting in v1.
+      ...(spawn && !context.task
+        ? {
+            runSubagent: (input: { description: string; prompt: string }) => {
+              // Budget check + increment stay synchronous and inside the
+              // closure, so parallel-call batches can't slip past the cap.
+              if ((context.tasksSpawned ?? 0) >= MAX_TASKS_PER_PROMPT) {
+                return Promise.resolve({
+                  output:
+                    `task budget exhausted: at most ${MAX_TASKS_PER_PROMPT} subagents ` +
+                    "per prompt — finish the work directly or ask the user to continue",
+                  isError: true,
+                });
+              }
+              context.tasksSpawned = (context.tasksSpawned ?? 0) + 1;
+              return spawn(context, call.toolCallId, input);
+            },
+          }
+        : {}),
     });
     return completeToolCall(context, call, {
       output: result.output,
@@ -428,7 +491,10 @@ async function checkPermission(
   tool: KernelTool,
 ): Promise<PermissionDecision> {
   const { session } = context;
-  const verdict = session.permissions.evaluate(tool, call.input, session.mode);
+  // A child loop is judged by the PARENT's engine and live mode: plan mode
+  // still blocks a subagent's writes, and a mid-task /mode change applies.
+  const policy = context.policySession ?? session;
+  const verdict = policy.permissions.evaluate(tool, call.input, policy.mode);
   if (verdict.action === "allow") {
     return { allowed: true, source: "policy", rule: verdict.rule };
   }
@@ -437,35 +503,42 @@ async function checkPermission(
   }
 
   try {
+    const params: RequestPermissionParams = {
+      // A subagent's request surfaces under the PARENT session — that is the
+      // conversation the user is in; taskToolCallId attributes it.
+      sessionId: context.task?.parentSessionId ?? session.id,
+      toolCall: {
+        toolCallId: call.toolCallId,
+        title: titleFor(tool, call),
+        kind: tool.kind,
+        rawInput: call.input,
+      },
+      options: [
+        { optionId: "allow", name: "Allow", kind: "allow_once" },
+        { optionId: "allow_always", name: "Allow always", kind: "allow_always" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ],
+      ...(context.task ? { taskToolCallId: context.task.toolCallId } : {}),
+    };
     const result = await context.connection.request<RequestPermissionResult>(
       CLIENT_METHODS.sessionRequestPermission,
-      {
-        sessionId: session.id,
-        toolCall: {
-          toolCallId: call.toolCallId,
-          title: titleFor(tool, call),
-          kind: tool.kind,
-          rawInput: call.input,
-        },
-        options: [
-          { optionId: "allow", name: "Allow", kind: "allow_once" },
-          { optionId: "allow_always", name: "Allow always", kind: "allow_always" },
-          { optionId: "reject", name: "Reject", kind: "reject_once" },
-        ],
-      },
+      params,
       context.signal,
     );
     if (result.outcome.outcome === "cancelled") {
       // ACP: the frontend is cancelling the turn, not answering the question.
+      // The turn the user sees is the PARENT's — cancel it too; its abort
+      // chains into this child.
       session.cancel();
+      context.policySession?.cancel();
       return { allowed: false, source: "frontend" };
     }
     if (result.outcome.optionId === "allow_always") {
       // Escape wildcards: the user approved this exact call, not a pattern.
       const rule = formatRule(tool.name, escapeRuleValue(permissionValue(call.input)));
-      session.permissions.addAllowRule(rule);
+      policy.permissions.addAllowRule(rule);
       try {
-        await persistAllowRule(context.runtime, session.cwd, rule);
+        await persistAllowRule(context.runtime, policy.cwd, rule);
       } catch {
         // The in-memory rule still covers this session; persistence failure
         // must not fail an approved tool call.
@@ -490,6 +563,19 @@ function titleFor(tool: KernelTool | undefined, call: ProviderToolCall): string 
 }
 
 function sendUpdate(context: LoopContext, update: SessionUpdate): void {
+  // A child loop's whole stream is re-scoped to the parent's task tool call;
+  // frontends that ignore the extension still get the parent-side tool
+  // updates from the parent loop.
+  if (context.task) {
+    const params: SessionTaskUpdateParams = {
+      sessionId: context.task.parentSessionId,
+      toolCallId: context.task.toolCallId,
+      childSessionId: context.session.id,
+      update,
+    };
+    context.connection.notify(CLIENT_METHODS.sessionTaskUpdate, params);
+    return;
+  }
   context.connection.notify(CLIENT_METHODS.sessionUpdate, {
     sessionId: context.session.id,
     update,
@@ -515,16 +601,30 @@ function finish(
     at: now(),
   });
   if (turnContext !== undefined) session.lastTurnContext = turnContext;
+  // ACP usage_update: window utilization for generic clients. Needs both a
+  // measured context and a declared window — absent either, say nothing
+  // rather than something misleading.
+  if (turnContext !== undefined && context.provider.contextWindow !== undefined) {
+    sendUpdate(context, {
+      sessionUpdate: "usage_update",
+      used: turnContext,
+      size: context.provider.contextWindow,
+    });
+  }
   // Providers that report nothing (scripted fixtures, some proxies) get no
   // notification rather than a misleading all-zero one.
   if (hasUsage(usage)) {
     session.addTurnUsage(usage);
-    const params: SessionUsageParams = {
-      sessionId: session.id,
-      lastTurn: toTokenUsage(usage),
-      cumulative: toTokenUsage(session.usage),
-    };
-    context.connection.notify(CLIENT_METHODS.sessionUsage, params);
+    // A child's session id means nothing to frontends — its spend reaches
+    // them via the parent roll-up (runSubagent), so mute the notification.
+    if (!context.task) {
+      const params: SessionUsageParams = {
+        sessionId: session.id,
+        lastTurn: toTokenUsage(usage),
+        cumulative: toTokenUsage(session.usage),
+      };
+      context.connection.notify(CLIENT_METHODS.sessionUsage, params);
+    }
   }
   return { stopReason };
 }

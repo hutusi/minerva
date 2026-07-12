@@ -41,14 +41,20 @@ interface Harness {
 async function setup(options: {
   turns: TurnEvent[][];
   permission?: "allow" | "allow_always" | "reject" | "cancel";
+  /** Declare a context window on the scripted provider (arms usage_update). */
+  contextWindow?: number;
 }): Promise<Harness> {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-proj-"));
   const dataDir = mkdtempSync(join(tmpdir(), "minerva-data-"));
   writeFileSync(join(cwd, "hello.txt"), "hi from disk\n");
 
+  const scripted = createScriptedProvider(options.turns);
   const [clientTransport, kernelTransport] = createInProcTransportPair();
   const kernel = createKernel(kernelTransport, {
-    provider: createScriptedProvider(options.turns),
+    provider:
+      options.contextWindow !== undefined
+        ? { ...scripted, contextWindow: options.contextWindow }
+        : scripted,
     dataDir,
   });
 
@@ -392,6 +398,44 @@ describe("kernel over in-proc transport", () => {
     expect(harness.usageNotices).toEqual([
       { sessionId: harness.sessionId, cumulative: { inputTokens: 40, outputTokens: 16 } },
     ]);
+  });
+
+  test("usage_update: emitted with a declared context window, live and on load", async () => {
+    const harness = await setup({
+      turns: [[{ type: "text-delta", text: "hi" }, FINISH_STOP]],
+      contextWindow: 1_000,
+    });
+
+    await prompt(harness, "hello");
+    const expected = {
+      sessionId: harness.sessionId,
+      update: { sessionUpdate: "usage_update", used: 20, size: 1_000 },
+    } as const;
+    expect(harness.updates.filter((u) => u.update.sessionUpdate === "usage_update")).toEqual([
+      expected,
+    ]);
+
+    // Resume rebuilds lastTurnContext from the log and re-announces the
+    // meter so a frontend shows it before the next turn.
+    harness.updates.length = 0;
+    await harness.client.request(AGENT_METHODS.sessionLoad, {
+      sessionId: harness.sessionId,
+      cwd: harness.cwd,
+    });
+    expect(harness.updates.filter((u) => u.update.sessionUpdate === "usage_update")).toEqual([
+      expected,
+    ]);
+  });
+
+  test("usage_update: silent when the provider declares no context window", async () => {
+    const harness = await setup({
+      turns: [[{ type: "text-delta", text: "hi" }, FINISH_STOP]],
+    });
+    await prompt(harness, "hello");
+    // The turn still reports usage — but without a window, utilization
+    // would be a guess, so nothing is emitted.
+    expect(harness.usageNotices.length).toBe(1);
+    expect(harness.updates.some((u) => u.update.sessionUpdate === "usage_update")).toBe(false);
   });
 
   test("denied permission becomes an error tool result and the loop continues", async () => {

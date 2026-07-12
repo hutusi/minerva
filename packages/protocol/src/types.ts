@@ -53,6 +53,10 @@ export const CLIENT_METHODS = {
   /** Notification (minerva/* extension): the kernel compacted a session on
    * its own (context-window pressure). */
   sessionCompacted: "minerva/session/compacted",
+  /** Notification (minerva/* extension): a subagent's live progress, scoped
+   * to the parent's task tool call. Generic ACP clients that ignore it still
+   * see the task as an ordinary tool_call → tool_call_update pair. */
+  sessionTaskUpdate: "minerva/session/task_update",
 } as const;
 
 // --- Content -----------------------------------------------------------
@@ -311,7 +315,12 @@ export type SessionUpdate =
   | ToolCallStart
   | ToolCallUpdate
   | { sessionUpdate: "plan"; entries: PlanEntry[] }
-  | { sessionUpdate: "current_mode_update"; currentModeId: string };
+  | { sessionUpdate: "current_mode_update"; currentModeId: string }
+  /** ACP session-usage RFD: context-window utilization after a turn. `used`
+   * is the last model call's context (input tokens incl. cache), `size` the
+   * provider's declared window. Only emitted when the provider declares one;
+   * richer token detail stays on minerva/session/usage. */
+  | { sessionUpdate: "usage_update"; used: number; size: number };
 
 export interface SessionUpdateParams {
   sessionId: string;
@@ -345,6 +354,23 @@ export interface SessionUsageParams {
   cumulative: TokenUsage;
 }
 
+// --- minerva/session/task_update -----------------------------------------
+
+/**
+ * A child (subagent) session's raw update, re-scoped to the PARENT session
+ * and the task tool call that spawned it. Full fidelity on purpose: the wire
+ * shape stays stable while each frontend decides how much of the nested
+ * stream to render (the CLI shows a collapsed status line).
+ */
+export interface SessionTaskUpdateParams {
+  /** The PARENT session. */
+  sessionId: string;
+  /** The parent's task tool call this progress belongs to. */
+  toolCallId: string;
+  childSessionId: string;
+  update: SessionUpdate;
+}
+
 // --- minerva/session/compacted -----------------------------------------
 
 /** Kernel-initiated compaction announcement (manual /compact responds to the
@@ -374,6 +400,13 @@ export interface RequestPermissionParams {
     rawInput?: unknown;
   };
   options: PermissionOption[];
+  /**
+   * minerva/* extension: set when the request comes from a subagent — the
+   * PARENT's task tool call it runs under, so frontends can attribute the
+   * prompt. `sessionId` is already the parent's (that's who the user is
+   * talking to); generic ACP clients just see an ordinary request.
+   */
+  taskToolCallId?: string;
 }
 
 export type RequestPermissionOutcome =

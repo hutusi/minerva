@@ -447,6 +447,147 @@ describe("settings + index write hardening", () => {
   });
 });
 
+describe("session parentage (subagents)", () => {
+  test("a child session records its parent in the log and the index", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-parent-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-parent-data-"));
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const parent = await Session.create(opts);
+    const child = await Session.create({ ...opts, parent: parent.id });
+    await parent.flush();
+    await child.flush();
+
+    const childEvents = readFileSync(child.logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent);
+    const created = childEvents.find((e) => e.type === "session.created");
+    expect(created).toMatchObject({ sessionId: child.id, parent: parent.id });
+
+    const index = readFileSync(join(projectDir(dataDir, cwd), "index.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { sessionId: string; parent?: string });
+    expect(index.find((e) => e.sessionId === child.id)?.parent).toBe(parent.id);
+    expect(index.find((e) => e.sessionId === parent.id)?.parent).toBeUndefined();
+  });
+
+  test("a child records the parent's actual persona and mode, not settings defaults", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-inherit-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-inherit-data-"));
+    // Settings default to "reviewer" — the child must NOT pick it up.
+    mkdirSync(join(cwd, ".minerva"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".minerva", "settings.json"),
+      JSON.stringify({
+        profile: "reviewer",
+        profiles: { reviewer: { systemPrompt: "review" }, writer: { systemPrompt: "write" } },
+      }),
+    );
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const parent = await Session.create({ ...opts, profile: "writer" });
+    parent.mode = "plan"; // live mode switch after creation
+    const child = await Session.create({
+      ...opts,
+      parent: parent.id,
+      inherited: { profile: parent.profile?.name, mode: parent.mode },
+    });
+    await child.flush();
+
+    const created = readFileSync(child.logPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent)
+      .find((e) => e.type === "session.created");
+    expect(created).toMatchObject({ profile: "writer", mode: "plan", parent: parent.id });
+  });
+
+  test("a broken settings default profile cannot fail an inherited (child) spawn", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-ghost-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-ghost-data-"));
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const parent = await Session.create(opts);
+    // The bad default lands mid-session — after the parent already exists.
+    mkdirSync(join(cwd, ".minerva"), { recursive: true });
+    writeFileSync(join(cwd, ".minerva", "settings.json"), JSON.stringify({ profile: "ghost" }));
+
+    // Ordinary creation resolves the default and rightly fails loudly...
+    await expect(Session.create(opts)).rejects.toThrow('unknown profile "ghost"');
+    // ...but an inherited child skips resolution and spawns fine.
+    const child = await Session.create({
+      ...opts,
+      parent: parent.id,
+      inherited: { profile: undefined, mode: parent.mode },
+    });
+    expect(child.id).toMatch(/^ses_/);
+  });
+
+  test("loading a child session keeps it out of the picker (index parentage survives)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-childload-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-childload-data-"));
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const parent = await Session.create(opts);
+    const child = await Session.create({ ...opts, parent: parent.id });
+    await child.flush();
+
+    await Session.load(child.id, opts, []);
+    const entries = readFileSync(join(projectDir(dataDir, cwd), "index.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { sessionId: string; parent?: string });
+    // The list dedupes to the LATEST entry per id — that one must still
+    // carry the parentage the create-time entry had.
+    const latest = entries.filter((e) => e.sessionId === child.id).at(-1);
+    expect(latest?.parent).toBe(parent.id);
+  });
+
+  test("a preview written after loading a message-less child keeps its parentage", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-childprev-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-childprev-data-"));
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const parent = await Session.create(opts);
+    // Hard kill right after creation: the child log has NO user.message, so a
+    // later load leaves the first-preview write still pending.
+    const child = await Session.create({ ...opts, parent: parent.id });
+    await child.flush();
+
+    const { session: loaded } = await Session.load(child.id, opts, []);
+    // Prompting the loaded session records its first preview — the entry
+    // that used to drop parent and resurface the child in pickers.
+    await loaded.recordPreview("hello from a resumed child");
+    const entries = readFileSync(join(projectDir(dataDir, cwd), "index.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { sessionId: string; parent?: string; preview?: string });
+    const latest = entries.filter((e) => e.sessionId === child.id).at(-1);
+    expect(latest?.preview).toContain("hello from a resumed child");
+    expect(latest?.parent).toBe(parent.id);
+  });
+
+  test("replay rolls a task.completed event's usage into the session total", () => {
+    const replay = replayEvents(
+      [
+        {
+          type: "task.completed",
+          toolCallId: "c1",
+          childSessionId: "ses_child",
+          stopReason: "end_turn",
+          usage: { inputTokens: 70, outputTokens: 30 },
+          at: "t",
+        },
+        {
+          type: "turn.completed",
+          stopReason: "end_turn",
+          usage: { inputTokens: 20, outputTokens: 8 },
+          at: "t",
+        },
+      ],
+      [],
+    );
+    expect(replay.usage).toEqual({ inputTokens: 90, outputTokens: 38 });
+  });
+});
+
 describe("shutdown draining", () => {
   test("close() cancels and drains an in-flight prompt, persisting its trailing events", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "gaps-drain-proj-"));

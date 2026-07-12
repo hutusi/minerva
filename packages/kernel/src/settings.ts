@@ -70,6 +70,13 @@ export interface ProfileSettings {
   defaultMode?: string | undefined;
 }
 
+/** web_fetch tool behavior. */
+export interface WebFetchSettings {
+  /** Permit fetching hosts that are (or resolve to) private/loopback
+   * addresses — for developing against localhost servers. Default false. */
+  allowPrivate?: boolean | undefined;
+}
+
 export interface MinervaSettings {
   permissions?: Partial<PermissionRules>;
   defaultMode?: string | undefined;
@@ -80,6 +87,7 @@ export interface MinervaSettings {
   profiles?: Record<string, ProfileSettings>;
   /** Name of the profile applied to new sessions when none is requested. */
   profile?: string | undefined;
+  webFetch?: WebFetchSettings | undefined;
 }
 
 export interface ResolvedSettings {
@@ -90,6 +98,7 @@ export interface ResolvedSettings {
   providers: Record<string, ProviderSettings>;
   profiles: Record<string, ProfileSettings>;
   profile?: string | undefined;
+  webFetch: WebFetchSettings;
 }
 
 export function globalSettingsPath(dataDir: string): string {
@@ -120,6 +129,9 @@ export async function loadSettings(
     providers: mergeProviders(global.providers, project.providers),
     profiles: mergeByName(global.profiles, project.profiles),
     profile: project.profile ?? global.profile,
+    webFetch: {
+      allowPrivate: project.webFetch?.allowPrivate ?? global.webFetch?.allowPrivate,
+    },
   };
 }
 
@@ -270,7 +282,22 @@ async function readSettingsFile(runtime: Runtime, path: string): Promise<Minerva
   if (typeof parsed !== "object" || parsed === null) return {};
   validatePermissions(parsed as Record<string, unknown>, path);
   validateProfiles(parsed as Record<string, unknown>, path);
+  validateWebFetch(parsed as Record<string, unknown>, path);
   return parsed as MinervaSettings;
+}
+
+/** A malformed webFetch entry must fail loudly, not silently lift (or keep)
+ * the private-address guard. */
+function validateWebFetch(settings: Record<string, unknown>, path: string): void {
+  if (!("webFetch" in settings) || settings.webFetch === undefined) return;
+  const webFetch = settings.webFetch;
+  if (typeof webFetch !== "object" || webFetch === null || Array.isArray(webFetch)) {
+    throw new Error(`invalid settings in ${path}: webFetch must be an object`);
+  }
+  const allowPrivate = (webFetch as Record<string, unknown>).allowPrivate;
+  if (allowPrivate !== undefined && typeof allowPrivate !== "boolean") {
+    throw new Error(`invalid settings in ${path}: webFetch.allowPrivate must be a boolean`);
+  }
 }
 
 /**

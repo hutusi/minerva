@@ -320,11 +320,36 @@ describe("provider registry", () => {
 
   test("custom providers can declare keyless endpoints", () => {
     const providers = buildProviderRegistry({
-      ollama: { baseUrl: "http://localhost:11434/v1", requiresApiKey: false },
+      llamacpp: { baseUrl: "http://localhost:8080/v1", requiresApiKey: false },
     });
-    expect(providers.ollama?.requiresApiKey).toBe(false);
+    expect(providers.llamacpp?.requiresApiKey).toBe(false);
     // Unset means required — the safe default.
     expect(buildProviderRegistry().bailian?.requiresApiKey).toBeUndefined();
+  });
+
+  test("ollama is a keyless builtin with no model or window assumptions", () => {
+    const providers = buildProviderRegistry();
+    expect(providers.ollama).toEqual({
+      kind: "openai-compatible",
+      apiKeyEnv: "OLLAMA_API_KEY",
+      baseURL: "http://localhost:11434/v1",
+      requiresApiKey: false,
+    });
+    expect(apiKeyEnvVar("ollama")).toBe("OLLAMA_API_KEY");
+    expect(() => parseModelRef("ollama")).toThrow("ollama/<model-id>");
+    const provider = createProviderFromRef("ollama/llama3.3", { providers });
+    expect(provider.id).toBe("ollama/llama3.3");
+    // No declared window → auto-compaction stays inert until settings say so.
+    expect(provider.contextWindow).toBeUndefined();
+  });
+
+  test("settings can point the ollama builtin at a remote host with a window", () => {
+    const providers = buildProviderRegistry({
+      ollama: { baseUrl: "http://gpu-box:11434/v1", contextWindow: 32_768 },
+    });
+    expect(providers.ollama?.baseURL).toBe("http://gpu-box:11434/v1");
+    expect(providers.ollama?.contextWindow).toBe(32_768);
+    expect(providers.ollama?.requiresApiKey).toBe(false); // inherited from the builtin
   });
 
   test("resolveApiKey precedence: explicit > env > stored", () => {

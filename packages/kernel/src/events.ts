@@ -16,6 +16,8 @@ export type SessionEvent =
       provider: string;
       /** Profile name the session was created with; body re-resolves on load. */
       profile?: string | undefined;
+      /** Parent session id, when this session is a subagent's child log. */
+      parent?: string | undefined;
       /**
        * The mode the session was created in (profile default > settings
        * default > DEFAULT). Persisted so replay is authoritative for the
@@ -106,6 +108,21 @@ export type SessionEvent =
       summary: string;
       /** Tokens the summarization turn itself spent, so replay can restore
        * the session total (which the summary message alone can't). */
+      usage?: TurnUsage | undefined;
+      at: string;
+    }
+  | {
+      /**
+       * A task (subagent) tool call finished. Appended to the PARENT log so
+       * the child's token spend survives resume — the child's own turns live
+       * in its separate log, which replay of the parent never reads. The tool
+       * result itself rides the ordinary tool.result event.
+       */
+      type: "task.completed";
+      toolCallId: string;
+      childSessionId: string;
+      /** "error" = the child prompt threw (its own log has turn.failed). */
+      stopReason: StopReason | "error";
       usage?: TurnUsage | undefined;
       at: string;
     }

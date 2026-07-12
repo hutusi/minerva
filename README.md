@@ -92,12 +92,16 @@ in global settings** (set either via `/config`):
 | Anthropic (default) | `claude-opus-4-8` or `anthropic/claude-opus-4-8` | `ANTHROPIC_API_KEY` |
 | OpenAI | `openai/gpt-5.2` | `OPENAI_API_KEY` |
 | Alibaba Bailian (DashScope) | `bailian/qwen-plus`, `bailian/glm-5.2` | `DASHSCOPE_API_KEY` |
+| Ollama (local) | `ollama/llama3.3` | none (`OLLAMA_API_KEY` if your server wants one) |
 
 Bailian uses the China endpoint by default; for the international one,
 override its `baseUrl` in settings (see below). Bailian hosts third-party
 models too (e.g. Zhipu's GLM) — the `/config` panel lists the known ids to
 pick from at the model step, with an `other…` row for any id it doesn't know.
-Any other OpenAI-compatible endpoint (DeepSeek, Ollama, a proxy…) can be
+Ollama is keyless and points at `http://localhost:11434/v1`; override its
+`baseUrl` in settings for a remote host, and set its `contextWindow` to match
+the model you pulled if you want auto-compaction (unset, it never compacts).
+Any other OpenAI-compatible endpoint (DeepSeek, llama.cpp, a proxy…) can be
 added as a custom provider — via `/config` → `custom…`, or directly in
 settings.
 
@@ -213,9 +217,13 @@ named `mcp__<server>__<tool>` and are never auto-allowed.
 > **web_fetch is permission-gated, not network-sandboxed.** It is never
 > auto-allowed (network egress can exfiltrate context via the URL), so default
 > mode always shows the exact URL before fetching, and `deny` rules can block
-> URL ranges. There is no private-IP/SSRF blocking in v1 — same posture as the
-> bash rules above; be deliberate about `auto` mode on machines with sensitive
-> internal endpoints.
+> URL ranges. Hosts that are — or resolve to — private/loopback addresses
+> (cloud metadata endpoints, router admin pages, localhost) are refused by
+> default, on the initial URL and on every redirect hop; set
+> `"webFetch": { "allowPrivate": true }` in settings when developing against
+> local servers. This is friction against accidental SSRF-shaped fetches, not
+> a sandbox (DNS re-resolution between check and connect is not closed) —
+> same posture as the bash rules above.
 
 > **Opening a third-party repository activates its configuration.** The
 > project's `AGENTS.md` enters the system prompt, `.minerva/skills/` becomes
@@ -229,6 +237,26 @@ named `mcp__<server>__<tool>` and are never auto-allowed.
 Every session is an append-only JSONL event log under
 `~/.minerva/projects/<project>/` — the audit trail and the source of truth for
 `--resume`.
+
+## Subagents
+
+The model can delegate a self-contained side quest — a broad search, an
+isolated analysis — to a subagent via the `task` tool: a child agent with the
+same tools (minus `task` and `todo_write`) and the same system prompt, whose
+transcript stays out of the main conversation; only its final report returns.
+The CLI shows a collapsed progress line under the task
+(`↳ 3 tool calls · grep "handleAuth"`).
+
+Subagents change nothing about trust: every child tool call is judged by the
+parent session's permission rules and mode — plan mode still blocks writes,
+default mode still prompts (marked "from subagent"), and an "allow always"
+covers the rest of the task and the session. `esc` cancels the task with the
+turn. Child token spend rolls into the session totals. Each child's full
+transcript is persisted as its own session log (excluded from `/sessions`)
+next to the parent's, for auditing. Tasks run sequentially, cannot spawn
+further tasks, and are capped at 10 per prompt — spawning itself is
+auto-allowed (only the child's actions are gated), so the budget is what
+bounds unapproved spend.
 
 ## Project instructions (AGENTS.md)
 

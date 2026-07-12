@@ -42,6 +42,16 @@ export interface SessionOptions {
   /** Named profile to create the session with (create only; load re-resolves
    * the name recorded in the log). Unknown names throw. */
   profile?: string | undefined;
+  /** Parent session id — set when creating a subagent's child session, so
+   * the log records its provenance and pickers can exclude it. */
+  parent?: string | undefined;
+  /**
+   * Set on child sessions: record the parent's ACTUAL persona and mode
+   * instead of re-resolving settings defaults — the child runs under the
+   * parent's system prompt and policy, and its log must say so. Also keeps a
+   * broken settings default profile (added mid-session) from failing spawns.
+   */
+  inherited?: { profile?: string | undefined; mode: SessionModeId } | undefined;
 }
 
 /**
@@ -52,6 +62,10 @@ export interface SessionOptions {
 export class Session {
   readonly id: string;
   readonly cwd: string;
+  /** Parent session id when this is a subagent's child session. Held on the
+   * instance so EVERY index write carries it — one dropped entry would make
+   * the child picker-visible (the list dedupes to the latest entry per id). */
+  readonly parent?: string | undefined;
   readonly messages: ProviderMessage[] = [];
   readonly permissions: PermissionEngine;
   mode: SessionModeId;
@@ -87,6 +101,7 @@ export class Session {
   ) {
     this.id = id;
     this.cwd = options.cwd;
+    this.parent = options.parent;
     this.permissions = permissions;
     this.mode = mode;
     this.#dir = projectDir(options.dataDir, options.cwd);
@@ -107,6 +122,7 @@ export class Session {
       cwd: this.cwd,
       createdAt: now(),
       preview: previewText(text),
+      ...(this.parent !== undefined ? { parent: this.parent } : {}),
     });
   }
 
@@ -115,14 +131,19 @@ export class Session {
     const dir = projectDir(options.dataDir, options.cwd);
     await options.runtime.mkdirp(dir, { mode: DATA_DIR_MODE });
     const settings = await loadSettings(options.runtime, options.dataDir, options.cwd);
+    const inherited = options.inherited;
     // Throws on an unknown name — an explicit request AND a settings default
     // both fail loudly rather than silently running the base persona.
-    const profile = resolveProfile(settings, options.profile);
-    const mode = isSessionModeId(profile?.defaultMode)
-      ? profile.defaultMode
-      : isSessionModeId(settings.defaultMode)
-        ? settings.defaultMode
-        : DEFAULT_MODE;
+    // Inherited (child) sessions skip resolution entirely: their persona is
+    // the parent's, by name.
+    const profile = inherited ? undefined : resolveProfile(settings, options.profile);
+    const mode = inherited
+      ? inherited.mode
+      : isSessionModeId(profile?.defaultMode)
+        ? profile.defaultMode
+        : isSessionModeId(settings.defaultMode)
+          ? settings.defaultMode
+          : DEFAULT_MODE;
     const session = new Session(id, options, new PermissionEngine(settings.rules), mode);
     if (profile) {
       session.profile = {
@@ -130,15 +151,24 @@ export class Session {
         ...(profile.systemPrompt !== undefined ? { systemPrompt: profile.systemPrompt } : {}),
       };
     }
+    const profileName = inherited ? inherited.profile : profile?.name;
 
     const createdAt = now();
-    await appendSessionIndex(options.runtime, dir, { sessionId: id, cwd: options.cwd, createdAt });
+    await appendSessionIndex(options.runtime, dir, {
+      sessionId: id,
+      cwd: options.cwd,
+      createdAt,
+      // Parentage rides the index too, so sessions/list can exclude child
+      // logs without opening them.
+      ...(options.parent !== undefined ? { parent: options.parent } : {}),
+    });
     session.append({
       type: "session.created",
       sessionId: id,
       cwd: options.cwd,
       provider: options.providerId,
-      ...(profile ? { profile: profile.name } : {}),
+      ...(profileName !== undefined ? { profile: profileName } : {}),
+      ...(options.parent !== undefined ? { parent: options.parent } : {}),
       // Persisted so replay is authoritative for the initial mode — a mode
       // set by a profile default must survive resume.
       mode,
@@ -188,7 +218,14 @@ export class Session {
         ? settings.defaultMode
         : DEFAULT_MODE;
 
-    const session = new Session(sessionId, options, new PermissionEngine(settings.rules), mode);
+    // Parentage comes from the LOG, not the caller: it must survive a load so
+    // no later index write (resume entry, first-preview entry) can strip it.
+    const session = new Session(
+      sessionId,
+      { ...options, ...(created.parent !== undefined ? { parent: created.parent } : {}) },
+      new PermissionEngine(settings.rules),
+      mode,
+    );
     session.messages.push(...replay.messages);
     session.todos = replay.todos;
     session.usage = replay.usage;
@@ -214,7 +251,9 @@ export class Session {
     // Re-append to the index so "latest session" means most recently used, not
     // most recently created (the list handler dedupes by id), carrying the
     // first user message forward as a preview so the picker needn't read the
-    // full log.
+    // full log. Parentage is carried too: the list dedupes to the LATEST
+    // entry per id, so dropping it here would surface a loaded child session
+    // in pickers despite the create-time exclusion.
     const firstUser = events.find((event) => event.type === "user.message");
     session.#previewRecorded = firstUser !== undefined;
     await appendSessionIndex(options.runtime, dir, {
@@ -222,6 +261,7 @@ export class Session {
       cwd: options.cwd,
       createdAt: now(),
       ...(firstUser ? { preview: previewText(firstUser.text) } : {}),
+      ...(session.parent !== undefined ? { parent: session.parent } : {}),
     });
     session.append({ type: "session.resumed", provider: options.providerId, at: now() });
     return { session, replay };
@@ -334,6 +374,8 @@ interface IndexEntry {
   createdAt: string;
   /** First user message, truncated — lets the picker skip reading the log. */
   preview?: string;
+  /** Parent session id — present only on subagent child sessions. */
+  parent?: string;
 }
 
 /** Truncate a first-user-message to a picker-sized preview (code-point safe). */

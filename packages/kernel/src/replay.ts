@@ -184,6 +184,13 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         messages.push(compactedContextMessage(event.summary));
         break;
 
+      case "task.completed":
+        // A subagent's spend rolled up into this session — mirror the live
+        // roll-up so resumed totals match what was announced. The tool result
+        // already flowed through the generic tool.result case.
+        usage = addUsage(usage, event.usage);
+        break;
+
       case "turn.completed":
         // Spend telemetry survives compaction: session.compacted resets the
         // model context above, but not what the session has already cost.

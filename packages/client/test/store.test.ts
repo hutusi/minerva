@@ -65,10 +65,87 @@ describe("SessionStore reducer", () => {
     store.setBusy(true);
     store.setMode("plan");
     store.setUsage({ inputTokens: 1, outputTokens: 2 }, { inputTokens: 1, outputTokens: 2 });
+    store.apply({ sessionUpdate: "usage_update", used: 800, size: 1_000 });
     store.setBusy(false);
 
     expect(store.snapshot.currentModeId).toBe("plan");
     expect(store.snapshot.usage?.cumulative).toEqual({ inputTokens: 1, outputTokens: 2 });
+    expect(store.snapshot.context).toEqual({ used: 800, size: 1_000 });
+  });
+
+  test("applyTaskUpdate folds a subagent's stream into the task item's summary", () => {
+    const store = new SessionStore();
+    store.apply({
+      sessionUpdate: "tool_call",
+      toolCallId: "t1",
+      title: "task: survey tests",
+      kind: "other",
+      status: "pending",
+    });
+    const taskOf = (snapshot = store.snapshot) => {
+      const item = snapshot.items[0];
+      return item?.kind === "tool" ? item.task : undefined;
+    };
+
+    store.applyTaskUpdate("t1", {
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "planning" },
+    });
+    expect(taskOf()).toEqual({ toolCalls: 0, failed: 0, lastActivity: "thinking…" });
+
+    // Repeated chunks change nothing — the snapshot identity must hold so
+    // delta spam can't churn renders.
+    const snapshot = store.snapshot;
+    store.applyTaskUpdate("t1", {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "more" },
+    });
+    expect(store.snapshot).toBe(snapshot);
+
+    store.applyTaskUpdate("t1", {
+      sessionUpdate: "tool_call",
+      toolCallId: "c1",
+      title: 'grep "handleAuth"',
+      kind: "search",
+      status: "pending",
+    });
+    expect(taskOf()).toEqual({ toolCalls: 1, failed: 0, lastActivity: 'grep "handleAuth"' });
+
+    store.applyTaskUpdate("t1", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "c1",
+      status: "failed",
+    });
+    expect(taskOf()).toEqual({ toolCalls: 1, failed: 1, lastActivity: 'grep "handleAuth"' });
+
+    // A completed child call is not a failure and changes nothing shown.
+    const settled = store.snapshot;
+    store.applyTaskUpdate("t1", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "c1",
+      status: "completed",
+    });
+    expect(store.snapshot).toBe(settled);
+
+    // Unknown tool call ids are ignored, never a crash.
+    store.applyTaskUpdate("nope", {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "x" },
+    });
+    expect(store.snapshot).toBe(settled);
+  });
+
+  test("usage_update is status state, latest wins, never a transcript item", () => {
+    const store = new SessionStore();
+    store.apply({ sessionUpdate: "usage_update", used: 100, size: 1_000 });
+    expect(store.snapshot.context).toEqual({ used: 100, size: 1_000 });
+
+    store.applyBatch([
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } },
+      { sessionUpdate: "usage_update", used: 250, size: 1_000 },
+    ]);
+    expect(store.snapshot.context).toEqual({ used: 250, size: 1_000 });
+    expect(store.snapshot.items).toEqual([{ kind: "assistant", text: "hi", streaming: true }]);
   });
 
   test("tool_call_update merges status and text output", () => {
