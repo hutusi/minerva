@@ -11,6 +11,7 @@ export const BUILTIN_COMMANDS = [
   "config",
   "mode",
   "compact",
+  "profile",
   "sessions",
   "resume",
   "new",

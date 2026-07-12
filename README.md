@@ -109,7 +109,15 @@ Settings merge from `~/.minerva/settings.json` (global; override the root with
       "url": "https://mcp.example.com/mcp",
       "headers": { "Authorization": "Bearer ..." }
     }
-  }
+  },
+  "profiles": {
+    "writer": {
+      "systemPrompt": "You are a technical writing assistant. ...",
+      "model": "bailian/qwen-plus",
+      "defaultMode": "plan"
+    }
+  },
+  "profile": "writer"
 }
 ```
 
@@ -121,6 +129,14 @@ defaults to `<NAME>_API_KEY`. Keyless endpoints (e.g. a local Ollama) set
 panel writes this automatically when you save a custom provider without one.
 **API keys are honored from the global file only** (never the shareable
 project file), and any file that may hold keys is written with mode `0600`.
+
+`profiles` defines named personas: `systemPrompt` **replaces** the base
+coding-agent prompt (AGENTS.md instructions still append after it), `model`
+is the model the profile prefers (used at startup unless `--model` /
+`MINERVA_MODEL` override it), and `defaultMode` sets the session's initial
+mode. `profile` names the one applied by default; `--profile <name>` picks
+one per run, and `/profile` lists or switches mid-session (from the next
+message). Per-name entries merge project-over-global like `providers`.
 
 `"thinking"` asks the model to reason before answering: `true` sends
 `enable_thinking: true` to the endpoint (needed by Qwen models, which default

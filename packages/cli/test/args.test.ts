@@ -5,19 +5,30 @@ describe("parseCliArgs", () => {
   test("no arguments runs the TUI with no model override", () => {
     expect(parseCliArgs([])).toEqual({
       kind: "run",
-      args: { command: "tui", model: null, resume: null },
+      args: { command: "tui", model: null, resume: null, profile: null },
     });
   });
 
   test("acp command and flags compose in any order", () => {
     expect(parseCliArgs(["acp", "-m", "openai/gpt-5.2"])).toEqual({
       kind: "run",
-      args: { command: "acp", model: "openai/gpt-5.2", resume: null },
+      args: { command: "acp", model: "openai/gpt-5.2", resume: null, profile: null },
     });
     expect(parseCliArgs(["-m", "openai/gpt-5.2", "acp"])).toEqual({
       kind: "run",
-      args: { command: "acp", model: "openai/gpt-5.2", resume: null },
+      args: { command: "acp", model: "openai/gpt-5.2", resume: null, profile: null },
     });
+  });
+
+  test("--profile carries the name and rejects missing values", () => {
+    expect(parseCliArgs(["--profile", "writer"])).toMatchObject({
+      args: { profile: "writer" },
+    });
+    expect(parseCliArgs(["--profile"])).toEqual({
+      kind: "error",
+      message: "--profile requires a profile name",
+    });
+    expect(parseCliArgs(["--profile", "-c"])).toMatchObject({ kind: "error" });
   });
 
   test("--continue and --resume set the resume target", () => {

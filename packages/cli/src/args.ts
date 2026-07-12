@@ -9,6 +9,8 @@ interface CliArgs {
    *  entrypoint can fall back to MINERVA_MODEL and then settings. */
   model: string | null;
   resume: string | null;
+  /** Named profile from --profile; null = use the settings default. */
+  profile: string | null;
 }
 
 export type ParsedCli =
@@ -30,6 +32,8 @@ Options:
   -r, --resume <id>    Resume a specific session
   -m, --model <ref>    Model as [provider/]model, e.g. bailian/qwen-plus or
                        claude-opus-4-8 (default: ${defaultModel}, env: MINERVA_MODEL)
+  --profile <name>     Named profile from settings (system prompt, model,
+                       default mode); see the profiles section of the README
   -h, --help           Show this help
 
 Environment:
@@ -45,6 +49,7 @@ Model, provider, and API-key configuration can also live in settings
 export function parseCliArgs(argv: string[]): ParsedCli {
   let model: string | null = null;
   let resume: string | null = null;
+  let profile: string | null = null;
   let command: CliArgs["command"] = "tui";
 
   for (let i = 0; i < argv.length; i++) {
@@ -65,11 +70,17 @@ export function parseCliArgs(argv: string[]): ParsedCli {
         return { kind: "error", message: "--model requires a model id" };
       }
       model = value;
+    } else if (arg === "--profile") {
+      const value = argv[++i];
+      if (!value || value.startsWith("-")) {
+        return { kind: "error", message: "--profile requires a profile name" };
+      }
+      profile = value;
     } else if (arg === "--help" || arg === "-h") {
       return { kind: "help" };
     } else {
       return { kind: "error", message: `unknown option: ${arg}` };
     }
   }
-  return { kind: "run", args: { command, model, resume } };
+  return { kind: "run", args: { command, model, resume, profile } };
 }

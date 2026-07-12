@@ -36,7 +36,7 @@ if (parsed.kind === "error") {
   console.error(`${parsed.message}\n\n${usage(usageDefault)}`);
   process.exit(1);
 }
-const { command, resume } = parsed.args;
+const { command, resume, profile: profileFlag } = parsed.args;
 
 const runtime = defaultRuntime;
 const dataDir = process.env.MINERVA_DATA_DIR ?? defaultDataDir(runtime);
@@ -62,9 +62,21 @@ try {
   fail(cause);
 }
 
-// Precedence: --model flag > MINERVA_MODEL > settings > built-in default.
+// Validate the requested profile up front — a typo should fail before any
+// session exists, not on the first prompt.
+const activeProfile = profileFlag ?? settings.profile ?? null;
+if (activeProfile !== null && !settings.profiles[activeProfile]) {
+  const defined = Object.keys(settings.profiles).join(", ") || "(none)";
+  fail(new Error(`unknown profile "${activeProfile}" — defined: ${defined}`));
+}
+
+// Precedence: --model flag > MINERVA_MODEL > profile's model > settings > default.
 const model =
-  parsed.args.model ?? process.env.MINERVA_MODEL ?? settings.model ?? DEFAULT_ANTHROPIC_MODEL;
+  parsed.args.model ??
+  process.env.MINERVA_MODEL ??
+  (activeProfile ? settings.profiles[activeProfile]?.model : undefined) ??
+  settings.model ??
+  DEFAULT_ANTHROPIC_MODEL;
 
 let providerName: string;
 try {
@@ -191,6 +203,7 @@ const app = render(
     model={model}
     cwd={cwd}
     resume={resume}
+    profile={profileFlag}
     providers={providerChoices}
     needsConfig={missingRequiredKey}
     initialHistory={loadHistory()}

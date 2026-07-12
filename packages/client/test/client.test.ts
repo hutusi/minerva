@@ -98,6 +98,35 @@ describe("MinervaClient against a real kernel", () => {
     ]);
   });
 
+  test("profile wrappers round-trip: newSession carries it, listProfiles and setProfile work", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(join(cwd, ".minerva"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".minerva", "settings.json"),
+      JSON.stringify({
+        profile: "writer",
+        profiles: { writer: { systemPrompt: "You write.", defaultMode: "plan" } },
+      }),
+    );
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    const client = new MinervaClient(clientTransport);
+    await client.initialize();
+
+    const listed = await client.listProfiles(cwd);
+    expect(listed.default).toBe("writer");
+    expect(listed.profiles).toEqual([
+      { name: "writer", defaultMode: "plan", hasSystemPrompt: true },
+    ]);
+
+    const { sessionId, profile } = await client.newSession(cwd, { profile: "writer" });
+    expect(profile).toBe("writer");
+    await client.setProfile(sessionId, null);
+    await expect(client.setProfile(sessionId, "ghost")).rejects.toThrow("unknown profile");
+  });
+
   test("default permission handler cancels the turn (ACP cancelled outcome)", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));

@@ -18,6 +18,7 @@ const BUILTIN_DESCRIPTIONS: Record<string, string> = {
   config: "choose provider, API key, and model",
   mode: "show or set the session mode",
   compact: "summarize the conversation and reset the model context",
+  profile: "list or switch the active profile",
   sessions: "pick a recent session for this directory",
   resume: "pick a recent session for this directory",
   new: "start a fresh session",

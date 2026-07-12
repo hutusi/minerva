@@ -26,6 +26,9 @@ interface AppProps {
   cwd: string;
   /** null = new session; "latest" = most recent for cwd; else a session id. */
   resume: string | null;
+  /** Profile requested via --profile; null lets the kernel apply the settings
+   * default. The header reflects whatever the kernel reports back. */
+  profile?: string | null | undefined;
   /** Rows for the /config panel's provider selector. */
   providers: ProviderChoice[];
   /** No usable API key at startup — open the config panel instead of exiting. */
@@ -42,6 +45,7 @@ export function App({
   model,
   cwd,
   resume,
+  profile,
   providers,
   needsConfig,
   initialHistory,
@@ -52,6 +56,8 @@ export function App({
   const [error, setError] = useState<string | null>(null);
   // Header model ref; updated live when /config swaps the provider.
   const [modelRef, setModelRef] = useState(model);
+  // Active profile as the kernel reports it (create/load result, /profile).
+  const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   // A skills outage must not break the TUI — degrade to "no skills".
   const refreshSkills = useCallback(() => {
@@ -81,19 +87,20 @@ export function App({
         return client.loadSession(latest.sessionId, cwd);
       }
       if (resume) return client.loadSession(resume, cwd);
-      return client.newSession(cwd);
+      return client.newSession(cwd, profile ? { profile } : {});
     };
     establish()
-      .then(({ sessionId, store, instructions }) => {
+      .then(({ sessionId, store, instructions, profile: established }) => {
         announceInstructions(store, instructions);
         setSession({ id: sessionId, store });
+        setActiveProfile(established ?? null);
         refreshSkills();
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     return () => {
       bridge.handler = null;
     };
-  }, [client, bridge, cwd, resume, refreshSkills]);
+  }, [client, bridge, cwd, resume, profile, refreshSkills]);
 
   if (error) {
     return <Text color="red">Failed to start session: {error}</Text>;
@@ -103,10 +110,11 @@ export function App({
   }
   const startNewSession = () => {
     client
-      .newSession(cwd)
-      .then(({ sessionId, store, instructions }) => {
+      .newSession(cwd, activeProfile ? { profile: activeProfile } : {})
+      .then(({ sessionId, store, instructions, profile: established }) => {
         announceInstructions(store, instructions);
         setSession({ id: sessionId, store });
+        setActiveProfile(established ?? null);
         // The project may have gained/lost skills since the last session.
         refreshSkills();
       })
@@ -119,9 +127,10 @@ export function App({
     client.closeSession(sessionId);
     client
       .loadSession(sessionId, cwd)
-      .then(({ store, instructions }) => {
+      .then(({ store, instructions, profile: established }) => {
         announceInstructions(store, instructions);
         setSession({ id: sessionId, store });
+        setActiveProfile(established ?? null);
         refreshSkills();
       })
       // A failed switch keeps the current session usable — never setError,
@@ -135,7 +144,9 @@ export function App({
   return (
     <Box flexDirection="column">
       <Text dimColor>
-        Minerva · {modelRef} · {cwd} · /help for commands, esc to cancel
+        Minerva · {modelRef}
+        {activeProfile ? ` · profile ${activeProfile}` : ""} · {cwd} · /help for commands, esc to
+        cancel
       </Text>
       <Chat
         client={client}
@@ -148,6 +159,8 @@ export function App({
         providers={providers}
         model={modelRef}
         onModelChanged={setModelRef}
+        activeProfile={activeProfile}
+        onProfileChanged={setActiveProfile}
         initialConfigOpen={needsConfig}
         initialHistory={initialHistory ?? []}
         onHistoryAppend={onHistoryAppend}
@@ -168,6 +181,7 @@ const HELP_TEXT = [
   "/config            choose provider, API key, and model",
   "/mode [id]         show or set the session mode (plan | default | acceptEdits | auto)",
   "/compact           summarize the conversation and reset the model context",
+  "/profile [name]    list profiles, or switch persona (none clears)",
   "/sessions          pick a recent session for this directory",
   "/resume            same as /sessions",
   "/new               start a fresh session",
@@ -185,6 +199,8 @@ function Chat({
   providers,
   model,
   onModelChanged,
+  activeProfile,
+  onProfileChanged,
   initialConfigOpen,
   initialHistory,
   onHistoryAppend,
@@ -199,6 +215,8 @@ function Chat({
   providers: ProviderChoice[];
   model: string;
   onModelChanged: (providerId: string) => void;
+  activeProfile: string | null;
+  onProfileChanged: (profile: string | null) => void;
   initialConfigOpen: boolean;
   initialHistory: string[];
   onHistoryAppend: ((text: string) => void) | undefined;
@@ -287,6 +305,66 @@ function Chat({
         break;
       case "new":
         onNewSession();
+        break;
+      case "profile":
+        if (!argument) {
+          client
+            .listProfiles(cwd)
+            .then(({ profiles, default: fallback }) => {
+              if (profiles.length === 0) {
+                info(
+                  'no profiles defined — add {"profiles": {"<name>": {"systemPrompt": "…"}}} to settings.json',
+                );
+                return;
+              }
+              const width = Math.max(...profiles.map((entry) => entry.name.length)) + 2;
+              info(
+                [
+                  "profiles (/profile <name> to switch, /profile none to clear):",
+                  ...profiles.map((entry) => {
+                    const traits = [
+                      entry.hasSystemPrompt ? "system prompt" : "",
+                      entry.model ? `model ${entry.model}` : "",
+                      entry.defaultMode ? `mode ${entry.defaultMode}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ");
+                    const active = entry.name === activeProfile ? " (active)" : "";
+                    const isDefault = entry.name === fallback ? " (default)" : "";
+                    return `  ${entry.name.padEnd(width)}${traits}${active}${isDefault}`;
+                  }),
+                ].join("\n"),
+              );
+            })
+            .catch(reportError);
+          break;
+        }
+        if (argument === "none") {
+          client
+            .setProfile(session.id, null)
+            .then(() => {
+              onProfileChanged(null);
+              info("profile cleared — the base prompt applies from the next message");
+            })
+            .catch(reportError);
+          break;
+        }
+        client
+          .setProfile(session.id, argument)
+          .then(async () => {
+            onProfileChanged(argument);
+            info(`profile ${argument} active from the next message`);
+            // The profile may prefer a different model; switching models
+            // persists global settings, so it stays the user's call.
+            const { profiles } = await client.listProfiles(cwd);
+            const chosen = profiles.find((entry) => entry.name === argument);
+            if (chosen?.model && chosen.model !== model) {
+              info(
+                `note: this profile prefers ${chosen.model} (current: ${model}) — /config to switch`,
+              );
+            }
+          })
+          .catch(reportError);
         break;
       default:
         // Unreachable: resolveSlashInput only returns builtin for the cases

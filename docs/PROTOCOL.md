@@ -34,20 +34,29 @@ stream transport is skipped (it carries no id to answer).
 Params `{ protocolVersion }` → `{ protocolVersion, agentCapabilities: { loadSession: true } }`.
 
 ### `session/new`
-Params `{ cwd }` → `{ sessionId, modes, instructions? }` where `modes` is
+Params `{ cwd, profile? }` → `{ sessionId, modes, instructions?, profile? }`
+where `modes` is
 `{ currentModeId, availableModes: [{ id, name, description }] }`. Mode ids:
 `plan | default | acceptEdits | auto`. `instructions` (minerva/* extension
 field, absent when no AGENTS.md was found) is
 `{ files: [{ path, scope: "global" | "project", truncated }] }` — the
 AGENTS.md instruction files the kernel folded into the system prompt at
-session establish. Generic ACP clients can ignore it.
+session establish. Generic ACP clients can ignore it. `profile` (minerva/*
+extension, both directions) names a settings-defined profile: the request
+field selects one explicitly (unknown names are rejected; omitted = the
+settings `profile` default, if any), and the result field reports what was
+applied. A profile's `systemPrompt` replaces the base system prompt (AGENTS.md
+still appends), its `defaultMode` wins the initial mode.
 
 ### `session/load`
-Params `{ sessionId, cwd }` → `{ modes, instructions? }` (same `instructions`
-shape as `session/new`; instruction files are re-read on load). Before
-responding, the kernel replays the persisted conversation to the frontend as
-`session/update` notifications (transcript rebuild). Fails if the session
-belongs to a different cwd or a prompt is running in it.
+Params `{ sessionId, cwd }` → `{ modes, instructions?, profile? }` (same
+`instructions` shape as `session/new`; instruction files are re-read on load).
+Before responding, the kernel replays the persisted conversation to the
+frontend as `session/update` notifications (transcript rebuild). Fails if the
+session belongs to a different cwd or a prompt is running in it. The logged
+profile NAME is re-resolved against current settings (so prompt edits take
+effect); a vanished profile degrades to the base persona with a stderr
+warning rather than failing the load.
 
 ### `session/prompt`
 Params `{ sessionId, prompt: [{ type: "text", text }] }` → `{ stopReason }`.
@@ -146,6 +155,22 @@ Params `{ cwd }` → `{ skills: [{ name, description, source: "global" |
 frontend can refresh after the user adds a skill. Project skills win name
 collisions. Frontends use this to offer skills as slash commands; the model
 reaches the same skills through the per-session `skill` tool.
+
+### `minerva/profiles/list`
+Params `{ cwd }` → `{ profiles: [{ name, model?, defaultMode?,
+hasSystemPrompt }], default? }`. Lists the named profiles from merged
+settings (`profiles` maps merge per name, project over global; the `default`
+field is the settings `profile` scalar, project winning). Reads settings
+fresh per call, like `minerva/skills/list` — no session required. Prompt
+bodies are not shipped; `hasSystemPrompt` says whether one is defined.
+
+### `minerva/session/set_profile`
+Params `{ sessionId, profile: string | null }` → `null`. Switches the
+session's active profile (or clears it back to the base persona with `null`);
+applies from the next prompt, since the system prompt is rebuilt per prompt.
+Unknown names are rejected; rejected while a prompt is running. Appends a
+`session.profile_changed` event (flushed before acknowledging), so resume
+restores the switch.
 
 ### `minerva/config/set_model`
 Params `{ modelRef, provider?, apiKey? }` → `{ providerId }`. Persists the

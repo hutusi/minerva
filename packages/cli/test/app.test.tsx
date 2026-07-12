@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
@@ -58,10 +58,16 @@ function renderTui(
     resolveProvider?: KernelOptions["resolveProvider"];
     providers?: ProviderChoice[];
     needsConfig?: boolean;
+    /** Written to cwd/.minerva/settings.json before the app boots. */
+    projectSettings?: object;
   } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "minerva-ui-proj-"));
   const dataDir = mkdtempSync(join(tmpdir(), "minerva-ui-data-"));
+  if (options.projectSettings) {
+    mkdirSync(join(cwd, ".minerva"), { recursive: true });
+    writeFileSync(join(cwd, ".minerva", "settings.json"), JSON.stringify(options.projectSettings));
+  }
   const [clientTransport, kernelTransport] = createInProcTransportPair();
   kernels.push(
     createKernel(kernelTransport, {
@@ -535,6 +541,53 @@ describe("TUI (ink-testing-library, full stack)", () => {
     expect(ui.lastFrame()).not.toContain("/compact"); // help output absent
     await pressEnter(ui);
     await waitFor(() => (ui.lastFrame() ?? "").includes("/compact"), "second enter submits");
+    ui.unmount();
+  }, 20_000);
+
+  test("/profile lists, switches, and clears the persona", async () => {
+    const ui = renderTui([], {
+      projectSettings: {
+        profile: "writer",
+        profiles: {
+          writer: { systemPrompt: "You write.", model: "bailian/qwen-plus" },
+          minimal: {},
+        },
+      },
+    });
+    await ready(ui);
+    // The settings default applied at session creation shows in the header.
+    expect(ui.lastFrame()).toContain("profile writer");
+
+    await type(ui, "/profile");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("minimal"), "profile list");
+    const listing = ui.lastFrame() ?? "";
+    expect(listing).toContain("(active)");
+    expect(listing).toContain("(default)");
+    expect(listing).toContain("model bailian/qwen-plus");
+
+    await type(ui, "/profile minimal");
+    await waitFor(
+      () => (ui.lastFrame() ?? "").includes("profile minimal active from the next message"),
+      "switched",
+    );
+    expect(ui.lastFrame()).toContain("profile minimal ·"); // header updated
+
+    await type(ui, "/profile none");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("profile cleared"), "cleared");
+    expect(ui.lastFrame()).not.toContain("· profile");
+    ui.unmount();
+  }, 20_000);
+
+  test("switching to a profile that prefers another model prints a hint", async () => {
+    const ui = renderTui([], {
+      projectSettings: {
+        profiles: { writer: { systemPrompt: "You write.", model: "bailian/qwen-plus" } },
+      },
+    });
+    await ready(ui);
+
+    await type(ui, "/profile writer");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("prefers bailian/qwen-plus"), "model hint");
     ui.unmount();
   }, 20_000);
 

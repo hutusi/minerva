@@ -18,6 +18,9 @@ export interface ReplayResult {
   todos: PlanEntry[];
   /** Last mode recorded in the log, if any. */
   modeId?: string | undefined;
+  /** Last active profile NAME (undefined = none/cleared); the caller
+   * re-resolves it against current settings. */
+  profile?: string | undefined;
   /** Token spend summed over every completed turn in the log. */
   usage: TurnUsage;
 }
@@ -34,6 +37,7 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   const updates: SessionUpdate[] = [];
   let todos: PlanEntry[] = [];
   let modeId: string | undefined;
+  let profile: string | undefined;
   let usage: TurnUsage = {};
 
   let expected: ProviderToolCall[] = [];
@@ -152,6 +156,14 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         modeId = event.modeId;
         break;
 
+      case "session.created":
+        profile = event.profile;
+        break;
+
+      case "session.profile_changed":
+        profile = event.profile ?? undefined;
+        break;
+
       case "session.compacted":
         // The model context restarts from the summary; the UI transcript
         // (already emitted above) keeps the full history. Restore the
@@ -185,7 +197,7 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   flushToolBatch();
 
   if (modeId) updates.push({ sessionUpdate: "current_mode_update", currentModeId: modeId });
-  return { messages, updates, todos, modeId, usage };
+  return { messages, updates, todos, modeId, profile, usage };
 }
 
 function titleFor(tool: KernelTool | undefined, toolName: string, input: unknown): string {

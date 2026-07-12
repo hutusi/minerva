@@ -18,6 +18,17 @@ All notable changes to Minerva are documented here. The format follows
   cancels the turn) plus a preview of what the call will do — the command
   for execute tools, a line diff for edits, all-added content for new
   files, the URL for fetches.
+- Named profiles: settings `profiles: { <name>: { systemPrompt?, model?,
+  defaultMode? } }` plus a `profile` default. A profile's system prompt
+  replaces the base coding-agent prompt (AGENTS.md instructions still
+  append), opening the kernel to non-coding agents. Select per run with
+  `--profile <name>`, switch mid-session with `/profile <name>` (applies
+  from the next message; `/profile none` clears), list with `/profile`.
+  New protocol surface: `minerva/profiles/list`,
+  `minerva/session/set_profile`, and additive `profile` fields on
+  `session/new` / `session/load`. Sessions log only the profile name and
+  re-resolve it on resume, so prompt edits take effect and a deleted
+  profile degrades to the base persona instead of bricking the session.
 - Interactive session picker: `/sessions` (and the new `/resume` alias)
   opens an arrow-key list of recent sessions — relative age, first-prompt
   preview, `(current)` marker — and enter switches to the selected session

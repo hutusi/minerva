@@ -14,10 +14,15 @@ export type SessionEvent =
       sessionId: string;
       cwd: string;
       provider: string;
+      /** Profile name the session was created with; body re-resolves on load. */
+      profile?: string | undefined;
       at: string;
     }
   | { type: "session.resumed"; provider: string; at: string }
   | { type: "session.mode_changed"; modeId: string; at: string }
+  /** The active profile switched (null = cleared). Only the NAME is logged;
+   * load re-resolves it against current settings so edits take effect. */
+  | { type: "session.profile_changed"; profile: string | null; at: string }
   // Audit trail for a live model switch (minerva/config/set_model). Replay
   // skips unknown/informational events, so logs carrying it stay resumable.
   | { type: "session.model_changed"; provider: string; at: string }

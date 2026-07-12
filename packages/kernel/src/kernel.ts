@@ -11,6 +11,7 @@ import {
   JSON_RPC_ERROR_CODES,
   MINERVA_METHODS,
   PROTOCOL_VERSION,
+  type ProfilesListResult,
   RpcError,
   type SessionCompactResult,
   type SessionLoadResult,
@@ -43,6 +44,7 @@ import {
   defaultDataDir,
   loadSettings,
   type ProviderSettings,
+  resolveProfile,
   updateGlobalSettings,
 } from "./settings";
 import { loadSkills, readSkillBody, type SkillRegistry } from "./skills";
@@ -151,6 +153,8 @@ export class MinervaKernel {
     this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
     this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
     this.#register(MINERVA_METHODS.skillsList, (params) => this.#skillsList(params));
+    this.#register(MINERVA_METHODS.profilesList, (params) => this.#profilesList(params));
+    this.#register(MINERVA_METHODS.sessionSetProfile, (params) => this.#sessionSetProfile(params));
     // Cancel is a notification, deliberately unwrapped: it carries no state to
     // persist and must keep working during shutdown — close() relies on it.
     this.#connection.handleNotification(AGENT_METHODS.sessionCancel, (params) => {
@@ -186,22 +190,36 @@ export class MinervaKernel {
   }
 
   async #sessionNew(params: unknown): Promise<SessionNewResult> {
-    const { cwd } = (params ?? {}) as { cwd?: string };
+    const { cwd, profile } = (params ?? {}) as { cwd?: string; profile?: string };
     if (typeof cwd !== "string" || cwd.length === 0) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "session/new requires cwd");
     }
-    const session = await Session.create({
-      cwd,
-      dataDir: this.#dataDir,
-      providerId: this.#provider.id,
-      runtime: this.#runtime,
-    });
+    if (profile !== undefined && typeof profile !== "string") {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "profile must be a string");
+    }
+    let session: Session;
+    try {
+      session = await Session.create({
+        cwd,
+        dataDir: this.#dataDir,
+        providerId: this.#provider.id,
+        runtime: this.#runtime,
+        ...(profile !== undefined ? { profile } : {}),
+      });
+    } catch (error) {
+      // Unknown profile (explicit or the settings default) — a client error.
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     this.#sessions.set(session.id, session);
     const instructions = await this.#prepareSession(session.id, cwd);
     return {
       sessionId: session.id,
       modes: modeState(session),
       ...(instructions ? { instructions } : {}),
+      ...(session.profile ? { profile: session.profile.name } : {}),
     };
   }
 
@@ -332,7 +350,78 @@ export class MinervaKernel {
       };
       this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
     }
-    return { modes: modeState(loaded.session), ...(instructions ? { instructions } : {}) };
+    return {
+      modes: modeState(loaded.session),
+      ...(instructions ? { instructions } : {}),
+      ...(loaded.session.profile ? { profile: loaded.session.profile.name } : {}),
+    };
+  }
+
+  async #profilesList(params: unknown): Promise<ProfilesListResult> {
+    const { cwd } = (params ?? {}) as { cwd?: string };
+    if (typeof cwd !== "string" || cwd.length === 0) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "profiles/list requires cwd");
+    }
+    // Fresh from disk (like skills/list): needs no session, and a frontend
+    // can pick up a just-edited settings file without a restart.
+    const settings = await loadSettings(this.#runtime, this.#dataDir, cwd);
+    return {
+      profiles: Object.entries(settings.profiles).map(([name, profile]) => ({
+        name,
+        ...(profile.model !== undefined ? { model: profile.model } : {}),
+        ...(profile.defaultMode !== undefined ? { defaultMode: profile.defaultMode } : {}),
+        hasSystemPrompt: typeof profile.systemPrompt === "string",
+      })),
+      ...(settings.profile !== undefined ? { default: settings.profile } : {}),
+    };
+  }
+
+  async #sessionSetProfile(params: unknown): Promise<null> {
+    const { sessionId, profile } = (params ?? {}) as {
+      sessionId?: string;
+      profile?: string | null;
+    };
+    const session = sessionId ? this.#sessions.get(sessionId) : undefined;
+    if (!session) {
+      throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, `unknown session: ${sessionId}`);
+    }
+    if (profile !== null && typeof profile !== "string") {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        "profile must be a string or null (to clear)",
+      );
+    }
+    if (session.promptActive) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        "cannot switch profile while a prompt is running",
+      );
+    }
+    if (profile === null) {
+      session.profile = undefined;
+    } else {
+      const settings = await loadSettings(this.#runtime, this.#dataDir, session.cwd);
+      let resolved: ReturnType<typeof resolveProfile>;
+      try {
+        resolved = resolveProfile(settings, profile);
+      } catch (error) {
+        throw new RpcError(
+          JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      if (resolved) {
+        session.profile = {
+          name: resolved.name,
+          ...(resolved.systemPrompt !== undefined ? { systemPrompt: resolved.systemPrompt } : {}),
+        };
+      }
+    }
+    session.append({ type: "session.profile_changed", profile, at: now() });
+    // Settle the write before acknowledging, like set_mode: a persona switch
+    // that vanishes on restart is a policy surprise.
+    await session.flush();
+    return null;
   }
 
   async #sessionSetMode(params: unknown): Promise<SessionSetModeResult> {
@@ -479,9 +568,11 @@ export class MinervaKernel {
     try {
       // AGENTS.md instructions append to the host's base prompt rather than
       // replacing it; loaded at session establish, so edits need a
-      // new/reloaded session to take effect.
+      // new/reloaded session to take effect. A profile REPLACES the base
+      // prompt (instructions still append); rebuilt per prompt, so a
+      // mid-session profile switch simply applies from the next message.
       const instructions = this.#instructions.get(session.id)?.text;
-      const base = this.#systemPrompt(session.cwd);
+      const base = session.profile?.systemPrompt ?? this.#systemPrompt(session.cwd);
       providerText = await this.#expandSkillInvocation(session, text);
       context = {
         session,
