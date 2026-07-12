@@ -49,7 +49,7 @@ minerva/
     client/      # frontend-agnostic protocol client + session view-model reducer
     cli/         # Ink app: REPL, streaming render, approval prompts, slash commands
   apps/
-    gui/         # Tauri 2 + React + Vite (M2)
+    gui/         # Tauri 2 + React + Vite desktop app (kernel as stdio sidecar)
 ```
 
 Config: `~/.minerva/settings.json` (global) + `.minerva/settings.json`
@@ -81,8 +81,27 @@ streaming, permission round-trip, subagent degradation)*; two providers switchab
 `kill -9` the CLI → resume restores the session ✅ (tested, including torn log
 lines); every side effect traceable in the audit log ✅.
 
-**M2 (post-v0.1):** Tauri 2 GUI — kernel as bundled sidecar, React UI consuming
-`@minerva/client` view-models; session browser reads the JSONL index.
+**M2 (shipped post-v0.3):** Tauri 2 GUI — kernel as stdio sidecar, React UI
+consuming `@minerva/client` view-models; session browser reads the JSONL
+index. Decisions recorded from the build:
+
+- **Rust owns the kernel child** (~200 lines in `src-tauri/src/sidecar.rs`),
+  not the webview: a webview-held child would be orphaned on every HMR
+  reload. Rust does its own byte-level line framing and forwards one frame
+  per event; all restart/reconnect policy lives in TS
+  (`apps/gui/src/lib/kernel-manager.ts` — one auto-respawn per death, then a
+  manual restart button). No `shell:*` capability is granted to the webview.
+- **One kernel, many project tabs**: `session/new` takes cwd per session, so
+  tabs multiplex over the single connection. Only the active tab holds a live
+  store; background tabs rebuild from JSONL replay on activation — which also
+  makes crash recovery "drop the stores, keep tab state".
+- **First-run config over the protocol**: `minerva acp --allow-unconfigured`
+  starts the host keyless and the GUI drives `minerva/config/state` (new read
+  method) + `minerva/config/set_model`, mirroring the TUI's /config panel.
+- **Packaging**: `prepare-sidecar.ts` feeds the release pair
+  `dist/{minerva, rg}` to Tauri as externalBin; Tauri co-locates both beside
+  the app binary, so `resolveRgPath` works unchanged. Local `tauri build`
+  only for now — release-CI bundling/signing is deferred.
 
 ## Development workflow
 

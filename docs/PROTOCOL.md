@@ -1,8 +1,8 @@
 # Minerva Wire Protocol
 
 The kernel is protocol-fronted: every frontend — the Ink CLI (in-process), an
-editor speaking ACP over stdio, the planned Tauri sidecar and WebSocket
-remote — exchanges the same JSON-RPC 2.0 messages. This document is the
+editor speaking ACP over stdio, the Tauri GUI's sidecar, and the planned
+WebSocket remote — exchanges the same JSON-RPC 2.0 messages. This document is the
 reference for that wire surface (`@minerva/protocol` is the source of truth in
 code; `PROTOCOL_VERSION = 1`).
 
@@ -21,7 +21,7 @@ transport spec — `JSON.stringify` guarantees this).
 | Transport | Factory | Used by |
 |---|---|---|
 | In-process | `createInProcTransportPair()` | CLI embedding the kernel |
-| Stream (stdio) | `createStreamTransport(input, output)` | `minerva acp`, future Tauri sidecar |
+| Stream (stdio) | `createStreamTransport(input, output)` | `minerva acp` — editors and the Tauri GUI (which spawns `minerva acp --allow-unconfigured` and bridges the pipes into the webview) |
 | WebSocket | — | planned (remote kernels) |
 
 Error codes follow JSON-RPC 2.0 (`-32600` invalid request, `-32601` method not
@@ -211,6 +211,19 @@ endpoint so hosts don't demand a key at startup. Provider construction is host-i
 resolveProvider`), keeping the kernel free of AI SDK knowledge; hosts without
 a resolver reject the method. Open sessions log a `session.model_changed`
 audit event, which replay ignores.
+
+### `minerva/config/state`
+Params `{}` → `{ model, needsApiKey, providers }`. The read half of
+`config/set_model`, for frontends on the far side of a pipe (the TUI computes
+this host-side; the GUI sidecar can't). `model` is the live provider's id
+(the model ref the kernel actually runs). `needsApiKey` is true when the live
+provider requires a key and none was found — the signal to open a first-run
+config flow. Each provider row carries `{ name, defaultModel?, keyVar,
+keySource: "env" | "settings" | "none", baseUrl?, models?, requiresApiKey? }`;
+key detection is blank-aware, matching `resolveApiKey`. Settings are re-read
+per call, so a key stored moments ago is reflected. Pairs with
+`minerva acp --allow-unconfigured`, which lets the stdio host start keyless so
+this flow can run before any key exists.
 
 ## Versioning
 
