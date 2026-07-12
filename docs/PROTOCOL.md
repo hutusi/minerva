@@ -121,6 +121,16 @@ are provider-truth; there is no cost field — pricing for the open provider
 registry can't be bundled truthfully, so cost stays a future additive
 extension (`cost?: { amount, currency }`, mirroring ACP's session-usage RFD).
 
+### `minerva/session/compacted` *(notification)*
+Params `{ sessionId, summary, reason: "auto" }`. Emitted when the KERNEL
+compacted a session on its own — currently only auto-compaction: when the
+provider declares a `contextWindow` and the previous prompt's context
+(input + cache read/write tokens) crossed 80% of it, the next
+`session/prompt` runs a compaction turn first. Manual
+`minerva/session/compact` responds to its requester instead and emits no
+notification. A `minerva/session/usage` notification for the summarization
+turn's spend precedes it.
+
 ### `session/request_permission` *(kernel → frontend request)*
 Params `{ sessionId, toolCall: { toolCallId, title, kind, rawInput }, options }`
 where `options` are `{ optionId, name, kind }`, kinds

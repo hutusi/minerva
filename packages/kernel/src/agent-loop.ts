@@ -16,6 +16,7 @@ import type {
 } from "@minerva/providers";
 import { now } from "./events";
 import { escapeRuleValue, formatRule, permissionValue } from "./permissions";
+import { contextSize } from "./replay";
 import type { Runtime } from "./runtime";
 import type { Session } from "./session";
 import { persistAllowRule } from "./settings";
@@ -493,6 +494,9 @@ function finish(
   // notification rather than a misleading all-zero one.
   if (hasUsage(usage)) {
     session.addTurnUsage(usage);
+    // The auto-compaction signal: what this prompt's turns occupied of the
+    // context window (kept separate from cumulative spend on purpose).
+    session.lastTurnContext = contextSize(usage) ?? session.lastTurnContext;
     const params: SessionUsageParams = {
       sessionId: session.id,
       lastTurn: toTokenUsage(usage),

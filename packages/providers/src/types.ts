@@ -65,6 +65,11 @@ export type TurnEvent =
 export interface ModelProvider {
   /** Stable identifier, e.g. "anthropic/claude-opus-4-8". */
   readonly id: string;
+  /**
+   * The model's context window in tokens, when known. Feeds auto-compaction;
+   * absent means "unknown" and features that need it stay inert.
+   */
+  readonly contextWindow?: number | undefined;
   /** Stream one model turn. Ends with a "finish" or "error" event. */
   streamTurn(request: TurnRequest): AsyncIterable<TurnEvent>;
 }

@@ -159,6 +159,14 @@ mode. `profile` names the one applied by default; `--profile <name>` picks
 one per run, and `/profile` lists or switches mid-session (from the next
 message). Per-name entries merge project-over-global like `providers`.
 
+`"contextWindow"` (tokens, per provider) drives auto-compaction: when the
+previous prompt's context crosses 80% of the window, the next prompt runs a
+summarization turn first and continues from the summary (the transcript keeps
+the full history). Built-ins carry defaults (anthropic/openai 200k, bailian
+128k); override per provider — e.g.
+`"bailian": { "contextWindow": 1000000 }` for a long-context model — and
+custom providers without one never auto-compact.
+
 `"thinking"` asks the model to reason before answering: `true` sends
 `enable_thinking: true` to the endpoint (needed by Qwen models, which default
 it off), `false` suppresses it (GLM models think by default), unset sends

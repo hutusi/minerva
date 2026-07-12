@@ -13,6 +13,7 @@ import {
   PROTOCOL_VERSION,
   type ProfilesListResult,
   RpcError,
+  type SessionCompactedParams,
   type SessionCompactResult,
   type SessionLoadResult,
   type SessionModeState,
@@ -62,6 +63,9 @@ import { hasUsage, toTokenUsage } from "./usage";
  */
 const REPLAY_BATCH_MAX_BYTES = 4 * 1024 * 1024;
 const REPLAY_BATCH_MAX_UPDATES = 1000;
+
+/** Auto-compact when the last prompt's context crossed this share of the window. */
+const AUTO_COMPACT_THRESHOLD = 0.8;
 
 export function chunkReplayUpdates<T>(updates: T[]): T[][] {
   const chunks: T[][] = [];
@@ -548,6 +552,21 @@ export class MinervaKernel {
     if (!text) {
       throw new RpcError(JSON_RPC_ERROR_CODES.INVALID_PARAMS, "prompt has no text content");
     }
+    // Context-pressure compaction happens BEFORE the lease is claimed. The
+    // trigger check is synchronous so the common no-compaction path adds no
+    // await between the promptActive guard and beginPrompt — an added yield
+    // there would reorder same-tick prompt/compact races.
+    if (this.#autoCompactNeeded(session)) {
+      await this.#autoCompact(session);
+      // Re-check: another request may have claimed the lease while the
+      // compaction turn ran.
+      if (session.promptActive) {
+        throw new RpcError(
+          JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+          "a prompt is already running in this session",
+        );
+      }
+    }
     // Claim the prompt lease synchronously: an await between the promptActive
     // guard above and this claim would let two same-tick requests both pass
     // the guard and interleave their events. runPrompt releases the lease.
@@ -685,6 +704,47 @@ export class MinervaKernel {
       this.#connection.notify(CLIENT_METHODS.sessionUsage, params);
     }
     return { summary };
+  }
+
+  /** Synchronous trigger check — inert unless the provider declares a window. */
+  #autoCompactNeeded(session: Session): boolean {
+    const window = this.#provider.contextWindow;
+    return (
+      window !== undefined &&
+      !session.promptActive &&
+      session.messages.length > 0 &&
+      session.lastTurnContext !== undefined &&
+      session.lastTurnContext > AUTO_COMPACT_THRESHOLD * window
+    );
+  }
+
+  /**
+   * Compact ahead of a prompt when the previous one's context crossed the
+   * threshold. Failure degrades to a stderr warning and the prompt proceeds
+   * uncompacted — auto-compaction must never brick prompting.
+   */
+  async #autoCompact(session: Session): Promise<void> {
+    try {
+      // runCompact claims its own prompt lease synchronously; a same-tick
+      // prompt racing it still gets the friendly promptActive RpcError.
+      const { summary, usage } = await runCompact(session, this.#provider);
+      if (usage && hasUsage(usage)) {
+        const usageParams: SessionUsageParams = {
+          sessionId: session.id,
+          lastTurn: toTokenUsage(usage),
+          cumulative: toTokenUsage(session.usage),
+        };
+        this.#connection.notify(CLIENT_METHODS.sessionUsage, usageParams);
+      }
+      const params: SessionCompactedParams = { sessionId: session.id, summary, reason: "auto" };
+      this.#connection.notify(CLIENT_METHODS.sessionCompacted, params);
+    } catch (error) {
+      process.stderr.write(
+        `minerva: auto-compaction failed, continuing uncompacted: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
   }
 
   async #configSetModel(params: unknown): Promise<ConfigSetModelResult> {

@@ -119,7 +119,30 @@ describe("provider registry", () => {
       baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
       defaultModel: "qwen-plus",
       models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
+      contextWindow: 131_072,
     });
+  });
+
+  test("contextWindow: builtins carry defaults, settings override, garbage throws", () => {
+    expect(buildProviderRegistry().anthropic?.contextWindow).toBe(200_000);
+    const providers = buildProviderRegistry({
+      bailian: { contextWindow: 1_000_000 },
+      "my-proxy": { baseUrl: "https://llm.example.com/v1", contextWindow: 32_768 },
+    });
+    expect(providers.bailian?.contextWindow).toBe(1_000_000);
+    expect(providers["my-proxy"]?.contextWindow).toBe(32_768);
+    expect(() => buildProviderRegistry({ bailian: { contextWindow: -5 } })).toThrow(
+      "contextWindow must be a positive number",
+    );
+  });
+
+  test("createProviderFromRef exposes the registry's contextWindow", () => {
+    const provider = createProviderFromRef("bailian/qwen-plus", {
+      providers: buildProviderRegistry(),
+      apiKey: "sk-test",
+    });
+    expect(provider.contextWindow).toBe(131_072);
+    expect(typeof provider.streamTurn).toBe("function"); // spread kept the method
   });
 
   test("bailian lists glm-5.2 among known models, and refs to it resolve", () => {

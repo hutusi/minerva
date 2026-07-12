@@ -61,6 +61,14 @@ export class Session {
   profile?: { name: string; systemPrompt?: string | undefined } | undefined;
   /** Token spend across every completed turn, incl. pre-resume history. */
   usage: TurnUsage = {};
+  /**
+   * Context size of the LAST completed prompt (input + cache read/write
+   * tokens), the auto-compaction trigger. Deliberately NOT the running
+   * total: the compaction turn's own input is ≈ the over-threshold context,
+   * so a naive signal would re-trigger on every prompt after. Set by the
+   * agent loop's finish, cleared by runCompact, rebuilt on replay.
+   */
+  lastTurnContext?: number | undefined;
   promptActive = false;
 
   #dir: string;
@@ -181,6 +189,7 @@ export class Session {
     session.messages.push(...replay.messages);
     session.todos = replay.todos;
     session.usage = replay.usage;
+    session.lastTurnContext = replay.lastTurnContext;
     // Re-resolve the logged profile NAME against current settings, so prompt
     // edits take effect on resume. A vanished profile degrades to the base
     // persona with a warning — it must never brick resume.

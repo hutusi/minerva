@@ -11,6 +11,7 @@ import {
   type ProfilesListResult,
   type RequestPermissionParams,
   type RequestPermissionResult,
+  type SessionCompactedParams,
   type SessionCompactResult,
   type SessionLoadResult,
   type SessionNewResult,
@@ -76,6 +77,14 @@ export class MinervaClient {
     this.#connection.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
       const { sessionId, lastTurn, cumulative } = params as SessionUsageParams;
       this.#stores.get(sessionId)?.setUsage(lastTurn, cumulative);
+    });
+    this.#connection.handleNotification(CLIENT_METHODS.sessionCompacted, (params) => {
+      const { sessionId, summary } = params as SessionCompactedParams;
+      // Clip: summaries run long, and this is a notice, not the transcript.
+      const preview = summary.length > 400 ? `${summary.slice(0, 400)}…` : summary;
+      this.#stores
+        .get(sessionId)
+        ?.addInfo(`context auto-compacted (window threshold reached) — summary:\n${preview}`);
     });
     this.#connection.handleRequest(CLIENT_METHODS.sessionRequestPermission, (params) =>
       this.#onPermissionRequest(params as RequestPermissionParams),

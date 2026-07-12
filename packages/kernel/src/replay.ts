@@ -23,6 +23,9 @@ export interface ReplayResult {
   profile?: string | undefined;
   /** Token spend summed over every completed turn in the log. */
   usage: TurnUsage;
+  /** Context size of the last completed turn — the auto-compaction signal,
+   * reset by a session.compacted event (see Session.lastTurnContext). */
+  lastTurnContext?: number | undefined;
 }
 
 /**
@@ -39,6 +42,7 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   let modeId: string | undefined;
   let profile: string | undefined;
   let usage: TurnUsage = {};
+  let lastTurnContext: number | undefined;
 
   let expected: ProviderToolCall[] = [];
   let results: ProviderToolResult[] = [];
@@ -169,6 +173,8 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         // (already emitted above) keeps the full history. Restore the
         // summarization turn's spend so the session total survives resume.
         usage = addUsage(usage, event.usage);
+        // Compaction resets the trigger, live and on replay alike.
+        lastTurnContext = undefined;
         flushToolBatch();
         messages.length = 0;
         messages.push(compactedContextMessage(event.summary));
@@ -178,6 +184,7 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
         // Spend telemetry survives compaction: session.compacted resets the
         // model context above, but not what the session has already cost.
         usage = addUsage(usage, event.usage);
+        lastTurnContext = contextSize(event.usage) ?? lastTurnContext;
         flushToolBatch();
         break;
 
@@ -197,7 +204,15 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
   flushToolBatch();
 
   if (modeId) updates.push({ sessionUpdate: "current_mode_update", currentModeId: modeId });
-  return { messages, updates, todos, modeId, profile, usage };
+  return { messages, updates, todos, modeId, profile, usage, lastTurnContext };
+}
+
+/** What of a turn's usage occupies the context window (see agent-loop). */
+export function contextSize(usage: TurnUsage | undefined): number | undefined {
+  if (!usage) return undefined;
+  const size =
+    (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+  return size > 0 ? size : undefined;
 }
 
 function titleFor(tool: KernelTool | undefined, toolName: string, input: unknown): string {

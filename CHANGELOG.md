@@ -18,6 +18,15 @@ All notable changes to Minerva are documented here. The format follows
   cancels the turn) plus a preview of what the call will do — the command
   for execute tools, a line diff for edits, all-added content for new
   files, the URL for fetches.
+- Auto-compaction: providers now declare a `contextWindow` (anthropic and
+  openai 200k, bailian 128k; settings-overridable per provider). When the
+  previous prompt's context (input + cache tokens) crosses 80% of it, the
+  next prompt compacts first and continues from the summary, announced via
+  a new `minerva/session/compacted` notification (`reason: "auto"`) that
+  the CLI shows as an info line. The trigger is the last turn's context —
+  cleared by compaction and rebuilt on resume — so the compaction turn's
+  own usage can't re-trigger it. A failed auto-compaction degrades to a
+  warning and the prompt proceeds uncompacted.
 - Print mode: `minerva -p "<prompt>"` runs one prompt and exits — reply on
   stdout (pipe-clean), tool progress and diagnostics on stderr, exit 0 only
   when the turn completes. `-p` without an argument reads the prompt from

@@ -50,6 +50,9 @@ export const CLIENT_METHODS = {
   sessionRequestPermission: "session/request_permission",
   /** Notification (minerva/* extension): token usage after each completed turn. */
   sessionUsage: "minerva/session/usage",
+  /** Notification (minerva/* extension): the kernel compacted a session on
+   * its own (context-window pressure). */
+  sessionCompacted: "minerva/session/compacted",
 } as const;
 
 // --- Content -----------------------------------------------------------
@@ -340,6 +343,16 @@ export interface SessionUsageParams {
   lastTurn?: TokenUsage | undefined;
   /** Totals across every persisted turn of the session, including lastTurn. */
   cumulative: TokenUsage;
+}
+
+// --- minerva/session/compacted -----------------------------------------
+
+/** Kernel-initiated compaction announcement (manual /compact responds to the
+ * requester instead). `reason` is extensible; only "auto" exists today. */
+export interface SessionCompactedParams {
+  sessionId: string;
+  summary: string;
+  reason: "auto";
 }
 
 // --- session/request_permission ----------------------------------------

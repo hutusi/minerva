@@ -55,6 +55,8 @@ export interface ProviderSettings {
    * model. OpenAI-compatible providers only.
    */
   thinking?: ThinkingConfig | undefined;
+  /** Context window (tokens) override; feeds auto-compaction. */
+  contextWindow?: number | undefined;
 }
 
 /**

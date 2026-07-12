@@ -75,6 +75,10 @@ export async function runCompact(
     await session.flush();
     session.messages.length = 0;
     session.messages.push(compactedContextMessage(summary));
+    // Reset the auto-compaction signal: the summarization turn's own input
+    // is ≈ the over-threshold context, and leaving it set would re-trigger
+    // compaction on every following prompt (the loop hazard).
+    session.lastTurnContext = undefined;
     return turnUsage ? { summary, usage: turnUsage } : { summary };
   } finally {
     session.endPrompt();
