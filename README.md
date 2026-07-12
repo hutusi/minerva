@@ -326,7 +326,10 @@ agent server along these lines:
 ```
 
 The stdio wire contract is covered by an automated harness
-(`packages/cli/test/acp.test.ts`); live Zed interop has not been validated yet.
+(`packages/cli/test/acp.test.ts`), and live Zed interop is validated against
+the compiled binary: streaming replies, the permission round-trip, and
+subagent `task` calls (shown as a plain tool call — Zed doesn't consume the
+`minerva/session/task_update` extension) all work.
 
 ## Development
 

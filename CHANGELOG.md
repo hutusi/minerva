@@ -48,6 +48,11 @@ All notable changes to Minerva are documented here. The format follows
   set; `baseUrl` is overridable in settings for a remote host.
 
 ### Fixed
+- Live Zed interop over `minerva acp` is validated (closes the 0.1 known
+  issue): Zed drives the compiled binary through streaming replies, the
+  permission round-trip, and subagent `task` calls (rendered as a plain tool
+  call — generic ACP clients don't consume the task_update extension). The
+  live ACP smoke (`scripts/acp-smoke.ts`) passes all five checks.
 - macOS arm64 compiled binaries no longer die on launch: the SIGKILL was a
   Bun 1.3.12 regression (truncated code signature, oven-sh/bun#29270, fixed
   upstream in 1.3.13) — Bun is now pinned at 1.3.14, `build:release` ad-hoc
