@@ -405,6 +405,81 @@ describe("the skill tool", () => {
     await kernel.close();
   }, 15_000);
 
+  test("a project override added after establish shadows the cached global on /name", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    writeSkill(join(dataDir, "skills"), "demo", "description: global demo", "GLOBAL BODY");
+    const requests: TurnRequest[] = [];
+    const capturing: ModelProvider = {
+      id: "test/capturing",
+      async *streamTurn(request) {
+        requests.push(request);
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish", finishReason: "stop", usage: {} };
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, { dataDir, provider: capturing });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    // The override arrives after the session cached the global registry.
+    writeSkill(
+      join(cwd, ".minerva", "skills"),
+      "demo",
+      "description: project demo",
+      "PROJECT BODY",
+    );
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "/demo run" }],
+    });
+    const sent = requests[0]?.messages.find((m) => m.role === "user");
+    const content = sent && "content" in sent ? sent.content : "";
+    expect(content).toContain("PROJECT BODY");
+    expect(content).not.toContain("GLOBAL BODY");
+    await kernel.close();
+  }, 15_000);
+
+  test("a project override deleted after establish falls back to the global skill", async () => {
+    const cwd = tmp("minerva-skills-proj-");
+    const dataDir = tmp("minerva-skills-data-");
+    writeSkill(join(dataDir, "skills"), "demo", "description: global demo", "GLOBAL BODY");
+    writeSkill(
+      join(cwd, ".minerva", "skills"),
+      "demo",
+      "description: project demo",
+      "PROJECT BODY",
+    );
+    const requests: TurnRequest[] = [];
+    const capturing: ModelProvider = {
+      id: "test/capturing",
+      async *streamTurn(request) {
+        requests.push(request);
+        yield { type: "text-delta", text: "ok" };
+        yield { type: "finish", finishReason: "stop", usage: {} };
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, { dataDir, provider: capturing });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+    const { rmSync } = await import("node:fs");
+    rmSync(join(cwd, ".minerva", "skills", "demo"), { recursive: true });
+    await client.request(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "/demo run" }],
+    });
+    const sent = requests[0]?.messages.find((m) => m.role === "user");
+    expect(sent && "content" in sent ? sent.content : "").toContain("GLOBAL BODY");
+    await kernel.close();
+  }, 15_000);
+
   test("a deny rule blocks /name invocation while plain prompts still work", async () => {
     const cwd = tmp("minerva-skills-proj-");
     const dataDir = tmp("minerva-skills-data-");

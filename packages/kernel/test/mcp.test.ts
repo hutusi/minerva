@@ -335,6 +335,30 @@ describe("MCP tools through the kernel", () => {
     broken.close();
   }, 15_000);
 
+  test("a hanging server is bounded by the startup deadline", async () => {
+    const { connectMcpServers } = await import("../src/mcp");
+    // POST never resolves — a black-holed server, the worst case for the
+    // SDK's 60s default timeout.
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Promise<Response>(() => {});
+      },
+    });
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-mcphang-proj-"));
+    const started = Date.now();
+    const connection = await connectMcpServers(
+      { hang: { type: "http", url: `http://127.0.0.1:${server.port}/mcp` } },
+      cwd,
+      { startupTimeoutMs: 500 },
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(connection.tools).toHaveLength(0);
+    expect(connection.warnings[0]).toContain("hang");
+    await connection.close();
+    server.stop(true);
+  }, 10_000);
+
   test("remote tool output is capped before it reaches the log and UI", async () => {
     const { connectMcpServers } = await import("../src/mcp");
     const httpServer = await startHttpCalcServer();

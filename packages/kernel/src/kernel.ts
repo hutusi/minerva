@@ -25,7 +25,7 @@ import {
   type Transport,
 } from "@minerva/protocol";
 import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
-import { runPrompt } from "./agent-loop";
+import { type LoopContext, runPrompt } from "./agent-loop";
 import { runCompact } from "./compact";
 import { now } from "./events";
 import { loadProjectInstructions, type ProjectInstructions } from "./instructions";
@@ -467,22 +467,22 @@ export class MinervaKernel {
     // picker doesn't have to read the log to show it.
     void session.recordPreview(text).catch(() => {});
 
-    // AGENTS.md instructions append to the host's base prompt rather than
-    // replacing it; loaded at session establish, so edits need a new/reloaded
-    // session to take effect.
-    const instructions = this.#instructions.get(session.id)?.text;
-    const base = this.#systemPrompt(session.cwd);
+    // ALL fallible pre-work must sit inside this block: the host-supplied
+    // systemPrompt callback, skill expansion, and tool assembly can each
+    // throw, and a leaked lease locks the session forever. Never release
+    // AFTER runPrompt is called — it owns the lease from that point (its
+    // finally releases), and a late endPrompt here could free a successor
+    // prompt's freshly claimed lease.
+    let context: LoopContext;
     let providerText: string | undefined;
     try {
+      // AGENTS.md instructions append to the host's base prompt rather than
+      // replacing it; loaded at session establish, so edits need a
+      // new/reloaded session to take effect.
+      const instructions = this.#instructions.get(session.id)?.text;
+      const base = this.#systemPrompt(session.cwd);
       providerText = await this.#expandSkillInvocation(session, text);
-    } catch (error) {
-      // The lease is held across expansion; this is the only throw path
-      // before runPrompt takes over releasing it. Nothing was logged yet.
-      session.endPrompt();
-      throw error;
-    }
-    return runPrompt(
-      {
+      context = {
         session,
         connection: this.#connection,
         provider: this.#provider,
@@ -490,10 +490,15 @@ export class MinervaKernel {
         system: instructions ? `${base}\n\n${instructions}` : base,
         runtime: this.#runtime,
         signal,
-      },
-      text,
-      providerText,
-    );
+      };
+    } catch (error) {
+      // Nothing was logged yet; the failed prompt leaves no trace.
+      session.endPrompt();
+      throw error;
+    }
+    // runPrompt is async — it cannot throw synchronously, so the handoff is
+    // unconditional once we reach this line.
+    return runPrompt(context, text, providerText);
   }
 
   /**
@@ -507,20 +512,19 @@ export class MinervaKernel {
     const match = text.match(/^\/([a-z0-9][a-z0-9_-]*)\s*([\s\S]*)$/i);
     if (!match) return undefined;
     const [, name = "", args = ""] = match;
-    let registry = this.#skills.get(session.id);
-    let skill = registry?.skills.find((entry) => entry.name === name);
-    if (!skill) {
-      // skills/list reads fresh from disk, so a frontend can offer a
-      // just-added skill this session's establish-time registry doesn't know.
-      // Reload once on a miss so a listed command actually expands.
-      registry = await loadSkills(this.#runtime, this.#dataDir, session.cwd);
-      for (const warning of registry.warnings) {
-        process.stderr.write(`minerva: ${warning}\n`);
-      }
-      this.#skills.set(session.id, registry);
-      skill = registry.skills.find((entry) => entry.name === name);
+    // Always resolve against a fresh read: skills/list reads fresh from disk,
+    // so anything less here lets a stale session cache diverge from what the
+    // frontend offered (a later-added project override would expand the
+    // cached global body; a deleted one would error instead of falling back).
+    // Bounded cost — only slash-shaped prompts get here, and discovery reads
+    // 8 KiB frontmatter prefixes at most.
+    const registry = await loadSkills(this.#runtime, this.#dataDir, session.cwd);
+    for (const warning of registry.warnings) {
+      process.stderr.write(`minerva: ${warning}\n`);
     }
-    if (!skill || !registry) return undefined;
+    this.#skills.set(session.id, registry);
+    const skill = registry.skills.find((entry) => entry.name === name);
+    if (!skill) return undefined;
     // Deny rules block even explicit user invocations; "ask" is skipped —
     // typing the command is consent, and the expansion is audited via the
     // user.message providerText field.

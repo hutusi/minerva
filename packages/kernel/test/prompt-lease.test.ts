@@ -108,6 +108,43 @@ describe("prompt lease concurrency", () => {
     await kernel.close();
   }, 15_000);
 
+  test("a throwing host systemPrompt does not leak the lease", async () => {
+    const cwd = tmp("minerva-lease-proj-");
+    const dataDir = tmp("minerva-lease-data-");
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    let calls = 0;
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: createScriptedProvider([...ONE_TURN]),
+      // Host-supplied callbacks are outside our control: the first call
+      // blows up, the retry works — the session must survive the first.
+      systemPrompt: (promptCwd) => {
+        calls++;
+        if (calls === 1) throw new Error("system boom");
+        return `You are Minerva. Working directory: ${promptCwd}.`;
+      },
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<{ sessionId: string }>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+
+    expect(
+      client.request(AGENT_METHODS.sessionPrompt, {
+        sessionId,
+        prompt: [{ type: "text", text: "first" }],
+      }),
+    ).rejects.toThrow("system boom");
+
+    const retry = await client.request<{ stopReason: string }>(AGENT_METHODS.sessionPrompt, {
+      sessionId,
+      prompt: [{ type: "text", text: "second" }],
+    });
+    expect(retry.stopReason).toBe("end_turn");
+    await kernel.close();
+  }, 15_000);
+
   test("beginPrompt throws while active and works again after endPrompt", async () => {
     const cwd = tmp("minerva-lease-proj-");
     const dataDir = tmp("minerva-lease-data-");

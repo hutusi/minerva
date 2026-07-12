@@ -26,25 +26,51 @@ export interface McpConnection {
   close(): Promise<void>;
 }
 
+export interface McpConnectOptions {
+  /** Shared per-server budget across connect + tool discovery. */
+  startupTimeoutMs?: number;
+}
+
+/**
+ * The SDK's default request timeout is 60s; with connect + listTools on the
+ * session-establish critical path, one black-holed server could stall a new
+ * session for two minutes. Servers run concurrently, but the slowest one
+ * still gates session/new — bound it.
+ */
+const MCP_STARTUP_TIMEOUT_MS = 15_000;
+
 export async function connectMcpServers(
   servers: Record<string, McpServerConfig>,
   cwd: string,
+  options?: McpConnectOptions,
 ): Promise<McpConnection> {
   const tools: KernelTool[] = [];
   const warnings: string[] = [];
   const clients: Client[] = [];
+  const startupTimeoutMs = options?.startupTimeoutMs ?? MCP_STARTUP_TIMEOUT_MS;
 
   // Connect independent servers concurrently; one slow/broken server must not
   // serialize the rest.
   await Promise.all(
     Object.entries(servers).map(async ([serverName, config]) => {
+      // One deadline covers connect AND discovery, so a server that answers
+      // the handshake slowly can't buy itself a second full budget.
+      const deadline = Date.now() + startupTimeoutMs;
+      const remaining = () => Math.max(1, deadline - Date.now());
+      const client = new Client({ name: "minerva", version: "0.1.0" });
       try {
-        const client = new Client({ name: "minerva", version: "0.1.0" });
-        await connectClient(client, config, cwd);
-        clients.push(client);
-        const listed = await client.listTools();
-        for (const tool of listed.tools) {
-          tools.push(wrapMcpTool(client, serverName, tool));
+        await connectClient(client, config, cwd, remaining);
+        try {
+          const listed = await client.listTools(undefined, { timeout: remaining() });
+          clients.push(client);
+          for (const tool of listed.tools) {
+            tools.push(wrapMcpTool(client, serverName, tool));
+          }
+        } catch (error) {
+          // Connected but discovery failed: close now, or the half-open
+          // client lingers until session teardown.
+          await client.close().catch(() => {});
+          throw error;
         }
       } catch (error) {
         warnings.push(
@@ -71,7 +97,13 @@ export async function connectMcpServers(
  * stdio child. Throws into the caller's warning path — a bad entry degrades,
  * it never fails the session.
  */
-async function connectClient(client: Client, config: McpServerConfig, cwd: string): Promise<void> {
+async function connectClient(
+  client: Client,
+  config: McpServerConfig,
+  cwd: string,
+  /** Milliseconds left in the server's shared startup budget. */
+  remaining: () => number,
+): Promise<void> {
   if (config.type === "http") {
     const url = new URL(config.url); // malformed URL → descriptive TypeError
     const options = config.headers ? { requestInit: { headers: config.headers } } : {};
@@ -79,11 +111,13 @@ async function connectClient(client: Client, config: McpServerConfig, cwd: strin
       // Cast: the transport's `sessionId: string | undefined` doesn't unify
       // with the interface's `sessionId?: string` under
       // exactOptionalPropertyTypes — an SDK-internal mismatch, not ours.
-      await client.connect(new StreamableHTTPClientTransport(url, options) as Transport);
+      await client.connect(new StreamableHTTPClientTransport(url, options) as Transport, {
+        timeout: remaining(),
+      });
     } catch (streamableError) {
       if (!shouldFallBackToSse(streamableError)) throw streamableError;
       try {
-        await client.connect(new SSEClientTransport(url, options));
+        await client.connect(new SSEClientTransport(url, options), { timeout: remaining() });
       } catch {
         // The SSE attempt was only a courtesy; the streamable error names
         // the real problem (auth, protocol), so surface that one.
@@ -108,6 +142,7 @@ async function connectClient(client: Client, config: McpServerConfig, cwd: strin
       // otherwise strip PATH/HOME and break the server's spawn.
       ...(config.env ? { env: { ...getDefaultEnvironment(), ...config.env } } : {}),
     }),
+    { timeout: remaining() },
   );
 }
 
@@ -170,18 +205,27 @@ function wrapMcpTool(client: Client, serverName: string, info: McpToolInfo): Ker
         undefined,
         context.signal ? { signal: context.signal } : {},
       );
+      // Accumulate up to the cap instead of joining everything first, so the
+      // kernel's own copy of a huge response stays bounded. The SDK has
+      // already parsed the full response into result.content — bounding the
+      // transport itself is out of scope (accepted).
       const content = Array.isArray(result.content) ? result.content : [];
-      const text = content
-        .map((part) =>
+      let output = "";
+      let totalChars = 0;
+      for (const part of content) {
+        const rendered =
           typeof part === "object" && part !== null && "text" in part
             ? String((part as { text: unknown }).text)
-            : `[${String((part as { type?: unknown })?.type ?? "unknown")} content]`,
-        )
-        .join("\n");
-      return {
-        output: clip(text, MAX_MCP_OUTPUT_CHARS) || "(no output)",
-        isError: result.isError === true,
-      };
+            : `[${String((part as { type?: unknown })?.type ?? "unknown")} content]`;
+        totalChars += rendered.length + (totalChars > 0 ? 1 : 0); // "\n" joins
+        if (output.length <= MAX_MCP_OUTPUT_CHARS) {
+          output = output ? `${output}\n${rendered}` : rendered;
+        }
+      }
+      if (totalChars > MAX_MCP_OUTPUT_CHARS) {
+        output = `${output.slice(0, MAX_MCP_OUTPUT_CHARS)}\n[truncated: ${totalChars} characters]`;
+      }
+      return { output: output || "(no output)", isError: result.isError === true };
     },
   };
 }

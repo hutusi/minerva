@@ -59,10 +59,12 @@ whose `name` matches a skill loaded for the session is expanded kernel-side —
 the transcript and replay keep the literal text the user typed, while the
 model receives the skill's SKILL.md body plus the arguments. Slash text
 matching no skill passes through unchanged. ACP hosts get this for free by
-sending the user's raw input. A `deny` permission rule matching the `skill`
-tool rejects the prompt (`INVALID_REQUEST`); `ask` rules are skipped — typing
-the command is consent, and the expansion is recorded on the `user.message`
-event's `providerText` field.
+sending the user's raw input. The skill registry is re-read from disk on
+every invocation, so the expansion always matches what `minerva/skills/list`
+reports. A `deny` permission rule matching the `skill` tool rejects the
+prompt (`INVALID_REQUEST`); `ask` rules are skipped — typing the command is
+consent, and the expansion is recorded on the `user.message` event's
+`providerText` field.
 
 ### `session/set_mode`
 Params `{ sessionId, modeId }` → `null`. Persisted to the event log before the

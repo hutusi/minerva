@@ -89,6 +89,23 @@ All notable changes to Minerva are documented here. The format follows
   tool output is capped at 50k chars and server-provided descriptions at 2k.
 
 ### Fixed
+- A throwing host `systemPrompt` callback (or any failure between claiming
+  the prompt lease and handing it to the turn loop) no longer locks the
+  session permanently — all fallible pre-work now sits inside a
+  release-on-throw block, and the lease is never touched again after the
+  loop takes ownership.
+- `/name` skill invocation now reads the registry fresh from disk every
+  time, matching what `minerva/skills/list` advertises: a project override
+  added after the session started shadows the cached global skill, and a
+  deleted override falls back to the global one instead of erroring.
+- MCP session startup is bounded: connect and tool discovery share a
+  15-second per-server deadline (the SDK's 60s-per-request default put up to
+  two minutes on the session-establish critical path), and a client whose
+  discovery fails is closed immediately instead of lingering until teardown.
+- Remote MCP tool output is accumulated incrementally up to the 50k cap
+  instead of being fully joined first, so the kernel's copy of a huge
+  response stays bounded (the SDK's parse of the wire response is accepted
+  as-is).
 - Two prompts arriving in the same tick can no longer interleave one
   session's state: the prompt lease is claimed synchronously before the
   kernel awaits anything (the skills change had opened a window between the
