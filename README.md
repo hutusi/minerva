@@ -20,6 +20,18 @@ bun install
 bun run --cwd packages/cli dev
 ```
 
+Or install a released build — each release ships per-platform tarballs
+(linux-x86_64, darwin-arm64) containing the `minerva` binary and its `rg`
+sidecar, which must stay side by side:
+
+```sh
+gh release download --pattern "minerva-*-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz" --dir /tmp/minerva-dl
+mkdir -p ~/.local/lib/minerva && tar -xzf /tmp/minerva-dl/minerva-*.tar.gz -C ~/.local/lib/minerva
+ln -sf ~/.local/lib/minerva/minerva ~/.local/bin/minerva
+```
+
+(The repo is private, so downloads go through an authenticated `gh`.)
+
 On first run with no API key configured, the TUI opens an interactive setup
 panel: pick a provider, paste a key, confirm a model. Keys can also come from
 the environment (`export ANTHROPIC_API_KEY="sk-ant-..."`), which always takes
