@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
+import { isNotFoundError } from "../runtime";
 import type { KernelTool } from "./types";
-import { asRecord, requireString, resolveWithinWorkspace } from "./types";
+import { asRecord, diffContent, requireString, resolveWithinWorkspace } from "./types";
 
 export const writeFileTool: KernelTool = {
   name: "write_file",
@@ -34,8 +35,20 @@ export const writeFileTool: KernelTool = {
     if (typeof content !== "string") {
       throw new Error("missing required string parameter: content");
     }
+    // Previous content feeds the diff block; null = new file (ACP semantics).
+    let previous: string | null;
+    try {
+      previous = await context.runtime.readTextFile(path);
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+      previous = null;
+    }
     await context.runtime.mkdirp(dirname(path));
     await context.runtime.writeTextFile(path, content);
-    return { output: `Wrote ${content.length} characters to ${path}` };
+    const diff = diffContent(path, previous, content);
+    return {
+      output: `Wrote ${content.length} characters to ${path}`,
+      ...(diff ? { content: diff } : {}),
+    };
   },
 };

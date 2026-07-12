@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
@@ -217,6 +217,67 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.stdin.write("n");
     await waitFor(() => (ui.lastFrame() ?? "").includes("Understood"), "denial handled");
     expect(ui.lastFrame()).toContain("[failed]");
+    ui.unmount();
+  }, 20_000);
+
+  test("an edit permission previews the diff; arrow keys navigate the options", async () => {
+    const ui = renderTui([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "edit_file",
+          input: { path: "code.ts", old_string: "const a = 1;", new_string: "const a = 2;" },
+        },
+        FINISH_TOOLS,
+      ],
+      [{ type: "text-delta", text: "Understood." }, FINISH_STOP],
+    ]);
+    writeFileSync(join(ui.cwd, "code.ts"), "const a = 1;\n");
+    await ready(ui);
+
+    await type(ui, "bump the constant");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Permission required"), "permission");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("- const a = 1;");
+    expect(frame).toContain("+ const a = 2;");
+    expect(frame).toContain("❯ Allow");
+
+    // ↓ ↓ walks to Reject; enter selects the highlighted option.
+    await Bun.sleep(50);
+    ui.stdin.write("[B[B");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("❯ Reject"), "reject highlighted");
+    ui.stdin.write("\r");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Understood."), "turn continued");
+    expect(ui.lastFrame()).toContain("[failed]");
+    ui.unmount();
+  }, 20_000);
+
+  test("an approved edit renders its file diff in the transcript", async () => {
+    const ui = renderTui([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "edit_file",
+          input: { path: "code.ts", old_string: "const a = 1;", new_string: "const a = 2;" },
+        },
+        FINISH_TOOLS,
+      ],
+      [{ type: "text-delta", text: "Edited." }, FINISH_STOP],
+    ]);
+    writeFileSync(join(ui.cwd, "code.ts"), "const a = 1;\nconst keep = true;\n");
+    await ready(ui);
+
+    await type(ui, "bump the constant");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Permission required"), "permission");
+    ui.stdin.write("y");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Edited."), "turn finished");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("[completed]");
+    expect(frame).toContain("- const a = 1;");
+    expect(frame).toContain("+ const a = 2;");
+    expect(frame).toContain("  const keep = true;");
     ui.unmount();
   }, 20_000);
 

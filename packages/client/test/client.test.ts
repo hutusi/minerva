@@ -59,6 +59,7 @@ describe("MinervaClient against a real kernel", () => {
         toolKind: "execute",
         status: "completed",
         output: "integration\n",
+        rawInput: { command: "echo integration" },
       },
       { kind: "assistant", text: "It printed integration.", streaming: false },
     ]);

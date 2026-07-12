@@ -1,5 +1,5 @@
 import type { KernelTool } from "./types";
-import { asRecord, requireString, resolveWithinWorkspace } from "./types";
+import { asRecord, diffContent, requireString, resolveWithinWorkspace } from "./types";
 
 export const editFileTool: KernelTool = {
   name: "edit_file",
@@ -51,10 +51,9 @@ export const editFileTool: KernelTool = {
     }
     // Replacer function: a plain string argument would interpret $-patterns
     // ($$, $&, $') in new_string and silently corrupt the file.
-    await context.runtime.writeTextFile(
-      path,
-      content.replace(oldString, () => newString),
-    );
-    return { output: `Edited ${path}` };
+    const updated = content.replace(oldString, () => newString);
+    await context.runtime.writeTextFile(path, updated);
+    const diff = diffContent(path, content, updated);
+    return { output: `Edited ${path}`, ...(diff ? { content: diff } : {}) };
   },
 };

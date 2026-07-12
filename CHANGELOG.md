@@ -7,6 +7,17 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Structured diffs for file edits: `edit_file`/`write_file` results carry a
+  `{ type: "diff", path, oldText, newText }` content entry (ACP semantics,
+  `oldText: null` = new file, either side > 48k chars ⇒ text-only fallback)
+  on `tool_call_update`, persisted in the session log so diffs survive
+  replay. The CLI renders completed edits as a colored line diff (LCS,
+  capped at 20 lines).
+- Informed permission prompts: the CLI prompt now renders the kernel's
+  option list (arrow keys + enter, y/a/n hotkeys by option kind, esc
+  cancels the turn) plus a preview of what the call will do — the command
+  for execute tools, a line diff for edits, all-added content for new
+  files, the URL for fetches.
 - CLI: assistant replies render as terminal markdown (headings, lists,
   fenced code, blockquotes, inline emphasis/links) via `marked`'s lexer and
   a hand-rolled Ink renderer. Unknown constructs (tables, HTML) fall back

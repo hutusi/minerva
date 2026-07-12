@@ -1,9 +1,16 @@
 import type { MinervaClient, SessionStore, SessionViewModel, ViewItem } from "@minerva/client";
-import type { InstructionsInfo, SkillInfo } from "@minerva/protocol";
+import type {
+  InstructionsInfo,
+  PermissionOption,
+  PermissionOptionKind,
+  RequestPermissionParams,
+  SkillInfo,
+} from "@minerva/protocol";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
+import { clipDiff, type DiffLine, diffLines } from "./diff";
 import { Markdown } from "./markdown";
 import type { PendingPermission, PermissionBridge } from "./permission-bridge";
 import { resolveSlashInput, skillsHelp } from "./slash";
@@ -397,6 +404,9 @@ const STATUS_COLOR = {
   failed: "red",
 } as const;
 
+/** Cap on rendered diff lines — transcripts and prompts share it. */
+const DIFF_LINE_CAP = 20;
+
 function ToolView({ item }: { item: Extract<ViewItem, { kind: "tool" }> }) {
   const preview = item.output ? firstLines(item.output, 4) : null;
   return (
@@ -406,11 +416,54 @@ function ToolView({ item }: { item: Extract<ViewItem, { kind: "tool" }> }) {
         <Text bold>{item.title}</Text>
         <Text dimColor> [{item.status}]</Text>
       </Text>
-      {preview ? (
+      {item.diff ? (
+        <DiffView
+          lines={clipDiff(diffLines(item.diff.oldText, item.diff.newText), DIFF_LINE_CAP)}
+        />
+      ) : preview ? (
         <Box marginLeft={2}>
           <Text dimColor>{preview}</Text>
         </Box>
       ) : null}
+    </Box>
+  );
+}
+
+function DiffView({ lines }: { lines: DiffLine[] }) {
+  let offset = 0;
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      {lines.map((line) => {
+        const key = `${offset}:${line.kind}`;
+        offset += line.text.length + 1;
+        switch (line.kind) {
+          case "add":
+            return (
+              <Text key={key} color="green">
+                + {line.text}
+              </Text>
+            );
+          case "del":
+            return (
+              <Text key={key} color="red">
+                - {line.text}
+              </Text>
+            );
+          case "gap":
+            return (
+              <Text key={key} dimColor>
+                {line.text}
+              </Text>
+            );
+          default:
+            return (
+              <Text key={key} dimColor>
+                {"  "}
+                {line.text}
+              </Text>
+            );
+        }
+      })}
     </Box>
   );
 }
@@ -492,18 +545,39 @@ function withUniqueKeys<T extends { content: string }>(
   });
 }
 
+/** Hotkeys keyed by option KIND, so the kernel can rename/reorder options. */
+const PERMISSION_HOTKEYS: Record<string, PermissionOptionKind> = {
+  y: "allow_once",
+  a: "allow_always",
+  n: "reject_once",
+};
+
+function permissionHotkey(kind: PermissionOptionKind): string | undefined {
+  return Object.entries(PERMISSION_HOTKEYS).find(([, k]) => k === kind)?.[0];
+}
+
 function PermissionPrompt({ pending }: { pending: PendingPermission }) {
+  const options = pending.request.options;
+  const [index, setIndex] = useState(0);
+  // Ref mirror of `index`, current within a single input batch (the
+  // config-panel pattern): rapid ↓+enter must select the row the user saw.
+  const indexRef = useRef(0);
+  const select = (option: PermissionOption | undefined) => {
+    if (option) pending.resolve({ outcome: { outcome: "selected", optionId: option.optionId } });
+  };
   useInput((input, key) => {
-    const answer = input.toLowerCase();
-    if (answer === "y") {
-      pending.resolve({ outcome: { outcome: "selected", optionId: "allow" } });
-    } else if (answer === "a") {
-      pending.resolve({ outcome: { outcome: "selected", optionId: "allow_always" } });
-    } else if (answer === "n") {
-      pending.resolve({ outcome: { outcome: "selected", optionId: "reject" } });
+    if (key.upArrow || key.downArrow) {
+      const delta = key.upArrow ? -1 : 1;
+      indexRef.current = (indexRef.current + options.length + delta) % options.length;
+      setIndex(indexRef.current);
+    } else if (key.return) {
+      select(options[indexRef.current]);
     } else if (key.escape) {
       // ACP cancelled outcome: abandon the whole turn, not just this call.
       pending.resolve({ outcome: { outcome: "cancelled" } });
+    } else {
+      const kind = PERMISSION_HOTKEYS[input.toLowerCase()];
+      if (kind) select(options.find((option) => option.kind === kind));
     }
   });
   return (
@@ -512,7 +586,53 @@ function PermissionPrompt({ pending }: { pending: PendingPermission }) {
         Permission required
       </Text>
       <Text>{pending.request.toolCall.title}</Text>
-      <Text dimColor>y allow · a always allow · n reject · esc cancel turn</Text>
+      <PermissionPreview toolCall={pending.request.toolCall} />
+      {options.map((option, i) => {
+        const hotkey = permissionHotkey(option.kind);
+        return (
+          <Text key={option.optionId} {...(i === index ? { color: "cyan" } : {})}>
+            {i === index ? "❯ " : "  "}
+            {option.name}
+            {hotkey ? <Text dimColor> ({hotkey})</Text> : null}
+          </Text>
+        );
+      })}
+      <Text dimColor>↑/↓ select · enter confirm · esc cancel turn</Text>
     </Box>
   );
+}
+
+/**
+ * What the call will actually do, from rawInput: the command for execute,
+ * the line diff for edits, the full (all-added) content for new files, the
+ * URL for fetches. Field-sniffed rather than tool-name-matched so MCP tools
+ * with the same shapes get previews for free.
+ */
+function PermissionPreview({ toolCall }: { toolCall: RequestPermissionParams["toolCall"] }) {
+  const raw = toolCall.rawInput;
+  if (typeof raw !== "object" || raw === null) return null;
+  const input = raw as Record<string, unknown>;
+  if (typeof input.command === "string") {
+    return (
+      <Box marginLeft={2}>
+        <Text dimColor>{firstLines(input.command, DIFF_LINE_CAP)}</Text>
+      </Box>
+    );
+  }
+  if (typeof input.old_string === "string" && typeof input.new_string === "string") {
+    return (
+      <DiffView lines={clipDiff(diffLines(input.old_string, input.new_string), DIFF_LINE_CAP)} />
+    );
+  }
+  if (toolCall.kind === "edit" && typeof input.content === "string") {
+    return <DiffView lines={clipDiff(diffLines(null, input.content), DIFF_LINE_CAP)} />;
+  }
+  if (typeof input.url === "string") {
+    return (
+      <Box marginLeft={2}>
+        <Text dimColor>{input.url}</Text>
+      </Box>
+    );
+  }
+  return null;
 }

@@ -1,4 +1,4 @@
-import type { PlanEntry, StopReason } from "@minerva/protocol";
+import type { PlanEntry, StopReason, ToolCallContent } from "@minerva/protocol";
 import type { ProviderToolCall, TurnUsage } from "@minerva/providers";
 
 /**
@@ -54,7 +54,19 @@ export type SessionEvent =
       at: string;
     }
   | { type: "tool.call"; toolCallId: string; toolName: string; input: unknown; at: string }
-  | { type: "tool.result"; toolCallId: string; output: string; isError: boolean; at: string }
+  | {
+      type: "tool.result";
+      toolCallId: string;
+      output: string;
+      isError: boolean;
+      /**
+       * Structured blocks (file diffs) the tool emitted alongside its text
+       * output, so replay re-renders them. Optional: old logs replay
+       * unchanged, and text-only results add no field.
+       */
+      content?: ToolCallContent[] | undefined;
+      at: string;
+    }
   | {
       type: "permission.decision";
       toolCallId: string;

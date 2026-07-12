@@ -76,6 +76,7 @@ describe("session resume across kernel restarts", () => {
         toolKind: "execute",
         status: "completed",
         output: "persisted\n",
+        rawInput: { command: "echo persisted" },
       },
       { kind: "assistant", text: "Done.", streaming: false },
     ]);
@@ -153,6 +154,37 @@ describe("session resume across kernel restarts", () => {
 
     const stopReason = await second.client.prompt(sessionId, "continue");
     expect(stopReason).toBe("end_turn");
+  });
+
+  test("structured file diffs survive replay", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-diff-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-diff-data-"));
+
+    const first = boot(dataDir, [
+      [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "write_file",
+          input: { path: "note.txt", content: "hello\nworld\n" },
+        },
+        FINISH_TOOLS,
+      ],
+      [{ type: "text-delta", text: "Written." }, FINISH_STOP],
+    ]);
+    await first.client.initialize();
+    const { sessionId } = await first.client.newSession(cwd);
+    await first.client.prompt(sessionId, "write the note");
+    first.client.close();
+
+    const second = boot(dataDir, []);
+    await second.client.initialize();
+    const { store } = await second.client.loadSession(sessionId, cwd);
+    const tool = store.snapshot.items.find((item) => item.kind === "tool");
+    expect(tool).toMatchObject({
+      status: "completed",
+      diff: { path: join(cwd, "note.txt"), oldText: null, newText: "hello\nworld\n" },
+    });
   });
 
   test("a replayed thought re-renders collapsed before its answer", async () => {

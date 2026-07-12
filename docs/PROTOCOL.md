@@ -91,7 +91,13 @@ Params `{ sessionId, update }`. `update.sessionUpdate` variants:
 | `current_mode_update` | `currentModeId` | Session mode changed |
 
 `kind ∈ read | edit | delete | move | search | execute | think | fetch | other`;
-`content` entries are `{ type: "content", content: { type: "text", text } }`.
+`content` entries are `{ type: "content", content: { type: "text", text } }` or
+`{ type: "diff", path, oldText, newText }` (ACP diff semantics: full before/after
+file contents, `oldText: null` = new file). File-mutating tools (`edit_file`,
+`write_file`) emit a diff entry ahead of their text output on the final
+`tool_call_update`, live and on `session/load` replay; when either side exceeds
+48 000 characters the diff entry is omitted (text-only fallback). Frontends
+compute their own line diffs from the two sides.
 
 ### `minerva/session/usage` *(notification)*
 Params `{ sessionId, lastTurn?, cumulative }`, where both usage shapes are

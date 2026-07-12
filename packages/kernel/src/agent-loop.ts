@@ -5,6 +5,7 @@ import {
   type SessionUpdate,
   type SessionUsageParams,
   type StopReason,
+  type ToolCallContent,
 } from "@minerva/protocol";
 import type {
   ModelProvider,
@@ -293,8 +294,6 @@ async function executeToolCall(
     status: "in_progress",
   });
 
-  let output: string;
-  let isError: boolean;
   try {
     const result = await tool.execute(call.input, {
       cwd: session.cwd,
@@ -306,13 +305,17 @@ async function executeToolCall(
         sendUpdate(context, { sessionUpdate: "plan", entries });
       },
     });
-    output = result.output;
-    isError = result.isError ?? false;
+    return completeToolCall(context, call, {
+      output: result.output,
+      isError: result.isError ?? false,
+      ...(result.content ? { content: result.content } : {}),
+    });
   } catch (error) {
-    output = error instanceof Error ? error.message : String(error);
-    isError = true;
+    return completeToolCall(context, call, {
+      output: error instanceof Error ? error.message : String(error),
+      isError: true,
+    });
   }
-  return completeToolCall(context, call, { output, isError });
 }
 
 /** Resolve a tool call with a synthesized error result, without executing it. */
@@ -354,20 +357,24 @@ function startToolCall(
 function completeToolCall(
   context: LoopContext,
   call: ProviderToolCall,
-  result: { output: string; isError: boolean },
+  result: { output: string; isError: boolean; content?: ToolCallContent[] },
 ): ProviderToolResult {
   context.session.append({
     type: "tool.result",
     toolCallId: call.toolCallId,
     output: result.output,
     isError: result.isError,
+    ...(result.content ? { content: result.content } : {}),
     at: now(),
   });
   sendUpdate(context, {
     sessionUpdate: "tool_call_update",
     toolCallId: call.toolCallId,
     status: result.isError ? "failed" : "completed",
-    content: [{ type: "content", content: { type: "text", text: result.output } }],
+    content: [
+      ...(result.content ?? []),
+      { type: "content", content: { type: "text", text: result.output } },
+    ],
     rawOutput: result,
   });
   return {

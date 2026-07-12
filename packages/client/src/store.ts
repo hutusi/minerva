@@ -24,6 +24,10 @@ export type ViewItem =
       toolKind: ToolKind;
       status: ToolCallStatus;
       output?: string | undefined;
+      /** Tool input as the model sent it — permission prompts preview from it. */
+      rawInput?: unknown;
+      /** First diff block from the result, for UIs that render file changes. */
+      diff?: { path: string; oldText: string | null; newText: string } | undefined;
     }
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "info"; text: string };
@@ -85,6 +89,7 @@ export class SessionStore {
           title: update.title,
           toolKind: update.kind,
           status: update.status,
+          ...("rawInput" in update ? { rawInput: update.rawInput } : {}),
         });
         break;
       case "tool_call_update":
@@ -93,6 +98,7 @@ export class SessionStore {
           status: update.status ?? item.status,
           title: update.title ?? item.title,
           output: extractText(update.content) ?? item.output,
+          diff: extractDiff(update.content) ?? item.diff,
         }));
         break;
       case "plan":
@@ -194,6 +200,7 @@ function reduceInto(items: ViewItem[], update: SessionUpdate): string | undefine
         title: update.title,
         toolKind: update.kind,
         status: update.status,
+        ...("rawInput" in update ? { rawInput: update.rawInput } : {}),
       });
       return undefined;
     case "tool_call_update":
@@ -202,6 +209,7 @@ function reduceInto(items: ViewItem[], update: SessionUpdate): string | undefine
         status: update.status ?? item.status,
         title: update.title ?? item.title,
         output: extractText(update.content) ?? item.output,
+        diff: extractDiff(update.content) ?? item.diff,
       }));
       return undefined;
     case "plan":
@@ -261,4 +269,12 @@ function extractText(content: ToolCallContent[] | undefined): string | undefined
     .map((entry) => (entry.type === "content" ? entry.content.text : undefined))
     .filter((text): text is string => typeof text === "string");
   return texts.length > 0 ? texts.join("\n") : undefined;
+}
+
+function extractDiff(
+  content: ToolCallContent[] | undefined,
+): Extract<ViewItem, { kind: "tool" }>["diff"] {
+  const entry = content?.find((block) => block.type === "diff");
+  if (entry?.type !== "diff") return undefined;
+  return { path: entry.path, oldText: entry.oldText, newText: entry.newText };
 }

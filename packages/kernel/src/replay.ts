@@ -124,11 +124,16 @@ export function replayEvents(events: SessionEvent[], tools: KernelTool[]): Repla
             isError: event.isError,
           });
         }
+        // Stored diff blocks re-emit ahead of the text, mirroring the live
+        // tool_call_update — diffs survive replay.
         updates.push({
           sessionUpdate: "tool_call_update",
           toolCallId: event.toolCallId,
           status: event.isError ? "failed" : "completed",
-          content: [{ type: "content", content: { type: "text", text: event.output } }],
+          content: [
+            ...(event.content ?? []),
+            { type: "content", content: { type: "text", text: event.output } },
+          ],
         });
         if (expected.length > 0 && results.length === expected.length) {
           messages.push({ role: "tool", results });

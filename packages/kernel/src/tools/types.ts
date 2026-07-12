@@ -1,5 +1,5 @@
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { PlanEntry, ToolKind } from "@minerva/protocol";
+import type { PlanEntry, ToolCallContent, ToolKind } from "@minerva/protocol";
 import { type BoundedRead, isNotFoundError, type Runtime } from "../runtime";
 
 export interface ToolContext {
@@ -14,6 +14,30 @@ export interface ToolContext {
 export interface ToolOutput {
   output: string;
   isError?: boolean;
+  /**
+   * Structured blocks beyond the text output — e.g. a diff for file edits.
+   * Rides tool_call_update to the frontend and is persisted for replay.
+   */
+  content?: ToolCallContent[];
+}
+
+/**
+ * Full-file diff content for a file-mutating tool, ACP semantics
+ * (`oldText: null` = new file). Either side above the cap ⇒ no diff block
+ * (text-only fallback) — full file contents ride the wire and the session
+ * log, so unbounded sides would balloon frames and JSONL growth.
+ */
+const DIFF_SIDE_LIMIT = 48_000;
+
+export function diffContent(
+  path: string,
+  oldText: string | null,
+  newText: string,
+): ToolCallContent[] | undefined {
+  if ((oldText?.length ?? 0) > DIFF_SIDE_LIMIT || newText.length > DIFF_SIDE_LIMIT) {
+    return undefined;
+  }
+  return [{ type: "diff", path, oldText, newText }];
 }
 
 export interface KernelTool {
