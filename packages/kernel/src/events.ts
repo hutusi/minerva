@@ -121,7 +121,8 @@ export type SessionEvent =
       type: "task.completed";
       toolCallId: string;
       childSessionId: string;
-      stopReason: StopReason;
+      /** "error" = the child prompt threw (its own log has turn.failed). */
+      stopReason: StopReason | "error";
       usage?: TurnUsage | undefined;
       at: string;
     }

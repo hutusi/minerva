@@ -50,6 +50,7 @@ import {
   updateGlobalSettings,
 } from "./settings";
 import { loadSkills, readSkillBody, type SkillRegistry } from "./skills";
+import { runSubagent } from "./subagent";
 import { builtinTools, createSkillTool, type KernelTool } from "./tools";
 import { hasUsage, toTokenUsage } from "./usage";
 
@@ -625,6 +626,7 @@ export class MinervaKernel {
         runtime: this.#runtime,
         dataDir: this.#dataDir,
         signal,
+        spawnSubagent: runSubagent,
       };
     } catch (error) {
       // Nothing was logged yet; the failed prompt leaves no trace.

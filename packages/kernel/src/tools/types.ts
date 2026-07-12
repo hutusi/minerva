@@ -13,6 +13,11 @@ export interface ToolContext {
   signal?: AbortSignal | undefined;
   /** Provided by the agent loop: persist + broadcast the session todo list. */
   updateTodos?: ((entries: PlanEntry[]) => void) | undefined;
+  /** Provided by the agent loop for the task tool — absent in child loops
+   * (no recursive spawning) and outside a kernel prompt. */
+  runSubagent?:
+    | ((input: { description: string; prompt: string }) => Promise<ToolOutput>)
+    | undefined;
 }
 
 export interface ToolOutput {
