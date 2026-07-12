@@ -13,6 +13,7 @@ import {
 import { createScriptedProvider } from "@minerva/providers";
 import { createKernel, defaultRuntime, type SessionEvent } from "../src";
 import { startHttpCalcServer } from "./fixtures/mcp-http-server";
+import { serveWithRetry } from "./fixtures/serve-retry";
 
 const MCP_FIXTURE = join(import.meta.dir, "fixtures", "mcp-server.ts");
 
@@ -290,10 +291,10 @@ describe("MCP tools through the kernel", () => {
 
   test("SSE fallback fires only for 4xx protocol rejections, not server failures", async () => {
     const { connectMcpServers } = await import("../src/mcp");
-    const startPostRejecting = (postStatus: number) => {
+    const startPostRejecting = async (postStatus: number) => {
       let gets = 0;
       let lastGetAuthorization: string | null = null;
-      const server = Bun.serve({
+      const server = await serveWithRetry({
         port: 0,
         fetch(req) {
           if (req.method === "GET") {
@@ -315,7 +316,7 @@ describe("MCP tools through the kernel", () => {
 
     // 405 = "server doesn't speak Streamable HTTP" → one SSE attempt, and the
     // warning still names the original streamable failure.
-    const legacy = startPostRejecting(405);
+    const legacy = await startPostRejecting(405);
     const legacyResult = await connectMcpServers(
       {
         legacy: {
@@ -336,7 +337,7 @@ describe("MCP tools through the kernel", () => {
     legacy.close();
 
     // 500 = the endpoint itself is broken → fail fast, no SSE probe.
-    const broken = startPostRejecting(500);
+    const broken = await startPostRejecting(500);
     const brokenResult = await connectMcpServers(
       { broken: { type: "http", url: broken.url } },
       cwd,
@@ -351,7 +352,7 @@ describe("MCP tools through the kernel", () => {
     const { connectMcpServers } = await import("../src/mcp");
     // POST never resolves — a black-holed server, the worst case for the
     // SDK's 60s default timeout.
-    const server = Bun.serve({
+    const server = await serveWithRetry({
       port: 0,
       fetch() {
         return new Promise<Response>(() => {});
