@@ -1,18 +1,32 @@
 import type { MinervaClient, SessionStore } from "@minerva/client";
-import type { ConfigSetModelParams, ConfigStateResult } from "@minerva/protocol";
+import type {
+  ConfigSetModelParams,
+  ConfigStateResult,
+  SessionModeState,
+  SessionSummary,
+  SkillInfo,
+} from "@minerva/protocol";
 import { useEffect, useRef, useState } from "react";
 import { ConfigDialog } from "./components/ConfigDialog";
 import { Transcript } from "./components/chat/Transcript";
 import { UsageFooter } from "./components/chat/UsageFooter";
+import { HeaderBar } from "./components/HeaderBar";
 import { PermissionDialog } from "./components/PermissionDialog";
+import { SessionBrowser } from "./components/SessionBrowser";
 import { useSessionStore } from "./hooks/use-session-store";
 import { connectKernel } from "./lib/kernel-connection";
+import { pickFolder } from "./lib/native";
 import { createPermissionQueue, type PermissionQueue } from "./lib/permission-queue";
 import { createTauriSidecarBridge, fetchDefaultCwd } from "./lib/sidecar-bridge";
 
 interface Session {
   id: string;
   store: SessionStore;
+  cwd: string;
+  modes: SessionModeState | null;
+  profile: string | null;
+  skills: SkillInfo[];
+  profiles: string[];
 }
 
 interface Boot {
@@ -38,12 +52,52 @@ function boot(): Promise<Boot> {
   return bootPromise;
 }
 
-function openSession(client: MinervaClient): Promise<Session> {
-  sessionPromise ??= (async () => {
-    const cwd = await fetchDefaultCwd();
-    const { sessionId, store } = await client.newSession(cwd);
-    return { id: sessionId, store };
-  })();
+/** Skills and profiles are assistive; a project without them must not block
+ * the session. Both are cwd-scoped (project settings layer). */
+async function fetchExtras(
+  client: MinervaClient,
+  cwd: string,
+): Promise<{ skills: SkillInfo[]; profiles: string[] }> {
+  const [skills, profiles] = await Promise.all([
+    client.listSkills(cwd).catch(() => []),
+    client
+      .listProfiles(cwd)
+      .then((result) => result.profiles.map((p) => p.name))
+      .catch(() => []),
+  ]);
+  return { skills, profiles };
+}
+
+async function createSession(
+  client: MinervaClient,
+  cwd: string,
+  profile?: string,
+): Promise<Session> {
+  const result = await client.newSession(cwd, profile !== undefined ? { profile } : {});
+  return {
+    id: result.sessionId,
+    store: result.store,
+    cwd,
+    modes: result.modes ?? null,
+    profile: result.profile ?? null,
+    ...(await fetchExtras(client, cwd)),
+  };
+}
+
+async function resumeSession(client: MinervaClient, summary: SessionSummary): Promise<Session> {
+  const result = await client.loadSession(summary.sessionId, summary.cwd);
+  return {
+    id: result.sessionId,
+    store: result.store,
+    cwd: summary.cwd,
+    modes: result.modes ?? null,
+    profile: result.profile ?? null,
+    ...(await fetchExtras(client, summary.cwd)),
+  };
+}
+
+function openInitialSession(client: MinervaClient): Promise<Session> {
+  sessionPromise ??= (async () => createSession(client, await fetchDefaultCwd()))();
   return sessionPromise;
 }
 
@@ -51,6 +105,7 @@ export function App() {
   const [ready, setReady] = useState<Boot | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [configState, setConfigState] = useState<ConfigStateResult | null>(null);
+  const [browserOpen, setBrowserOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -65,7 +120,7 @@ export function App() {
         // First run: no usable key — configure before any session exists.
         setConfigState(value.config);
       } else {
-        openSession(value.client).then((s) => !cancelled && setSession(s), fail);
+        openInitialSession(value.client).then((s) => !cancelled && setSession(s), fail);
       }
     }, fail);
     return () => {
@@ -87,23 +142,62 @@ export function App() {
       </Centered>
     );
   }
+  const client = ready.client;
+
+  const reportError = (cause: unknown) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (session) session.store.addError(message);
+    else setError(message);
+  };
+
+  /** Swap the active session: cancel a running turn, detach the old store. */
+  const switchTo = (next: Promise<Session>) => {
+    sessionPromise = next;
+    const previous = session;
+    next.then((value) => {
+      if (previous && previous.id !== value.id) {
+        if (previous.store.snapshot.busy) client.cancel(previous.id);
+        client.closeSession(previous.id);
+      }
+      setSession(value);
+      setBrowserOpen(false);
+    }, reportError);
+  };
 
   const applyConfig = async (params: ConfigSetModelParams) => {
-    await ready.client.setModel(params);
+    await client.setModel(params);
     setConfigState(null);
-    if (!session) setSession(await openSession(ready.client));
+    if (!session) switchTo(openInitialSession(client));
   };
 
   const openConfig = () => {
-    ready.client.getConfigState().then(setConfigState, (cause: unknown) => {
-      session?.store.addError(cause instanceof Error ? cause.message : String(cause));
-    });
+    client.getConfigState().then(setConfigState, reportError);
   };
 
   return (
     <>
       {session ? (
-        <Chat client={ready.client} session={session} onOpenConfig={openConfig} />
+        <Chat
+          client={client}
+          session={session}
+          profiles={session.profiles}
+          onOpenConfig={openConfig}
+          onOpenFolder={() => {
+            pickFolder().then((path) => {
+              if (path) switchTo(createSession(client, path));
+            }, reportError);
+          }}
+          onOpenSessions={() => setBrowserOpen(true)}
+          onNewSession={() =>
+            switchTo(createSession(client, session.cwd, session.profile ?? undefined))
+          }
+          onSetProfile={(profile) => {
+            client.setProfile(session.id, profile).then(() => {
+              setSession({ ...session, profile });
+              session.store.addInfo(`profile → ${profile ?? "(none)"}`);
+            }, reportError);
+          }}
+        />
       ) : (
         <Centered>
           <p className="text-sm text-muted-foreground">
@@ -111,6 +205,15 @@ export function App() {
           </p>
         </Centered>
       )}
+      {browserOpen && session ? (
+        <SessionBrowser
+          client={client}
+          cwd={session.cwd}
+          currentId={session.id}
+          onPick={(summary) => switchTo(resumeSession(client, summary))}
+          onClose={() => setBrowserOpen(false)}
+        />
+      ) : null}
       {configState ? (
         <ConfigDialog
           state={configState}
@@ -130,11 +233,21 @@ function Centered({ children }: { children: React.ReactNode }) {
 function Chat({
   client,
   session,
+  profiles,
   onOpenConfig,
+  onOpenFolder,
+  onOpenSessions,
+  onNewSession,
+  onSetProfile,
 }: {
   client: MinervaClient;
   session: Session;
+  profiles: string[];
   onOpenConfig: () => void;
+  onOpenFolder: () => void;
+  onOpenSessions: () => void;
+  onNewSession: () => void;
+  onSetProfile: (profile: string | null) => void;
 }) {
   const vm = useSessionStore(session.store);
   const [draft, setDraft] = useState("");
@@ -159,17 +272,46 @@ function Chat({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [vm.busy, client, session.id]);
 
+  const reportError = (cause: unknown) => {
+    session.store.addError(cause instanceof Error ? cause.message : String(cause));
+  };
+
   const submit = () => {
     const text = draft.trim();
     if (!text || vm.busy) return;
     setDraft("");
-    client.prompt(session.id, text).catch((cause: unknown) => {
-      session.store.addError(cause instanceof Error ? cause.message : String(cause));
-    });
+    client.prompt(session.id, text).catch(reportError);
   };
+
+  // Skill autocomplete: assistive only — any text, /-prefixed or not, goes to
+  // the kernel verbatim (it expands known /skills into their instructions).
+  const skillMatches =
+    draft.startsWith("/") && !draft.includes(" ")
+      ? session.skills.filter((skill) => skill.name.startsWith(draft.slice(1)))
+      : [];
 
   return (
     <div className="flex h-screen flex-col">
+      <HeaderBar
+        cwd={session.cwd}
+        modes={session.modes}
+        currentModeId={vm.currentModeId}
+        profiles={profiles}
+        profile={session.profile}
+        busy={vm.busy}
+        onOpenFolder={onOpenFolder}
+        onOpenSessions={onOpenSessions}
+        onNewSession={onNewSession}
+        onSetMode={(modeId) => {
+          client.setMode(session.id, modeId).then(() => session.store.setMode(modeId), reportError);
+        }}
+        onSetProfile={onSetProfile}
+        onCompact={() => {
+          client
+            .compact(session.id)
+            .then(() => session.store.addInfo("context compacted"), reportError);
+        }}
+      />
       <main ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
         <div className="mx-auto flex max-w-3xl flex-col">
           <Transcript items={vm.items} />
@@ -178,6 +320,21 @@ function Chat({
       </main>
       <footer className="border-t px-6 py-3">
         <div className="mx-auto flex max-w-3xl flex-col gap-2">
+          {skillMatches.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {skillMatches.map((skill) => (
+                <button
+                  key={skill.name}
+                  type="button"
+                  onClick={() => setDraft(`/${skill.name} `)}
+                  title={skill.description}
+                  className="rounded-md border px-2 py-0.5 text-xs text-muted-foreground hover:bg-secondary"
+                >
+                  /{skill.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div className="flex items-end gap-2">
             <textarea
               value={draft}

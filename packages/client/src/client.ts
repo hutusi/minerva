@@ -15,6 +15,7 @@ import {
   type SessionCompactedParams,
   type SessionCompactResult,
   type SessionLoadResult,
+  type SessionModeState,
   type SessionNewResult,
   type SessionPromptResult,
   type SessionSummary,
@@ -116,6 +117,9 @@ export class MinervaClient {
     store: SessionStore;
     instructions?: InstructionsInfo;
     profile?: string;
+    /** Mode state as reported by the kernel — mode-picker UIs need the
+     * available list, not just the current id the store tracks. */
+    modes?: SessionModeState;
   }> {
     const { sessionId, modes, instructions, profile } =
       await this.#connection.request<SessionNewResult>(AGENT_METHODS.sessionNew, {
@@ -130,6 +134,7 @@ export class MinervaClient {
       store,
       ...(instructions ? { instructions } : {}),
       ...(profile !== undefined ? { profile } : {}),
+      ...(modes ? { modes } : {}),
     };
   }
 
@@ -146,6 +151,7 @@ export class MinervaClient {
     store: SessionStore;
     instructions?: InstructionsInfo;
     profile?: string;
+    modes?: SessionModeState;
   }> {
     // Overwriting a live registration would detach that session's store from
     // the update stream (and the failure path would delete it outright).
@@ -168,6 +174,7 @@ export class MinervaClient {
         store,
         ...(instructions ? { instructions } : {}),
         ...(profile !== undefined ? { profile } : {}),
+        ...(modes ? { modes } : {}),
       };
     } catch (error) {
       this.#stores.delete(sessionId);
