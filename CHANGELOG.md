@@ -7,6 +7,21 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Subagents: the model can delegate a self-contained side quest via the new
+  `task` tool — a child agent loop over its own persisted session (parent
+  recorded in the log, excluded from `/sessions`) with the same tools minus
+  `task`/`todo_write`; only the child's final report enters the parent
+  context. Every child tool call is judged by the parent session's
+  permission rules and live mode (plan mode blocks child writes; prompts
+  surface under the parent marked "from subagent"; "allow always" covers
+  both), esc cancels the task with the turn, child token spend rolls into
+  session totals live and across resume (new `task.completed` parent-log
+  event), and kill-9 mid-task resumes cleanly via the existing interrupted
+  tool-call synthesis. Live progress streams as the new
+  `minerva/session/task_update` notification — the CLI renders a collapsed
+  status line under the task (`↳ 3 tool calls · grep "handleAuth"`) while
+  generic ACP clients still see a plain tool call. Sequential, no nesting
+  (v1).
 - ACP `usage_update`: `session/update` now carries context-window
   utilization (`used`/`size`, per the ACP session-usage RFD) after each
   turn and once after a `session/load` replay — emitted only when the

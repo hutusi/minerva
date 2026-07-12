@@ -232,6 +232,51 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.unmount();
   }, 20_000);
 
+  test("a task call shows live subagent progress and attributes its permission prompt", async () => {
+    const ui = renderTui([
+      [
+        {
+          type: "tool-call",
+          toolCallId: "t1",
+          toolName: "task",
+          input: { description: "check something", prompt: "Run the echo and report." },
+        },
+        FINISH_TOOLS,
+      ],
+      // Child: one gated tool call, then its report.
+      [
+        {
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "bash",
+          input: { command: "echo child-e2e" },
+        },
+        FINISH_TOOLS,
+      ],
+      [{ type: "text-delta", text: "Child report ready." }, FINISH_STOP],
+      [{ type: "text-delta", text: "Task finished." }, FINISH_STOP],
+    ]);
+    await ready(ui);
+
+    await type(ui, "delegate the check");
+    // The child's bash call prompts under the parent, attributed to the task.
+    await waitFor(
+      () => (ui.lastFrame() ?? "").includes("Permission required (from subagent)"),
+      "subagent permission",
+    );
+    expect(ui.lastFrame()).toContain("echo child-e2e");
+
+    ui.stdin.write("y");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("Task finished."), "final text");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("task: check something");
+    // The collapsed progress line survives in the settled transcript.
+    expect(frame).toContain("↳ 1 tool call");
+    // The child's report is the task tool's output preview.
+    expect(frame).toContain("Child report ready.");
+    ui.unmount();
+  }, 20_000);
+
   test("an edit permission previews the diff; arrow keys navigate the options", async () => {
     const ui = renderTui([
       [

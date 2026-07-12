@@ -690,6 +690,15 @@ function ToolView({ item }: { item: Extract<ViewItem, { kind: "tool" }> }) {
         <Text bold>{item.title}</Text>
         <Text dimColor> [{item.status}]</Text>
       </Text>
+      {item.task ? (
+        <Box marginLeft={2}>
+          <Text dimColor>
+            ↳ {item.task.toolCalls} tool call{item.task.toolCalls === 1 ? "" : "s"}
+            {item.task.failed > 0 ? ` (${item.task.failed} failed)` : ""}
+            {item.task.lastActivity ? ` · ${item.task.lastActivity}` : ""}
+          </Text>
+        </Box>
+      ) : null}
       {item.diff ? (
         <DiffView
           lines={clipDiff(diffLines(item.diff.oldText, item.diff.newText), DIFF_LINE_CAP)}
@@ -868,7 +877,7 @@ function PermissionPrompt({ pending }: { pending: PendingPermission }) {
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="yellow" paddingX={1}>
       <Text color="yellow" bold>
-        Permission required
+        Permission required{pending.request.taskToolCallId ? " (from subagent)" : ""}
       </Text>
       <Text>{pending.request.toolCall.title}</Text>
       <PermissionPreview toolCall={pending.request.toolCall} />

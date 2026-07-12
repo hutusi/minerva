@@ -238,6 +238,24 @@ Every session is an append-only JSONL event log under
 `~/.minerva/projects/<project>/` — the audit trail and the source of truth for
 `--resume`.
 
+## Subagents
+
+The model can delegate a self-contained side quest — a broad search, an
+isolated analysis — to a subagent via the `task` tool: a child agent with the
+same tools (minus `task` and `todo_write`) and the same system prompt, whose
+transcript stays out of the main conversation; only its final report returns.
+The CLI shows a collapsed progress line under the task
+(`↳ 3 tool calls · grep "handleAuth"`).
+
+Subagents change nothing about trust: every child tool call is judged by the
+parent session's permission rules and mode — plan mode still blocks writes,
+default mode still prompts (marked "from subagent"), and an "allow always"
+covers the rest of the task and the session. `esc` cancels the task with the
+turn. Child token spend rolls into the session totals. Each child's full
+transcript is persisted as its own session log (excluded from `/sessions`)
+next to the parent's, for auditing. Tasks run sequentially and cannot spawn
+further tasks.
+
 ## Project instructions (AGENTS.md)
 
 Put per-project guidance in an `AGENTS.md` at the project root (the
