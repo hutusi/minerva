@@ -74,9 +74,10 @@ provider swap); provider construction is host-injected via
    permission-gated as `mcp__server__tool`); manual `/compact`; slash-command
    palette; `build:release` script (see watchlist for the macOS signing issue).
 
-**v0.1 exit criteria:** daily-drivable CLI for real work *(pending live-model
-smoke — needs an API key)*; Zed connects over ACP and completes a session
-*(harness-verified; live Zed pending)*; two providers switchable mid-project ✅;
+**v0.1 exit criteria:** daily-drivable CLI for real work ✅ *(live-model
+smokes run routinely against DashScope since 0.3)*; Zed connects over ACP and
+completes a session ✅ *(validated live 2026-07 against the compiled binary:
+streaming, permission round-trip, subagent degradation)*; two providers switchable mid-project ✅;
 `kill -9` the CLI → resume restores the session ✅ (tested, including torn log
 lines); every side effect traceable in the audit log ✅.
 
@@ -109,17 +110,20 @@ untouched until v0.1 lands via one final, non-squashed PR.
   kernel-owned.
 - **Windows**: compiled-binary paths, shell differences — test in slice 4, not
   after.
-- **macOS arm64 compiled binaries**: Bun 1.3.12's `--compile` output is
-  unsigned on this setup; the kernel SIGKILLs unsigned arm64 binaries and
-  `codesign` rejects the file format for re-signing. Revisit on a newer Bun
-  before cutting release artifacts.
+- **macOS arm64 compiled binaries** *(resolved 2026-07)*: the SIGKILL was a
+  Bun 1.3.12 regression — a truncated `LC_CODE_SIGNATURE`
+  (oven-sh/bun#29270), fixed in 1.3.13; we pin 1.3.14. `build:release`
+  ad-hoc re-signs on macOS (Bun's own signature still fails
+  `codesign --verify --strict`) and then self-checks the artifact by running
+  it and verifying the signature, so a recurrence fails the build loudly.
 
 ## Verification strategy
 
 - **Kernel**: unit tests with mock model providers; golden-transcript tests —
   replay recorded JSONL event logs and assert reconstructed state.
 - **Protocol**: ACP conformance via a scripted stdio harness, plus a live Zed
-  connection as the external check.
+  connection as the external check *(done 2026-07: Zed drives the compiled
+  binary through streaming, permissions, and subagent tasks)*.
 - **End-to-end**: scripted CLI session against a real provider on a sample repo
   (edit → test → commit flow); resume-after-kill test; permission-rule matrix
   test (allow/deny/ask × modes).

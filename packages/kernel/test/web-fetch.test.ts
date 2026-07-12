@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,18 +14,28 @@ import { createKernel, defaultRuntime, type MinervaKernel } from "../src";
 import { permissionValue } from "../src/permissions";
 import { htmlToText, webFetchTool } from "../src/tools";
 import { type BodyReader, createWebFetchTool, readBoundedFrom } from "../src/tools/web-fetch";
+import { serveWithRetry } from "./fixtures/serve-retry";
 
-const servers: Array<{ stop: (force?: boolean) => void }> = [];
 const kernels: MinervaKernel[] = [];
 afterEach(async () => {
-  for (const server of servers.splice(0)) server.stop(true);
   await Promise.all(kernels.splice(0).map((kernel) => kernel.close()));
 });
 
-function serve(handler: (request: Request) => Response | Promise<Response>): string {
-  const server = Bun.serve({ port: 0, fetch: handler });
-  servers.push(server);
-  return `http://localhost:${server.port}`;
+// ONE server for the whole file, with a swappable handler. Per-test
+// create/force-stop churn is what wedged full-suite runs: once the process
+// soured, even port-0 binds kept failing EADDRINUSE, so the fix is fewer
+// server lifecycles, not more retries.
+type Handler = (request: Request) => Response | Promise<Response>;
+let handler: Handler = () => new Response("no handler installed", { status: 500 });
+const shared = await serveWithRetry({ port: 0, fetch: (request) => handler(request) });
+afterAll(async () => {
+  await shared.stop(true);
+});
+
+/** Point the shared server at this test's handler; returns the base URL. */
+function serve(nextHandler: Handler): string {
+  handler = nextHandler;
+  return `http://localhost:${shared.port}`;
 }
 
 const tmp = () => mkdtempSync(join(tmpdir(), "minerva-fetch-"));

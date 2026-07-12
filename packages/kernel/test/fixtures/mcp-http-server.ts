@@ -6,6 +6,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
+import { serveWithRetry } from "./serve-retry";
 
 export interface HttpCalcServer {
   url: string;
@@ -16,7 +17,7 @@ export interface HttpCalcServer {
 
 export async function startHttpCalcServer(): Promise<HttpCalcServer> {
   let lastAuthorization: string | null = null;
-  const httpServer = Bun.serve({
+  const httpServer = await serveWithRetry({
     port: 0,
     // Stateless mode requires a fresh server+transport per request (the SDK
     // rejects reuse); each request is self-contained, which is the simplest

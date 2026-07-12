@@ -7,6 +7,12 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Releases now ship installable binaries: an artifacts job builds on Linux
+  and macOS runners and attaches `minerva-<tag>-<os>-<arch>.tar.gz`
+  (the `minerva` + `rg` pair) to the GitHub Release, which stays a draft
+  until every artifact uploaded — a visible release can never promise
+  binaries it doesn't have. Every upload passes the build's run-and-verify
+  self-check first. The README documents install-from-release.
 - PTY-backed bash: the `bash` tool accepts `pty: true` to run the command
   under a pseudo-terminal (colors, TTY-gated tools, watch modes rendered
   until the timeout) via a `script(1)` wrapper — no native module, so the
@@ -46,6 +52,19 @@ All notable changes to Minerva are documented here. The format follows
   context window is assumed — locally pulled models vary — so
   auto-compaction stays inert until `providers.ollama.contextWindow` is
   set; `baseUrl` is overridable in settings for a remote host.
+
+### Fixed
+- Live Zed interop over `minerva acp` is validated (closes the 0.1 known
+  issue): Zed drives the compiled binary through streaming replies, the
+  permission round-trip, and subagent `task` calls (rendered as a plain tool
+  call — generic ACP clients don't consume the task_update extension). The
+  live ACP smoke (`scripts/acp-smoke.ts`) passes all five checks.
+- macOS arm64 compiled binaries no longer die on launch: the SIGKILL was a
+  Bun 1.3.12 regression (truncated code signature, oven-sh/bun#29270, fixed
+  upstream in 1.3.13) — Bun is now pinned at 1.3.14, `build:release` ad-hoc
+  re-signs the binary on macOS, and a post-build self-check (run the binary,
+  verify its signature) fails the build if the problem ever recurs. The
+  compiled-binary CI job runs on macOS again.
 
 ### Security
 - `web_fetch` now refuses hosts that are — or resolve to — private,

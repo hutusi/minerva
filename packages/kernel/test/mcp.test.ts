@@ -13,6 +13,7 @@ import {
 import { createScriptedProvider } from "@minerva/providers";
 import { createKernel, defaultRuntime, type SessionEvent } from "../src";
 import { startHttpCalcServer } from "./fixtures/mcp-http-server";
+import { serveWithRetry } from "./fixtures/serve-retry";
 
 const MCP_FIXTURE = join(import.meta.dir, "fixtures", "mcp-server.ts");
 
@@ -290,10 +291,10 @@ describe("MCP tools through the kernel", () => {
 
   test("SSE fallback fires only for 4xx protocol rejections, not server failures", async () => {
     const { connectMcpServers } = await import("../src/mcp");
-    const startPostRejecting = (postStatus: number) => {
+    const startPostRejecting = async (postStatus: number) => {
       let gets = 0;
       let lastGetAuthorization: string | null = null;
-      const server = Bun.serve({
+      const server = await serveWithRetry({
         port: 0,
         fetch(req) {
           if (req.method === "GET") {
@@ -308,14 +309,16 @@ describe("MCP tools through the kernel", () => {
         url: `http://127.0.0.1:${server.port}/mcp`,
         gets: () => gets,
         lastGetAuthorization: () => lastGetAuthorization,
-        close: () => server.stop(true),
+        close: async () => {
+          await server.stop(true);
+        },
       };
     };
     const cwd = mkdtempSync(join(tmpdir(), "minerva-mcpsse-proj-"));
 
     // 405 = "server doesn't speak Streamable HTTP" → one SSE attempt, and the
     // warning still names the original streamable failure.
-    const legacy = startPostRejecting(405);
+    const legacy = await startPostRejecting(405);
     const legacyResult = await connectMcpServers(
       {
         legacy: {
@@ -333,10 +336,10 @@ describe("MCP tools through the kernel", () => {
     // The warning surfaces the ORIGINAL streamable failure, not the SSE one.
     expect(legacyResult.warnings[0]).toContain("Error POSTing to endpoint");
     await legacyResult.close();
-    legacy.close();
+    await legacy.close();
 
     // 500 = the endpoint itself is broken → fail fast, no SSE probe.
-    const broken = startPostRejecting(500);
+    const broken = await startPostRejecting(500);
     const brokenResult = await connectMcpServers(
       { broken: { type: "http", url: broken.url } },
       cwd,
@@ -344,14 +347,14 @@ describe("MCP tools through the kernel", () => {
     expect(broken.gets()).toBe(0);
     expect(brokenResult.warnings[0]).toContain("failed to start");
     await brokenResult.close();
-    broken.close();
+    await broken.close();
   }, 15_000);
 
   test("a hanging server is bounded by the startup deadline", async () => {
     const { connectMcpServers } = await import("../src/mcp");
     // POST never resolves — a black-holed server, the worst case for the
     // SDK's 60s default timeout.
-    const server = Bun.serve({
+    const server = await serveWithRetry({
       port: 0,
       fetch() {
         return new Promise<Response>(() => {});
@@ -368,7 +371,7 @@ describe("MCP tools through the kernel", () => {
     expect(connection.tools).toHaveLength(0);
     expect(connection.warnings[0]).toContain("hang");
     await connection.close();
-    server.stop(true);
+    await server.stop(true);
   }, 10_000);
 
   test("remote tool output is capped before it reaches the log and UI", async () => {

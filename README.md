@@ -20,6 +20,19 @@ bun install
 bun run --cwd packages/cli dev
 ```
 
+Or install a released build — each release ships per-platform tarballs
+(linux-x86_64, darwin-arm64) containing the `minerva` binary and its `rg`
+sidecar, which must stay side by side:
+
+```sh
+gh release download --pattern "minerva-*-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz" --dir /tmp/minerva-dl
+mkdir -p ~/.local/lib/minerva ~/.local/bin
+tar -xzf /tmp/minerva-dl/minerva-*.tar.gz -C ~/.local/lib/minerva
+ln -sf ~/.local/lib/minerva/minerva ~/.local/bin/minerva
+```
+
+(The repo is private, so downloads go through an authenticated `gh`.)
+
 On first run with no API key configured, the TUI opens an interactive setup
 panel: pick a provider, paste a key, confirm a model. Keys can also come from
 the environment (`export ANTHROPIC_API_KEY="sk-ant-..."`), which always takes
@@ -314,7 +327,10 @@ agent server along these lines:
 ```
 
 The stdio wire contract is covered by an automated harness
-(`packages/cli/test/acp.test.ts`); live Zed interop has not been validated yet.
+(`packages/cli/test/acp.test.ts`), and live Zed interop is validated against
+the compiled binary: streaming replies, the permission round-trip, and
+subagent `task` calls (shown as a plain tool call — Zed doesn't consume the
+`minerva/session/task_update` extension) all work.
 
 ## Development
 
@@ -340,7 +356,9 @@ platform's `rg`, cross-compiling with `--target` for a different OS/arch is
 rejected (it would pair the binary with the wrong `rg`); build on the target
 platform to produce a native pair.
 
-> **Known issue (macOS arm64):** with Bun 1.3.12 the compiled binary comes out
-> unsigned; the kernel kills unsigned arm64 binaries (SIGKILL on launch) and
-> `codesign` rejects the file format for re-signing. Until this is resolved
-> (try a newer Bun), run the CLI via `bun run packages/cli/src/index.tsx`.
+> **Resolved (macOS arm64):** Bun 1.3.12 emitted binaries with a truncated
+> code signature that the kernel SIGKILLed on launch
+> ([oven-sh/bun#29270](https://github.com/oven-sh/bun/issues/29270), fixed in
+> 1.3.13; this repo pins 1.3.14). `build:release` now ad-hoc re-signs on
+> macOS and self-checks the artifact — it runs the built binary and verifies
+> its signature — so a recurrence fails the build instead of shipping.
