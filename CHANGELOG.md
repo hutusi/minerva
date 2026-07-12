@@ -7,6 +7,12 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Releases now ship installable binaries: an artifacts job builds on Linux
+  and macOS runners and attaches `minerva-<tag>-<os>-<arch>.tar.gz`
+  (the `minerva` + `rg` pair) to the GitHub Release, which stays a draft
+  until every artifact uploaded — a visible release can never promise
+  binaries it doesn't have. Every upload passes the build's run-and-verify
+  self-check first. The README documents install-from-release.
 - PTY-backed bash: the `bash` tool accepts `pty: true` to run the command
   under a pseudo-terminal (colors, TTY-gated tools, watch modes rendered
   until the timeout) via a `script(1)` wrapper — no native module, so the

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,17 +16,26 @@ import { htmlToText, webFetchTool } from "../src/tools";
 import { type BodyReader, createWebFetchTool, readBoundedFrom } from "../src/tools/web-fetch";
 import { serveWithRetry } from "./fixtures/serve-retry";
 
-const servers: Array<{ stop: (force?: boolean) => void }> = [];
 const kernels: MinervaKernel[] = [];
 afterEach(async () => {
-  for (const server of servers.splice(0)) server.stop(true);
   await Promise.all(kernels.splice(0).map((kernel) => kernel.close()));
 });
 
-async function serve(handler: (request: Request) => Response | Promise<Response>): Promise<string> {
-  const server = await serveWithRetry({ port: 0, fetch: handler });
-  servers.push(server);
-  return `http://localhost:${server.port}`;
+// ONE server for the whole file, with a swappable handler. Per-test
+// create/force-stop churn is what wedged full-suite runs: once the process
+// soured, even port-0 binds kept failing EADDRINUSE, so the fix is fewer
+// server lifecycles, not more retries.
+type Handler = (request: Request) => Response | Promise<Response>;
+let handler: Handler = () => new Response("no handler installed", { status: 500 });
+const shared = await serveWithRetry({ port: 0, fetch: (request) => handler(request) });
+afterAll(async () => {
+  await shared.stop(true);
+});
+
+/** Point the shared server at this test's handler; returns the base URL. */
+function serve(nextHandler: Handler): string {
+  handler = nextHandler;
+  return `http://localhost:${shared.port}`;
 }
 
 const tmp = () => mkdtempSync(join(tmpdir(), "minerva-fetch-"));
@@ -48,7 +57,7 @@ const guardedCtx = (cwd: string) => ({ cwd, dataDir: tmp(), runtime: defaultRunt
 
 describe("web_fetch", () => {
   test("plain text passes through; title is the URL", async () => {
-    const base = await serve(() => new Response("hello over http\n"));
+    const base = serve(() => new Response("hello over http\n"));
     expect(webFetchTool.title({ url: `${base}/greeting` })).toBe(`${base}/greeting`);
     const result = await webFetchTool.execute({ url: `${base}/greeting` }, ctx(tmp()));
     expect(result.isError).toBe(false);
@@ -56,7 +65,7 @@ describe("web_fetch", () => {
   });
 
   test("HTML is reduced to readable text", async () => {
-    const base = await serve(
+    const base = serve(
       () =>
         new Response(
           "<html><head><style>p{color:red}</style><script>alert(1)</script></head>" +
@@ -75,7 +84,7 @@ describe("web_fetch", () => {
   });
 
   test("JSON passes through; binary content types are refused", async () => {
-    const base = await serve((request) =>
+    const base = serve((request) =>
       new URL(request.url).pathname === "/data.json"
         ? Response.json({ ok: true })
         : new Response("...", { headers: { "content-type": "application/octet-stream" } }),
@@ -90,7 +99,7 @@ describe("web_fetch", () => {
   });
 
   test("bodies are capped at 1 MiB and output at 30k characters", async () => {
-    const base = await serve(() => new Response("x".repeat(1_200_000)));
+    const base = serve(() => new Response("x".repeat(1_200_000)));
     const result = await webFetchTool.execute({ url: base }, ctx(tmp()));
     expect(result.isError).toBe(false);
     expect(result.output).toContain("[truncated at 30000 characters]");
@@ -98,7 +107,7 @@ describe("web_fetch", () => {
   });
 
   test("follows a redirect chain but rejects endless loops", async () => {
-    const base = await serve((request) => {
+    const base = serve((request) => {
       const path = new URL(request.url).pathname;
       if (path === "/a") return Response.redirect(`${base}/b`, 302);
       if (path === "/b") return Response.redirect(`${base}/final`, 301);
@@ -120,7 +129,7 @@ describe("web_fetch", () => {
     expect(direct.isError).toBe(true);
     expect(direct.output).toContain("only http(s)");
 
-    const base = await serve(
+    const base = serve(
       () => new Response(null, { status: 302, headers: { location: "file:///etc/passwd" } }),
     );
     const redirected = await webFetchTool.execute({ url: base }, ctx(tmp()));
@@ -129,14 +138,14 @@ describe("web_fetch", () => {
   });
 
   test("times out a stalled server", async () => {
-    const base = await serve(() => new Promise<Response>(() => {})); // never resolves
+    const base = serve(() => new Promise<Response>(() => {})); // never resolves
     const result = await webFetchTool.execute({ url: base, timeout_ms: 150 }, ctx(tmp()));
     expect(result.isError).toBe(true);
     expect(result.output).toContain("timed out after 150ms");
   }, 5_000);
 
   test("non-2xx statuses surface as errors with the body preserved", async () => {
-    const base = await serve(() => new Response("gone fishing", { status: 404 }));
+    const base = serve(() => new Response("gone fishing", { status: 404 }));
     const result = await webFetchTool.execute({ url: base }, ctx(tmp()));
     expect(result.isError).toBe(true);
     expect(result.output).toContain("[HTTP 404]");
@@ -218,7 +227,7 @@ describe("web_fetch", () => {
     const cwd = tmp();
     allowPrivateHosts(cwd); // the scripted fetch targets a local server
     const dataDir = tmp();
-    const base = await serve(() => new Response("fetched"));
+    const base = serve(() => new Response("fetched"));
     const url = `${base}/page`;
     const [clientTransport, kernelTransport] = createInProcTransportPair();
     kernels.push(
@@ -281,7 +290,7 @@ describe("web_fetch private-host guard", () => {
   });
 
   test("localhost is refused by default and permitted via settings", async () => {
-    const base = await serve(() => new Response("local"));
+    const base = serve(() => new Response("local"));
     // Real resolver: localhost → loopback, no network involved.
     const refused = await webFetchTool.execute({ url: base }, guardedCtx(tmp()));
     expect(refused.isError).toBe(true);
@@ -293,7 +302,7 @@ describe("web_fetch private-host guard", () => {
   });
 
   test("a redirect into a private range is refused at the hop", async () => {
-    const base = await serve(
+    const base = serve(
       () => new Response(null, { status: 302, headers: { location: "http://192.168.1.1/admin" } }),
     );
     // The injected lookup calls our local server public, so the initial
@@ -306,7 +315,7 @@ describe("web_fetch private-host guard", () => {
   });
 
   test("public hosts are unaffected by the guard", async () => {
-    const base = await serve(() => new Response("public ok"));
+    const base = serve(() => new Response("public ok"));
     const tool = createWebFetchTool({ lookup: async () => [{ address: "93.184.216.34" }] });
     const result = await tool.execute({ url: base }, guardedCtx(tmp()));
     expect(result.isError).toBe(false);

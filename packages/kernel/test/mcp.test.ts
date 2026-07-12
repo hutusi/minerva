@@ -309,7 +309,9 @@ describe("MCP tools through the kernel", () => {
         url: `http://127.0.0.1:${server.port}/mcp`,
         gets: () => gets,
         lastGetAuthorization: () => lastGetAuthorization,
-        close: () => server.stop(true),
+        close: async () => {
+          await server.stop(true);
+        },
       };
     };
     const cwd = mkdtempSync(join(tmpdir(), "minerva-mcpsse-proj-"));
@@ -334,7 +336,7 @@ describe("MCP tools through the kernel", () => {
     // The warning surfaces the ORIGINAL streamable failure, not the SSE one.
     expect(legacyResult.warnings[0]).toContain("Error POSTing to endpoint");
     await legacyResult.close();
-    legacy.close();
+    await legacy.close();
 
     // 500 = the endpoint itself is broken → fail fast, no SSE probe.
     const broken = await startPostRejecting(500);
@@ -345,7 +347,7 @@ describe("MCP tools through the kernel", () => {
     expect(broken.gets()).toBe(0);
     expect(brokenResult.warnings[0]).toContain("failed to start");
     await brokenResult.close();
-    broken.close();
+    await broken.close();
   }, 15_000);
 
   test("a hanging server is bounded by the startup deadline", async () => {
@@ -369,7 +371,7 @@ describe("MCP tools through the kernel", () => {
     expect(connection.tools).toHaveLength(0);
     expect(connection.warnings[0]).toContain("hang");
     await connection.close();
-    server.stop(true);
+    await server.stop(true);
   }, 10_000);
 
   test("remote tool output is capped before it reaches the log and UI", async () => {

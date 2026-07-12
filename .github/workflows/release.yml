@@ -59,14 +59,18 @@ jobs:
           echo "--- release notes ---"
           cat RELEASE_NOTES.md
 
-      - name: Create the GitHub Release
+      - name: Create the GitHub Release (draft until artifacts attach)
+        # Draft-first: a visible release must never promise binaries it does
+        # not have. The publish job below flips it public only after BOTH
+        # platform artifacts uploaded successfully.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file RELEASE_NOTES.md \
-            --verify-tag
+            --verify-tag \
+            --draft
 
   artifacts:
     name: attach binaries (${{ matrix.os }})
@@ -94,3 +98,16 @@ jobs:
           artifact="minerva-${GITHUB_REF_NAME}-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz"
           tar -czf "$artifact" -C dist minerva rg
           gh release upload "$GITHUB_REF_NAME" "$artifact" --clobber
+
+  publish:
+    name: publish the release
+    # Only reached when every artifact uploaded; until then the release
+    # stays a draft, invisible to consumers.
+    needs: artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Flip the draft public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

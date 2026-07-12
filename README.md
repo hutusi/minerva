@@ -26,7 +26,8 @@ sidecar, which must stay side by side:
 
 ```sh
 gh release download --pattern "minerva-*-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m).tar.gz" --dir /tmp/minerva-dl
-mkdir -p ~/.local/lib/minerva && tar -xzf /tmp/minerva-dl/minerva-*.tar.gz -C ~/.local/lib/minerva
+mkdir -p ~/.local/lib/minerva ~/.local/bin
+tar -xzf /tmp/minerva-dl/minerva-*.tar.gz -C ~/.local/lib/minerva
 ln -sf ~/.local/lib/minerva/minerva ~/.local/bin/minerva
 ```
 
