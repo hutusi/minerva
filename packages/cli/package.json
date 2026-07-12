@@ -16,6 +16,7 @@
     "@minerva/providers": "workspace:*",
     "ink": "^7",
     "ink-text-input": "^6",
+    "marked": "^16",
     "react": "^19"
   },
   "devDependencies": {

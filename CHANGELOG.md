@@ -7,6 +7,11 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- CLI: assistant replies render as terminal markdown (headings, lists,
+  fenced code, blockquotes, inline emphasis/links) via `marked`'s lexer and
+  a hand-rolled Ink renderer. Unknown constructs (tables, HTML) fall back
+  to their raw source so content is never dropped; info/user/tool output
+  stays plain.
 - Skills: reusable instructions as `skills/<name>/SKILL.md` directories
   (project `.minerva/` and global `~/.minerva/`, project winning name
   collisions). The model discovers them through a read-only `skill` tool

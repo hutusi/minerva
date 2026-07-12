@@ -4,6 +4,7 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
+import { Markdown } from "./markdown";
 import type { PendingPermission, PermissionBridge } from "./permission-bridge";
 import { resolveSlashInput, skillsHelp } from "./slash";
 
@@ -367,9 +368,11 @@ function ItemView({ item }: { item: ViewItem }) {
         </Box>
       );
     case "assistant":
+      // Markdown is for model output only: info/user/tool text stays plain,
+      // so /help output and command echoes are never reinterpreted.
       return (
         <Box marginTop={1}>
-          <Text>{item.text}</Text>
+          <Markdown text={item.text} />
         </Box>
       );
     case "thought":

@@ -298,6 +298,18 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.unmount();
   }, 20_000);
 
+  test("assistant markdown renders as terminal formatting", async () => {
+    const ui = renderTui([[{ type: "text-delta", text: "# Done\n\n- x" }, FINISH_STOP]]);
+    await ready(ui);
+
+    await type(ui, "summarize");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("• x"), "markdown list");
+    const frame = ui.lastFrame() ?? "";
+    expect(frame).toContain("Done");
+    expect(frame).not.toContain("# Done"); // heading marker consumed by the renderer
+    ui.unmount();
+  }, 20_000);
+
   test("a thought streams dimmed, then collapses to a summary line", async () => {
     const thought = "Weighing the options before answering.";
     const ui = renderTui([
