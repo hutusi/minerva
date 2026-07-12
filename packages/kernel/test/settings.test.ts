@@ -119,6 +119,21 @@ describe("profiles settings", () => {
     expect(resolveProfile({ ...empty, profile: undefined })).toBeUndefined();
   });
 
+  test("resolveProfile rejects inherited names and keeps the canonical name", async () => {
+    const { cwd, dataDir } = tempDirs();
+    writeSettings(globalSettingsPath(dataDir), {
+      // A stray "name" key in the JSON must not overwrite the requested
+      // name — it is persisted to the session log and breaks resume.
+      profiles: { writer: { name: "evil", systemPrompt: "w" } },
+    } as unknown as MinervaSettings);
+    const settings = await loadSettings(defaultRuntime, dataDir, cwd);
+
+    expect(resolveProfile(settings, "writer")).toMatchObject({ name: "writer" });
+    // Object.prototype members are not profiles.
+    expect(() => resolveProfile(settings, "toString")).toThrow('unknown profile "toString"');
+    expect(() => resolveProfile(settings, "hasOwnProperty")).toThrow("unknown profile");
+  });
+
   test("malformed profiles fail loudly instead of coercing", async () => {
     const { cwd, dataDir } = tempDirs();
     writeSettings(globalSettingsPath(dataDir), {

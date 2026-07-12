@@ -110,6 +110,42 @@ describe("named profiles through the kernel", () => {
     ).rejects.toThrow('unknown profile "ghost"');
   }, 15_000);
 
+  test("set_profile is rejected while a prompt is running", async () => {
+    const cwd = tmp("minerva-prof-proj-");
+    writeProjectSettings(cwd, PROFILE_SETTINGS);
+    // A provider that stalls until we let it finish, keeping the lease held.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      dataDir: tmp("minerva-prof-data-"),
+      provider: {
+        id: "test/stalling",
+        async *streamTurn() {
+          await gate;
+          yield { type: "text-delta" as const, text: "ok" };
+          yield { type: "finish" as const, finishReason: "stop" as const, usage: {} };
+        },
+      },
+    });
+    kernels.push(kernel);
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<SessionNewResult>(AGENT_METHODS.sessionNew, {
+      cwd,
+    });
+
+    const running = prompt(client, sessionId, "hold the lease");
+    await Bun.sleep(20); // let the prompt claim the lease
+    await expect(
+      client.request(MINERVA_METHODS.sessionSetProfile, { sessionId, profile: "writer" }),
+    ).rejects.toThrow("cannot switch profile while a prompt is running");
+    release?.();
+    await running;
+  }, 15_000);
+
   test("a mid-session switch applies from the next prompt; null clears it", async () => {
     const cwd = tmp("minerva-prof-proj-");
     writeProjectSettings(cwd, PROFILE_SETTINGS);

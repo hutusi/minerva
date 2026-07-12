@@ -175,7 +175,9 @@ describe("session resume across kernel restarts", () => {
     await first.client.initialize();
     const { sessionId } = await first.client.newSession(cwd);
     await first.client.prompt(sessionId, "write the note");
-    first.client.close();
+    // Drain the first kernel before the second lifetime reads its data dir —
+    // fire-and-forget appends (index preview) may still be in flight.
+    await first.kernel.close();
 
     const second = boot(dataDir, []);
     await second.client.initialize();

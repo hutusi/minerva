@@ -395,17 +395,15 @@ export class MinervaKernel {
         "profile must be a string or null (to clear)",
       );
     }
-    if (session.promptActive) {
-      throw new RpcError(
-        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
-        "cannot switch profile while a prompt is running",
-      );
-    }
+    // Resolve BEFORE the promptActive guard: loadSettings awaits, and a
+    // prompt claiming the lease during that await would otherwise see the
+    // session mutated despite the guard (same no-await-between-guard-and-
+    // mutation invariant as sessionPrompt/compact).
+    let resolved: ReturnType<typeof resolveProfile>;
     if (profile === null) {
-      session.profile = undefined;
+      resolved = undefined;
     } else {
       const settings = await loadSettings(this.#runtime, this.#dataDir, session.cwd);
-      let resolved: ReturnType<typeof resolveProfile>;
       try {
         resolved = resolveProfile(settings, profile);
       } catch (error) {
@@ -414,13 +412,19 @@ export class MinervaKernel {
           error instanceof Error ? error.message : String(error),
         );
       }
-      if (resolved) {
-        session.profile = {
+    }
+    if (session.promptActive) {
+      throw new RpcError(
+        JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        "cannot switch profile while a prompt is running",
+      );
+    }
+    session.profile = resolved
+      ? {
           name: resolved.name,
           ...(resolved.systemPrompt !== undefined ? { systemPrompt: resolved.systemPrompt } : {}),
-        };
-      }
-    }
+        }
+      : undefined;
     session.append({ type: "session.profile_changed", profile, at: now() });
     // Settle the write before acknowledging, like set_mode: a persona switch
     // that vanishes on restart is a policy surprise.

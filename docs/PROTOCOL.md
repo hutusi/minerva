@@ -173,6 +173,10 @@ settings (`profiles` maps merge per name, project over global; the `default`
 field is the settings `profile` scalar, project winning). Reads settings
 fresh per call, like `minerva/skills/list` — no session required. Prompt
 bodies are not shipped; `hasSystemPrompt` says whether one is defined.
+`model` is preference metadata for HOSTS (the CLI feeds it into its startup
+model precedence and `/profile` prints a switch hint) — the kernel does not
+resolve providers per profile, so it never changes the model of a running
+kernel by itself.
 
 ### `minerva/session/set_profile`
 Params `{ sessionId, profile: string | null }` → `null`. Switches the

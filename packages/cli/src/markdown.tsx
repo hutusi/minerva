@@ -98,7 +98,7 @@ function ListBlock({ token }: { token: Tokens.List }) {
         return (
           <Box key={key} marginBottom={token.loose && ordinal < token.items.length - 1 ? 1 : 0}>
             <Text>{token.ordered ? `${start + ordinal}. ` : "• "}</Text>
-            <Box flexDirection="column">{renderTokens(item.tokens)}</Box>
+            <Box flexDirection="column">{renderTokens(item.tokens ?? [])}</Box>
           </Box>
         );
       })}

@@ -132,12 +132,17 @@ export function resolveProfile(
 ): ({ name: string } & ProfileSettings) | undefined {
   const name = requested ?? settings.profile;
   if (name === undefined) return undefined;
-  const profile = settings.profiles[name];
+  // Own-property check: a bare index would accept inherited names like
+  // "toString" as bogus empty profiles instead of failing as unknown.
+  const profile = Object.hasOwn(settings.profiles, name) ? settings.profiles[name] : undefined;
   if (!profile) {
     const defined = Object.keys(settings.profiles).join(", ") || "(none)";
     throw new Error(`unknown profile "${name}" — defined: ${defined}`);
   }
-  return { name, ...profile };
+  // Canonical name LAST: a stray "name" key in the profile JSON must not
+  // overwrite it — the name is persisted to the session log and a wrong one
+  // breaks resume.
+  return { ...profile, name };
 }
 
 /** Per-name shallow merge, project over global. */

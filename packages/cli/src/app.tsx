@@ -234,7 +234,10 @@ function Chat({
   const { exit } = useApp();
 
   useInput((_input, key) => {
-    if (key.escape && viewModel.busy) client.cancel(session.id);
+    // While a permission prompt is open, ITS escape handler owns turn
+    // cancellation (ACP cancelled outcome) — Ink dispatches keys to every
+    // hook, so without the gate one Escape would fire both cancel paths.
+    if (key.escape && viewModel.busy && !pending) client.cancel(session.id);
   });
 
   const info = (text: string) => session.store.addInfo(text);

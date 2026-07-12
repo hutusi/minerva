@@ -386,7 +386,10 @@ function completeToolCall(
       ...(result.content ?? []),
       { type: "content", content: { type: "text", text: result.output } },
     ],
-    rawOutput: result,
+    // Deliberately NOT the whole result: its content carries the same diff
+    // blocks as the update's content array, and echoing them here would
+    // double the frame size of every file edit.
+    rawOutput: { output: result.output, isError: result.isError },
   });
   return {
     toolCallId: call.toolCallId,

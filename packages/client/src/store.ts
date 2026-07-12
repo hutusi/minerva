@@ -79,42 +79,10 @@ export class SessionStore {
   }
 
   apply(update: SessionUpdate): void {
-    switch (update.sessionUpdate) {
-      case "agent_message_chunk":
-        this.#appendStreamingText("assistant", update.content.text);
-        break;
-      case "user_message_chunk":
-        this.addUserMessage(update.content.text);
-        break;
-      case "agent_thought_chunk":
-        this.#appendStreamingText("thought", update.content.text);
-        break;
-      case "tool_call":
-        this.#push({
-          kind: "tool",
-          toolCallId: update.toolCallId,
-          title: update.title,
-          toolKind: update.kind,
-          status: update.status,
-          ...("rawInput" in update ? { rawInput: update.rawInput } : {}),
-        });
-        break;
-      case "tool_call_update":
-        this.#updateToolCall(update.toolCallId, (item) => ({
-          ...item,
-          status: update.status ?? item.status,
-          title: update.title ?? item.title,
-          output: extractText(update.content) ?? item.output,
-          diff: extractDiff(update.content) ?? item.diff,
-        }));
-        break;
-      case "plan":
-        this.#upsertPlan(update.entries);
-        break;
-      case "current_mode_update":
-        this.setMode(update.currentModeId);
-        break;
-    }
+    // A batch of one: reduceInto is the single reducer, so the live path and
+    // batched replay can never drift (this used to duplicate the whole
+    // switch, and every new ViewItem field had to be added twice).
+    this.applyBatch([update]);
   }
 
   /**
@@ -144,31 +112,6 @@ export class SessionStore {
   /** Latest wins; a resume announcement carries no lastTurn and clears it. */
   setUsage(lastTurn: TokenUsage | undefined, cumulative: TokenUsage): void {
     this.#set({ ...this.#viewModel, usage: { lastTurn, cumulative } });
-  }
-
-  /** One live plan per session: the latest update replaces it in place. */
-  #upsertPlan(entries: PlanEntry[]): void {
-    const items = [...this.#viewModel.items];
-    upsertPlanInto(items, entries);
-    this.#set({ ...this.#viewModel, items });
-  }
-
-  /** Shared by assistant text and thoughts: chunks coalesce into the last
-   * item while it streams; a chunk of the other kind finalizes it first —
-   * that switch is what collapses a thought when the answer starts. */
-  #appendStreamingText(kind: "assistant" | "thought", text: string): void {
-    const items = [...this.#viewModel.items];
-    appendStreamingInto(items, kind, text);
-    this.#set({ ...this.#viewModel, items });
-  }
-
-  #updateToolCall(
-    toolCallId: string,
-    change: (item: Extract<ViewItem, { kind: "tool" }>) => ViewItem,
-  ): void {
-    const items = [...this.#viewModel.items];
-    updateToolCallInto(items, toolCallId, change);
-    this.#set({ ...this.#viewModel, items });
   }
 
   #push(item: ViewItem): void {
