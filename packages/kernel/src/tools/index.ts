@@ -9,6 +9,7 @@ import type { KernelTool } from "./types";
 import { webFetchTool } from "./web-fetch";
 import { writeFileTool } from "./write-file";
 
+export { normalizePtyOutput } from "./bash";
 export { locateRg, type RgEnv, resolveRgPath } from "./ripgrep";
 export { createSkillTool } from "./skill";
 export * from "./types";

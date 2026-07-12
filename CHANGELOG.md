@@ -7,6 +7,14 @@ All notable changes to Minerva are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- PTY-backed bash: the `bash` tool accepts `pty: true` to run the command
+  under a pseudo-terminal (colors, TTY-gated tools, watch modes rendered
+  until the timeout) via a `script(1)` wrapper — no native module, so the
+  compiled single binary is unaffected. Opt-in because a PTY merges stderr
+  into stdout; the output is normalized (ANSI stripped, CRLF and
+  progress-bar `\r` overwrites collapsed). POSIX only — Windows and
+  script-less minimal images fall back to pipes with a note in the result.
+  Interactive stdin remains out of scope.
 - Subagents: the model can delegate a self-contained side quest via the new
   `task` tool — a child agent loop over its own persisted session (parent
   recorded in the log, excluded from `/sessions`) with the same tools minus
