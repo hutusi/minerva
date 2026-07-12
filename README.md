@@ -92,12 +92,16 @@ in global settings** (set either via `/config`):
 | Anthropic (default) | `claude-opus-4-8` or `anthropic/claude-opus-4-8` | `ANTHROPIC_API_KEY` |
 | OpenAI | `openai/gpt-5.2` | `OPENAI_API_KEY` |
 | Alibaba Bailian (DashScope) | `bailian/qwen-plus`, `bailian/glm-5.2` | `DASHSCOPE_API_KEY` |
+| Ollama (local) | `ollama/llama3.3` | none (`OLLAMA_API_KEY` if your server wants one) |
 
 Bailian uses the China endpoint by default; for the international one,
 override its `baseUrl` in settings (see below). Bailian hosts third-party
 models too (e.g. Zhipu's GLM) — the `/config` panel lists the known ids to
 pick from at the model step, with an `other…` row for any id it doesn't know.
-Any other OpenAI-compatible endpoint (DeepSeek, Ollama, a proxy…) can be
+Ollama is keyless and points at `http://localhost:11434/v1`; override its
+`baseUrl` in settings for a remote host, and set its `contextWindow` to match
+the model you pulled if you want auto-compaction (unset, it never compacts).
+Any other OpenAI-compatible endpoint (DeepSeek, llama.cpp, a proxy…) can be
 added as a custom provider — via `/config` → `custom…`, or directly in
 settings.
 

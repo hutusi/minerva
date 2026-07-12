@@ -72,6 +72,16 @@ export const BUILTIN_PROVIDERS: ProviderRegistry = {
     models: ["qwen-plus", "qwen-max", "qwen-turbo", "glm-5.2"],
     contextWindow: 131_072,
   },
+  // Local Ollama via its OpenAI-compatible endpoint. Keyless by default; no
+  // defaultModel/models (whatever is pulled locally is unknowable here) and no
+  // contextWindow (it varies per pulled model, so auto-compaction stays inert
+  // until providers.ollama.contextWindow is set in settings).
+  ollama: {
+    kind: "openai-compatible",
+    apiKeyEnv: "OLLAMA_API_KEY",
+    baseURL: "http://localhost:11434/v1",
+    requiresApiKey: false,
+  },
 };
 
 /** A provider entry as written in settings.json. */

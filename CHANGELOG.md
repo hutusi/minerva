@@ -6,6 +6,13 @@ All notable changes to Minerva are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Built-in `ollama` provider: keyless OpenAI-compatible endpoint at
+  `http://localhost:11434/v1` (`ollama/<model>`). No default model or
+  context window is assumed — locally pulled models vary — so
+  auto-compaction stays inert until `providers.ollama.contextWindow` is
+  set; `baseUrl` is overridable in settings for a remote host.
+
 ## [0.2.0] — 2026-07-12
 
 ### Added
