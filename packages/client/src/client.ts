@@ -18,6 +18,7 @@ import {
   type SessionPromptResult,
   type SessionSummary,
   type SessionsListResult,
+  type SessionTaskUpdateParams,
   type SessionUpdate,
   type SessionUpdateBatchParams,
   type SessionUpdateParams,
@@ -77,6 +78,12 @@ export class MinervaClient {
     this.#connection.handleNotification(CLIENT_METHODS.sessionUsage, (params) => {
       const { sessionId, lastTurn, cumulative } = params as SessionUsageParams;
       this.#stores.get(sessionId)?.setUsage(lastTurn, cumulative);
+    });
+    this.#connection.handleNotification(CLIENT_METHODS.sessionTaskUpdate, (params) => {
+      // sessionId is the PARENT session; the nested update folds into the
+      // task tool item's live progress summary.
+      const { sessionId, toolCallId, update } = params as SessionTaskUpdateParams;
+      this.#stores.get(sessionId)?.applyTaskUpdate(toolCallId, update);
     });
     this.#connection.handleNotification(CLIENT_METHODS.sessionCompacted, (params) => {
       const { sessionId, summary } = params as SessionCompactedParams;

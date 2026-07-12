@@ -13,6 +13,16 @@ import type {
  * this store, so rendering differences never leak into update handling.
  */
 
+/** Live summary of a subagent's activity, shown on its task tool item. */
+export interface TaskProgress {
+  /** Child tool calls started so far. */
+  toolCalls: number;
+  /** Child tool calls that failed. */
+  failed: number;
+  /** Latest child activity — a tool title, or "thinking…" while it streams. */
+  lastActivity?: string | undefined;
+}
+
 export type ViewItem =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; streaming: boolean }
@@ -28,6 +38,8 @@ export type ViewItem =
       rawInput?: unknown;
       /** First diff block from the result, for UIs that render file changes. */
       diff?: { path: string; oldText: string | null; newText: string } | undefined;
+      /** Set on task tool calls while their subagent reports progress. */
+      task?: TaskProgress | undefined;
     }
   | { kind: "plan"; entries: PlanEntry[] }
   | { kind: "info"; text: string }
@@ -114,6 +126,26 @@ export class SessionStore {
     this.#set({ ...this.#viewModel, currentModeId: modeId });
   }
 
+  /**
+   * Reduce a subagent's nested update (minerva/session/task_update) into the
+   * compact live summary on its task tool item. Deliberately a status line,
+   * not an indented transcript — the full-fidelity stream stays on the wire
+   * for frontends that want more, while transcript UIs get one glanceable
+   * line. Chunk spam is identity-guarded so it can't churn renders.
+   */
+  applyTaskUpdate(toolCallId: string, update: SessionUpdate): void {
+    const current = this.#viewModel.items.find(
+      (item): item is Extract<ViewItem, { kind: "tool" }> =>
+        item.kind === "tool" && item.toolCallId === toolCallId,
+    );
+    if (!current) return;
+    const next = reduceTaskProgress(current.task, update);
+    if (next === current.task) return;
+    const items = [...this.#viewModel.items];
+    updateToolCallInto(items, toolCallId, (item) => ({ ...item, task: next }));
+    this.#set({ ...this.#viewModel, items });
+  }
+
   /** Latest wins; a resume announcement carries no lastTurn and clears it. */
   setUsage(lastTurn: TokenUsage | undefined, cumulative: TokenUsage): void {
     this.#set({ ...this.#viewModel, usage: { lastTurn, cumulative } });
@@ -180,6 +212,28 @@ function reduceInto(items: ViewItem[], update: SessionUpdate): StatusPatch | und
       return { modeId: update.currentModeId };
     case "usage_update":
       return { context: { used: update.used, size: update.size } };
+  }
+}
+
+/** Returns the SAME object when the update changes nothing, so the caller
+ * can skip the clone+notify (child streams arrive delta by delta). */
+function reduceTaskProgress(
+  task: TaskProgress | undefined,
+  update: SessionUpdate,
+): TaskProgress | undefined {
+  const current = task ?? { toolCalls: 0, failed: 0 };
+  switch (update.sessionUpdate) {
+    case "tool_call":
+      return { ...current, toolCalls: current.toolCalls + 1, lastActivity: update.title };
+    case "tool_call_update":
+      return update.status === "failed" ? { ...current, failed: current.failed + 1 } : task;
+    case "agent_message_chunk":
+    case "agent_thought_chunk":
+      return current.lastActivity === "thinking…"
+        ? task
+        : { ...current, lastActivity: "thinking…" };
+    default:
+      return task;
   }
 }
 
