@@ -132,10 +132,24 @@ crossed 80% of it, the next `session/prompt` runs a compaction turn first. Manua
 notification. A `minerva/session/usage` notification for the summarization
 turn's spend precedes it.
 
+### `minerva/session/task_update` *(notification)*
+Params `{ sessionId, toolCallId, childSessionId, update }`: a subagent's raw
+`SessionUpdate`, re-scoped to the PARENT session (`sessionId`) and the task
+tool call that spawned it (`toolCallId`). Full fidelity on purpose — the wire
+shape stays stable while each frontend decides how much of the nested stream
+to render (the CLI shows a collapsed status line under the task tool call). A
+client that doesn't handle the method still sees the task as an ordinary
+`tool_call` → `tool_call_update` pair on `session/update`; the child's own
+transcript is persisted in its child session log (`session.created` records
+`parent`), and child sessions are excluded from `minerva/sessions/list`.
+
 ### `session/request_permission` *(kernel → frontend request)*
 Params `{ sessionId, toolCall: { toolCallId, title, kind, rawInput }, options }`
 where `options` are `{ optionId, name, kind }`, kinds
-`allow_once | allow_always | reject_once | reject_always`. Result:
+`allow_once | allow_always | reject_once | reject_always`. When the request
+originates from a subagent's tool call, `sessionId` is the PARENT session and
+an additive `taskToolCallId` names the parent's task tool call, so frontends
+can attribute the prompt (generic ACP clients ignore it). Result:
 
 ```json
 { "outcome": { "outcome": "selected", "optionId": "allow" } }
