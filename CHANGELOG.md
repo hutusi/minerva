@@ -18,6 +18,11 @@ All notable changes to Minerva are documented here. The format follows
   cancels the turn) plus a preview of what the call will do — the command
   for execute tools, a line diff for edits, all-added content for new
   files, the URL for fetches.
+- CLI input history and slash autocomplete: ↑/↓ recall prior inputs (with
+  the in-progress draft stashed and restored), persisted across runs to
+  `<dataDir>/history.jsonl` (last 500, file mode 0600). Typing `/prefix`
+  opens a dropdown of built-in commands and skills — ↑/↓ to select, tab or
+  enter to complete.
 - CLI polish: an animated busy spinner with elapsed seconds replaces the
   static "working…" line; frontend failures render as red `✖` error items
   distinct from dim info notices; the usage footer becomes a status footer

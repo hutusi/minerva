@@ -457,6 +457,51 @@ describe("TUI (ink-testing-library, full stack)", () => {
     ui.unmount();
   }, 20_000);
 
+  test("up-arrow recalls submitted input into the composer", async () => {
+    const ui = renderTui([[{ type: "text-delta", text: "ok one" }, FINISH_STOP]]);
+    await ready(ui);
+
+    await type(ui, "remember me");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("ok one"), "turn done");
+    await Bun.sleep(50);
+    ui.stdin.write("[A");
+    // Twice in the frame: once as the transcript echo, once in the composer.
+    await waitFor(
+      () => (ui.lastFrame() ?? "").split("remember me").length - 1 >= 2,
+      "history recalled",
+    );
+    ui.unmount();
+  }, 20_000);
+
+  test("/he opens the dropdown and tab completes the command", async () => {
+    const ui = renderTui([]);
+    await ready(ui);
+
+    await Bun.sleep(50);
+    ui.stdin.write("/he");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("❯ /help"), "dropdown");
+    expect(ui.lastFrame()).toContain("show help");
+    ui.stdin.write("\t");
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("❯ /help"), "dropdown closed");
+    expect(ui.lastFrame()).toContain("> /help");
+    ui.unmount();
+  }, 20_000);
+
+  test("enter completes the highlighted suggestion instead of submitting", async () => {
+    const ui = renderTui([]);
+    await ready(ui);
+
+    await Bun.sleep(50);
+    ui.stdin.write("/he");
+    await waitFor(() => (ui.lastFrame() ?? "").includes("❯ /help"), "dropdown");
+    await pressEnter(ui);
+    await waitFor(() => !(ui.lastFrame() ?? "").includes("❯ /help"), "completed, not submitted");
+    expect(ui.lastFrame()).not.toContain("/compact"); // help output absent
+    await pressEnter(ui);
+    await waitFor(() => (ui.lastFrame() ?? "").includes("/compact"), "second enter submits");
+    ui.unmount();
+  }, 20_000);
+
   test("a failed command renders as a red ✖ error item", async () => {
     const ui = renderTui([]);
     await ready(ui);

@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
 import {
   createKernel,
@@ -140,6 +142,38 @@ const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, d
   requiresApiKey: def.requiresApiKey,
 }));
 
+// Input history is frontend-local state (like Ink itself), so it lives here
+// rather than behind the protocol: one JSONL file per data dir, best-effort.
+const historyPath = join(dataDir, "history.jsonl");
+function loadHistory(): string[] {
+  try {
+    return readFileSync(historyPath, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          const parsed = JSON.parse(line) as { text?: unknown };
+          return typeof parsed.text === "string" ? [parsed.text] : [];
+        } catch {
+          return []; // torn/foreign line — skip it, keep the rest
+        }
+      })
+      .slice(-500);
+  } catch {
+    return [];
+  }
+}
+const appendHistory = (text: string) => {
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    appendFileSync(historyPath, `${JSON.stringify({ text, at: new Date().toISOString() })}\n`, {
+      mode: 0o600,
+    });
+  } catch {
+    // History is a convenience; persistence failures must not break input.
+  }
+};
+
 // The CLI embeds the kernel, but only across the protocol's in-proc
 // transport — the same messages a Tauri sidecar or remote kernel would see.
 const [clientTransport, kernelTransport] = createInProcTransportPair();
@@ -159,6 +193,8 @@ const app = render(
     resume={resume}
     providers={providerChoices}
     needsConfig={missingRequiredKey}
+    initialHistory={loadHistory()}
+    onHistoryAppend={appendHistory}
   />,
 );
 await app.waitUntilExit();

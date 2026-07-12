@@ -11,9 +11,11 @@ import TextInput from "ink-text-input";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ConfigPanel, type ConfigResult, type ProviderChoice } from "./config-panel";
 import { clipDiff, type DiffLine, diffLines } from "./diff";
+import { InputHistory } from "./history";
 import { Markdown } from "./markdown";
 import type { PendingPermission, PermissionBridge } from "./permission-bridge";
 import { resolveSlashInput, skillsHelp } from "./slash";
+import { slashSuggestions } from "./suggest";
 
 interface AppProps {
   client: MinervaClient;
@@ -26,9 +28,23 @@ interface AppProps {
   providers: ProviderChoice[];
   /** No usable API key at startup — open the config panel instead of exiting. */
   needsConfig: boolean;
+  /** Prior inputs (oldest first) seeding up-arrow recall. */
+  initialHistory?: string[] | undefined;
+  /** Fire-and-forget persistence hook for each submitted input. */
+  onHistoryAppend?: ((text: string) => void) | undefined;
 }
 
-export function App({ client, bridge, model, cwd, resume, providers, needsConfig }: AppProps) {
+export function App({
+  client,
+  bridge,
+  model,
+  cwd,
+  resume,
+  providers,
+  needsConfig,
+  initialHistory,
+  onHistoryAppend,
+}: AppProps) {
   const [session, setSession] = useState<{ id: string; store: SessionStore } | null>(null);
   const [pending, setPending] = useState<PendingPermission | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +126,8 @@ export function App({ client, bridge, model, cwd, resume, providers, needsConfig
         model={modelRef}
         onModelChanged={setModelRef}
         initialConfigOpen={needsConfig}
+        initialHistory={initialHistory ?? []}
+        onHistoryAppend={onHistoryAppend}
       />
     </Box>
   );
@@ -143,6 +161,8 @@ function Chat({
   model,
   onModelChanged,
   initialConfigOpen,
+  initialHistory,
+  onHistoryAppend,
 }: {
   client: MinervaClient;
   session: { id: string; store: SessionStore };
@@ -154,6 +174,8 @@ function Chat({
   model: string;
   onModelChanged: (providerId: string) => void;
   initialConfigOpen: boolean;
+  initialHistory: string[];
+  onHistoryAppend: ((text: string) => void) | undefined;
 }) {
   const subscribe = useCallback(
     (listener: () => void) => session.store.subscribe(listener),
@@ -161,6 +183,8 @@ function Chat({
   );
   const viewModel = useSyncExternalStore(subscribe, () => session.store.snapshot);
   const [draft, setDraft] = useState("");
+  // One history for the whole run — it survives session switches on purpose.
+  const [history] = useState(() => new InputHistory(initialHistory));
   const [configOpen, setConfigOpen] = useState(initialConfigOpen);
   // The provider snapshot and first-run flag start from the startup values but
   // must reflect a successful /config, or the panel keeps showing a
@@ -246,6 +270,8 @@ function Chat({
     const text = value.trim();
     if (!text) return;
     setDraft("");
+    history.push(text);
+    onHistoryAppend?.(text);
     if (text.startsWith("/")) {
       runCommand(text);
       return;
@@ -319,15 +345,104 @@ function Chat({
       ) : viewModel.busy ? (
         <BusyIndicator />
       ) : (
-        <Box>
-          {viewModel.currentModeId && viewModel.currentModeId !== "default" ? (
-            <Text color="magenta">[{viewModel.currentModeId}] </Text>
-          ) : null}
-          <Text color="cyan">{"> "}</Text>
-          <TextInput value={draft} onChange={setDraft} onSubmit={submit} />
-        </Box>
+        <Composer
+          draft={draft}
+          setDraft={setDraft}
+          onSubmit={submit}
+          skills={skills}
+          history={history}
+          modeId={viewModel.currentModeId}
+        />
       )}
       <StatusFooter modeId={viewModel.currentModeId} usage={viewModel.usage} />
+    </Box>
+  );
+}
+
+/**
+ * The input line plus history recall and slash autocomplete. Mounted only
+ * while the composer slot is visible, so its useInput never competes with
+ * the permission prompt or config panel.
+ */
+function Composer({
+  draft,
+  setDraft,
+  onSubmit,
+  skills,
+  history,
+  modeId,
+}: {
+  draft: string;
+  setDraft: (value: string) => void;
+  onSubmit: (value: string) => void;
+  skills: SkillInfo[];
+  history: InputHistory;
+  modeId: string | undefined;
+}) {
+  const suggestions = slashSuggestions(draft, skills);
+  const [suggestIndex, setSuggestIndex] = useState(0);
+  // Ref mirror of suggestIndex (config-panel pattern): a ↓+enter arriving in
+  // one input batch must complete the row the user saw highlighted.
+  const suggestIndexRef = useRef(0);
+
+  const changeDraft = (value: string) => {
+    suggestIndexRef.current = 0;
+    setSuggestIndex(0);
+    setDraft(value);
+  };
+
+  useInput((_input, key) => {
+    if (suggestions.length > 0) {
+      if (key.upArrow || key.downArrow) {
+        const delta = key.upArrow ? -1 : 1;
+        suggestIndexRef.current =
+          (suggestIndexRef.current + suggestions.length + delta) % suggestions.length;
+        setSuggestIndex(suggestIndexRef.current);
+      } else if (key.tab) {
+        const chosen = suggestions[suggestIndexRef.current];
+        if (chosen) changeDraft(`/${chosen.name} `);
+      }
+      return;
+    }
+    if (key.upArrow) {
+      const entry = history.prev(draft);
+      if (entry !== null) setDraft(entry);
+    } else if (key.downArrow) {
+      const entry = history.next();
+      if (entry !== null) setDraft(entry);
+    }
+  });
+
+  const handleSubmit = (value: string) => {
+    // Enter while the dropdown is open completes instead of submitting.
+    // Handled HERE, not in a second useInput: TextInput fires onSubmit AND
+    // lets `return` reach parent hooks, so a key handler would double-fire.
+    // Recomputed from `value` so a same-batch edit can't leave a stale list.
+    const open = slashSuggestions(value, skills);
+    if (open.length > 0) {
+      const chosen = open[Math.min(suggestIndexRef.current, open.length - 1)];
+      if (chosen && value.trim() !== `/${chosen.name}`) {
+        changeDraft(`/${chosen.name} `);
+        return;
+      }
+    }
+    onSubmit(value);
+  };
+
+  return (
+    <Box flexDirection="column">
+      <Box>
+        {modeId && modeId !== "default" ? <Text color="magenta">[{modeId}] </Text> : null}
+        <Text color="cyan">{"> "}</Text>
+        <TextInput value={draft} onChange={changeDraft} onSubmit={handleSubmit} />
+      </Box>
+      {suggestions.map((suggestion, i) => (
+        <Text key={suggestion.name} {...(i === suggestIndex ? { color: "cyan" } : {})}>
+          {i === suggestIndex ? "❯ " : "  "}/{suggestion.name.padEnd(10)}
+          <Text dimColor> {suggestion.description}</Text>
+        </Text>
+      ))}
+      {suggestions.length > 0 ? <Text dimColor>↑/↓ select · tab or enter complete</Text> : null}
     </Box>
   );
 }
