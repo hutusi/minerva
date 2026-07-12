@@ -88,8 +88,10 @@ describe.if(process.platform !== "win32")("execPty", () => {
     // to bash, or [[ ]] would fail under a PTY on sh-defaulting systems
     // while working with pipes. macOS names /bin/bash in the argv directly;
     // CI's ubuntu leg exercises the $SHELL route.
+    // No ${...} in the JS string — Biome reads that as a template-literal
+    // slip; plain $VAR expansion proves bash all the same.
     const result = await defaultRuntime.execPty(
-      '[[ -n ok ]] && echo BASHISM_OK "${BASH_VERSION:+HAS_BASH}"',
+      "[[ -n ok ]] && echo BASHISM_OK; [[ -n $BASH_VERSION ]] && echo HAS_BASH",
       options(),
     );
     expect(result.exitCode).toBe(0);

@@ -62,6 +62,10 @@ export interface SessionOptions {
 export class Session {
   readonly id: string;
   readonly cwd: string;
+  /** Parent session id when this is a subagent's child session. Held on the
+   * instance so EVERY index write carries it — one dropped entry would make
+   * the child picker-visible (the list dedupes to the latest entry per id). */
+  readonly parent?: string | undefined;
   readonly messages: ProviderMessage[] = [];
   readonly permissions: PermissionEngine;
   mode: SessionModeId;
@@ -97,6 +101,7 @@ export class Session {
   ) {
     this.id = id;
     this.cwd = options.cwd;
+    this.parent = options.parent;
     this.permissions = permissions;
     this.mode = mode;
     this.#dir = projectDir(options.dataDir, options.cwd);
@@ -117,6 +122,7 @@ export class Session {
       cwd: this.cwd,
       createdAt: now(),
       preview: previewText(text),
+      ...(this.parent !== undefined ? { parent: this.parent } : {}),
     });
   }
 
@@ -212,7 +218,14 @@ export class Session {
         ? settings.defaultMode
         : DEFAULT_MODE;
 
-    const session = new Session(sessionId, options, new PermissionEngine(settings.rules), mode);
+    // Parentage comes from the LOG, not the caller: it must survive a load so
+    // no later index write (resume entry, first-preview entry) can strip it.
+    const session = new Session(
+      sessionId,
+      { ...options, ...(created.parent !== undefined ? { parent: created.parent } : {}) },
+      new PermissionEngine(settings.rules),
+      mode,
+    );
     session.messages.push(...replay.messages);
     session.todos = replay.todos;
     session.usage = replay.usage;
@@ -248,7 +261,7 @@ export class Session {
       cwd: options.cwd,
       createdAt: now(),
       ...(firstUser ? { preview: previewText(firstUser.text) } : {}),
-      ...(created.parent !== undefined ? { parent: created.parent } : {}),
+      ...(session.parent !== undefined ? { parent: session.parent } : {}),
     });
     session.append({ type: "session.resumed", provider: options.providerId, at: now() });
     return { session, replay };

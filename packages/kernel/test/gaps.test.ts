@@ -541,6 +541,29 @@ describe("session parentage (subagents)", () => {
     expect(latest?.parent).toBe(parent.id);
   });
 
+  test("a preview written after loading a message-less child keeps its parentage", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "gaps-childprev-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "gaps-childprev-data-"));
+    const opts = { cwd, dataDir, providerId: "test", runtime: defaultRuntime };
+    const parent = await Session.create(opts);
+    // Hard kill right after creation: the child log has NO user.message, so a
+    // later load leaves the first-preview write still pending.
+    const child = await Session.create({ ...opts, parent: parent.id });
+    await child.flush();
+
+    const { session: loaded } = await Session.load(child.id, opts, []);
+    // Prompting the loaded session records its first preview — the entry
+    // that used to drop parent and resurface the child in pickers.
+    await loaded.recordPreview("hello from a resumed child");
+    const entries = readFileSync(join(projectDir(dataDir, cwd), "index.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { sessionId: string; parent?: string; preview?: string });
+    const latest = entries.filter((e) => e.sessionId === child.id).at(-1);
+    expect(latest?.preview).toContain("hello from a resumed child");
+    expect(latest?.parent).toBe(parent.id);
+  });
+
   test("replay rolls a task.completed event's usage into the session total", () => {
     const replay = replayEvents(
       [
