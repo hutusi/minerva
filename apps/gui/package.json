@@ -16,6 +16,7 @@
     "@minerva/protocol": "workspace:*",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-notification": "^2",
     "dompurify": "^3",
     "marked": "^16",
     "react": "^19",

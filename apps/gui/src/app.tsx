@@ -24,12 +24,14 @@ import { ProjectTabs } from "./components/ProjectTabs";
 import { SessionBrowser } from "./components/SessionBrowser";
 import { useSessionStore } from "./hooks/use-session-store";
 import { createKernelManager, type KernelManager } from "./lib/kernel-manager";
-import { pickFolder } from "./lib/native";
+import { notify, pickFolder } from "./lib/native";
+import { decideNotification } from "./lib/notify";
 import { createTauriSidecarBridge, fetchDefaultCwd } from "./lib/sidecar-bridge";
 import { ensureTabSession } from "./lib/tab-session";
 import { deserializeTabs, EMPTY_TABS, serializeTabs, type Tab, tabsReducer } from "./lib/tabs";
 
 const TABS_KEY = "minerva.tabs.v1";
+const NOTIFY_MUTED_KEY = "minerva.notifyMuted.v1";
 
 interface Session {
   id: string;
@@ -390,6 +392,9 @@ function Chat({
 }) {
   const vm = useSessionStore(session.store);
   const [draft, setDraft] = useState("");
+  const [notifyMuted, setNotifyMuted] = useState(
+    () => localStorage.getItem(NOTIFY_MUTED_KEY) === "1",
+  );
   const scrollRef = useRef<HTMLElement>(null);
 
   // Stick-to-bottom: follow streaming output unless the reader scrolled up.
@@ -419,7 +424,17 @@ function Chat({
     const text = draft.trim();
     if (!text || vm.busy) return;
     setDraft("");
-    client.prompt(session.id, text).catch(reportError);
+    const startedAt = performance.now();
+    client.prompt(session.id, text).then((stopReason) => {
+      const decision = decideNotification({
+        stopReason,
+        focused: document.hasFocus(),
+        durationMs: performance.now() - startedAt,
+        muted: notifyMuted,
+        project: session.cwd.split("/").filter(Boolean).at(-1) ?? session.cwd,
+      });
+      if (decision) void notify(decision.title, decision.body);
+    }, reportError);
   };
 
   // Skill autocomplete: assistive only — any text, /-prefixed or not, goes to
@@ -509,14 +524,32 @@ function Chat({
           </div>
           <div className="flex items-center justify-between">
             <UsageFooter modeId={vm.currentModeId} usage={vm.usage} context={vm.context} />
-            <button
-              type="button"
-              onClick={onOpenConfig}
-              title="Model & provider settings"
-              className="ml-auto rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-secondary"
-            >
-              ⚙ model
-            </button>
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !notifyMuted;
+                  localStorage.setItem(NOTIFY_MUTED_KEY, next ? "1" : "0");
+                  setNotifyMuted(next);
+                }}
+                title={
+                  notifyMuted
+                    ? "Notifications muted — click to enable"
+                    : "Notify when a long turn finishes in the background"
+                }
+                className="rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-secondary"
+              >
+                {notifyMuted ? "🔕" : "🔔"}
+              </button>
+              <button
+                type="button"
+                onClick={onOpenConfig}
+                title="Model & provider settings"
+                className="rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-secondary"
+              >
+                ⚙ model
+              </button>
+            </div>
           </div>
         </div>
       </footer>
