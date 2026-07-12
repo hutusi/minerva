@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "dev:web": "vite",
+    "build": "tauri build",
     "build:web": "vite build",
+    "prepare-sidecar": "bun run scripts/prepare-sidecar.ts",
     "tauri": "tauri"
   },
   "dependencies": {

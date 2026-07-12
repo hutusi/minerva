@@ -11,7 +11,9 @@
     "packages/cli": {
       "entry": ["test/fixtures/*.{ts,tsx}", "scripts/*.ts"]
     },
-    "apps/gui": {}
+    "apps/gui": {
+      "entry": ["scripts/*.ts"]
+    }
   },
   "ignoreBinaries": ["expect"]
 }
