@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The webview only needs core events; the sidecar bridge is app-defined commands, which need no capability grants. No shell permissions on purpose: a compromised webview must not be able to spawn processes.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
