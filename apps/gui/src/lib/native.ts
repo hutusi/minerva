@@ -12,11 +12,16 @@ export async function pickFolder(): Promise<string | null> {
 }
 
 /** Deliver a native notification, asking the OS for permission on first use.
- * Best-effort: a denied permission is silence, never an error. */
+ * Best-effort: denial, an unsupported platform, or a plugin error are all
+ * silence, never a rejection — callers fire-and-forget this. */
 export async function notify(title: string, body: string): Promise<void> {
-  let granted = await isPermissionGranted();
-  if (!granted) {
-    granted = (await requestPermission()) === "granted";
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      granted = (await requestPermission()) === "granted";
+    }
+    if (granted) sendNotification({ title, body });
+  } catch {
+    // Silence by contract.
   }
-  if (granted) sendNotification({ title, body });
 }

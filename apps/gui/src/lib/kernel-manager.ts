@@ -28,13 +28,33 @@ export interface KernelManager {
   start(): void;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`kernel did not respond within ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        clearTimeout(timer);
+        reject(cause);
+      },
+    );
+  });
+}
+
 /**
  * Owns the kernel lifecycle on the webview side: spawn (via the bridge),
  * client construction, and crash recovery. One automatic respawn per death —
  * a kernel that dies twice in a row stays down until the user retries, so a
  * crash loop can't spin. All policy is here; the Rust side is a dumb pipe.
  */
-export function createKernelManager(bridge: SidecarBridge): KernelManager {
+export function createKernelManager(
+  bridge: SidecarBridge,
+  options: { handshakeTimeoutMs?: number } = {},
+): KernelManager {
+  const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 15_000;
   const permissions = createPermissionQueue();
   const listeners = new Set<() => void>();
   let snapshot: KernelSnapshot = {
@@ -56,13 +76,23 @@ export function createKernelManager(bridge: SidecarBridge): KernelManager {
   async function run(phase: "starting" | "restarting"): Promise<void> {
     const gen = ++generation;
     update({ phase, client: null, error: null });
+    let client: MinervaClient | null = null;
     try {
       await bridge.start();
-      const client = new MinervaClient(createSidecarTransport(bridge), {
+      const fresh = new MinervaClient(createSidecarTransport(bridge), {
         onPermissionRequest: permissions.handler,
       });
-      await client.initialize();
-      const config = await client.getConfigState();
+      client = fresh;
+      // A kernel that spawns but never answers (bad build, protocol
+      // mismatch, deadlock) must not wedge the app in "starting" forever —
+      // bound the handshake, and treat expiry like any other dead start.
+      const config = await withTimeout(
+        (async () => {
+          await fresh.initialize();
+          return await fresh.getConfigState();
+        })(),
+        handshakeTimeoutMs,
+      );
       if (gen !== generation) return; // superseded by a newer attempt
       // Note: the auto-restart allowance is NOT replenished here — only a
       // manual start() resets it. Replenishing on ready would let a kernel
@@ -70,6 +100,14 @@ export function createKernelManager(bridge: SidecarBridge): KernelManager {
       update({ phase: "ready", client, config, exitCode: null, error: null });
     } catch (cause) {
       if (gen !== generation) return; // the exit path already took over
+      // The half-connected state is unusable: drop the client and make sure
+      // no wedged process lingers behind the "down" banner.
+      try {
+        client?.close();
+      } catch {
+        // Transport already closed.
+      }
+      bridge.kill().catch(() => {});
       update({
         phase: "down",
         client: null,

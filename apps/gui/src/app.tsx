@@ -124,6 +124,8 @@ export function App() {
   const [browserOpen, setBrowserOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const ensuring = useRef(new Set<string>());
+  // Unsent composer drafts survive tab switches (Chat remounts per tab).
+  const drafts = useRef(new Map<string, string>());
 
   const client = kernel.phase === "ready" ? kernel.client : null;
   // Gate sessions on configuration: first run must store a key first.
@@ -276,11 +278,13 @@ export function App() {
         onCloseTab={closeTab}
         onAddTab={addTab}
       />
-      {activeSession && client ? (
+      {activeSession && activeTab && client ? (
         <Chat
-          key={activeTab?.id}
+          key={activeTab.id}
           client={client}
           session={activeSession}
+          initialDraft={drafts.current.get(activeTab.id) ?? ""}
+          onDraftChange={(text) => drafts.current.set(activeTab.id, text)}
           onOpenConfig={() => client.getConfigState().then(setConfigState, reportError)}
           onOpenFolder={addTab}
           onOpenSessions={() => setBrowserOpen(true)}
@@ -388,6 +392,8 @@ function KernelBanner({
 function Chat({
   client,
   session,
+  initialDraft,
+  onDraftChange,
   onOpenConfig,
   onOpenFolder,
   onOpenSessions,
@@ -396,6 +402,8 @@ function Chat({
 }: {
   client: MinervaClient;
   session: Session;
+  initialDraft: string;
+  onDraftChange: (text: string) => void;
   onOpenConfig: () => void;
   onOpenFolder: () => void;
   onOpenSessions: () => void;
@@ -403,17 +411,29 @@ function Chat({
   onSetProfile: (profile: string | null) => void;
 }) {
   const vm = useSessionStore(session.store);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraftState] = useState(initialDraft);
+  const setDraft = (text: string) => {
+    setDraftState(text);
+    onDraftChange(text);
+  };
   const [notifyMuted, setNotifyMuted] = useState(
     () => localStorage.getItem(NOTIFY_MUTED_KEY) === "1",
   );
   const scrollRef = useRef<HTMLElement>(null);
+  const didInitialScroll = useRef(false);
 
   // Stick-to-bottom: follow streaming output unless the reader scrolled up.
   // Items identity changes on every applied update, so it is the right trigger.
+  // The first paint with content (resume replay, tab switch) always jumps to
+  // the latest message — a fresh scroll container starts at the top.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || vm.items.length === 0) return;
+    if (!didInitialScroll.current) {
+      didInitialScroll.current = true;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [vm.items]);

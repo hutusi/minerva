@@ -1,6 +1,6 @@
 import type { MinervaClient } from "@minerva/client";
 import type { SessionSummary } from "@minerva/protocol";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Pick a persisted session for a project — reads the kernel's JSONL index
  * via minerva/sessions/list, so TUI-created sessions appear too. */
@@ -19,6 +19,12 @@ export function SessionBrowser({
 }) {
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Modal ownership: focus moves into the dialog on open (no trap).
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -49,7 +55,14 @@ export function SessionBrowser({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
-      <div className="flex max-h-[70vh] w-full max-w-lg flex-col rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Sessions in ${cwd}`}
+        tabIndex={-1}
+        className="flex max-h-[70vh] w-full max-w-lg flex-col rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg outline-none"
+      >
         <div className="mb-2 flex items-baseline justify-between">
           <span className="text-sm font-semibold">Sessions</span>
           <span className="truncate pl-4 text-xs text-muted-foreground">{cwd}</span>

@@ -15,13 +15,17 @@ function createFakeKernelBridge() {
   };
   const bridge = {
     starts: 0,
+    kills: 0,
     alive: true,
+    /** True = accept writes but never answer (a wedged kernel). */
+    mute: false,
     async start() {
       bridge.starts++;
       if (!bridge.alive) throw new Error("spawn failed");
     },
     async send(line: string) {
       if (!bridge.alive) throw new Error("kernel is not running");
+      if (bridge.mute) return;
       const message = JSON.parse(line) as JsonRpcRequest;
       if (!("id" in message)) return;
       if (message.method === "initialize") {
@@ -42,7 +46,9 @@ function createFakeKernelBridge() {
         respond({ jsonrpc: "2.0", id: message.id, result: null });
       }
     },
-    async kill() {},
+    async kill() {
+      bridge.kills++;
+    },
     onLine(handler: (line: string) => void) {
       lineHandlers.add(handler);
       return () => lineHandlers.delete(handler);
@@ -126,5 +132,20 @@ describe("createKernelManager", () => {
     manager.start();
     await until(() => manager.snapshot.phase === "down", "down");
     expect(manager.snapshot.error).toContain("spawn failed");
+  });
+
+  test("a hung handshake times out to down and kills the wedged kernel", async () => {
+    const bridge = createFakeKernelBridge();
+    bridge.mute = true;
+    const manager = createKernelManager(bridge, { handshakeTimeoutMs: 20 });
+    manager.start();
+    await until(() => manager.snapshot.phase === "down", "handshake timeout");
+    expect(manager.snapshot.error).toContain("did not respond");
+    expect(bridge.kills).toBe(1);
+
+    // The manual restart escape hatch works once the kernel behaves.
+    bridge.mute = false;
+    manager.start();
+    await until(() => manager.snapshot.phase === "ready", "recovery after timeout");
   });
 });

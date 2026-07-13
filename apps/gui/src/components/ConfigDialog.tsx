@@ -3,7 +3,7 @@ import type {
   ConfigSetModelParams,
   ConfigStateResult,
 } from "@minerva/protocol";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { buildSetModelParams, splitModelRef } from "../lib/config-form";
 
 const CUSTOM = "custom…";
@@ -55,6 +55,25 @@ export function ConfigDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Modal ownership: focus starts on the provider select, and Escape closes
+  // when there is something to fall back to (never on first run).
+  const providerSelectRef = useRef<HTMLSelectElement>(null);
+  useEffect(() => {
+    providerSelectRef.current?.focus();
+  }, []);
+  useEffect(() => {
+    if (!onClose) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [onClose]);
+
   const isCustom = providerName === CUSTOM;
   const effectiveName = isCustom ? customName.trim() : providerName;
   const effectiveModel = model.trim() || selected?.defaultModel || "";
@@ -84,7 +103,12 @@ export function ConfigDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
-      <div className="w-full max-w-md rounded-lg border bg-popover p-5 text-popover-foreground shadow-lg">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Model and provider settings"
+        className="w-full max-w-md rounded-lg border bg-popover p-5 text-popover-foreground shadow-lg"
+      >
         <div className="text-sm font-semibold">Model &amp; provider</div>
         <div className="mt-0.5 text-xs text-muted-foreground">
           current: {state.model} · stored in ~/.minerva/settings.json
@@ -95,6 +119,7 @@ export function ConfigDialog({
         </label>
         <select
           id="cfg-provider"
+          ref={providerSelectRef}
           value={providerName}
           onChange={(event) => {
             setProviderName(event.target.value);

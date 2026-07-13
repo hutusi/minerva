@@ -4,7 +4,7 @@ import type {
   RequestPermissionParams,
   RequestPermissionResult,
 } from "@minerva/protocol";
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type { PermissionQueue } from "../lib/permission-queue";
 import { DiffView } from "./chat/DiffView";
 
@@ -36,18 +36,42 @@ export function PermissionDialog({ queue }: { queue: PermissionQueue }) {
     [current],
   );
 
+  // Own the keyboard while open: focus lands on the first option so Enter
+  // confirms it, and handled keys never leak into whatever sat behind the
+  // modal (no preventDefault would insert the hotkey character into a
+  // focused textarea AND resolve the request at once).
+  const firstOptionRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (current) firstOptionRef.current?.focus();
+  }, [current]);
+
   useEffect(() => {
     if (!current) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         // ACP cancelled outcome: abandon the whole turn, not just this call.
-        respond({ outcome: { outcome: "cancelled" } });
+        event.preventDefault();
         event.stopPropagation();
+        respond({ outcome: { outcome: "cancelled" } });
+        return;
+      }
+      // Hotkeys must never double as text input: if focus escaped back into
+      // an editable element (there is no focus trap), typing wins.
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
         return;
       }
       const kind = HOTKEYS[event.key.toLowerCase()];
       const option = kind && current.request.options.find((o) => o.kind === kind);
-      if (option) respond({ outcome: { outcome: "selected", optionId: option.optionId } });
+      if (option) {
+        event.preventDefault();
+        event.stopPropagation();
+        respond({ outcome: { outcome: "selected", optionId: option.optionId } });
+      }
     };
     // Capture phase so the chat's own Esc-cancels-turn handler never races.
     window.addEventListener("keydown", onKeyDown, true);
@@ -59,7 +83,12 @@ export function PermissionDialog({ queue }: { queue: PermissionQueue }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
-      <div className="w-full max-w-lg rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Permission required: ${toolCall.title}`}
+        className="w-full max-w-lg rounded-lg border bg-popover p-4 text-popover-foreground shadow-lg"
+      >
         <div className="text-sm font-semibold text-yellow-600 dark:text-yellow-400">
           Permission required{taskToolCallId ? " (from subagent)" : ""}
           {depth > 1 ? ` · ${depth - 1} more waiting` : ""}
@@ -67,11 +96,12 @@ export function PermissionDialog({ queue }: { queue: PermissionQueue }) {
         <div className="mt-1 text-sm font-medium">{toolCall.title}</div>
         <PermissionPreview toolCall={toolCall} />
         <div className="mt-4 flex flex-wrap justify-end gap-2">
-          {options.map((option) => {
+          {options.map((option, index) => {
             const hotkey = hotkeyFor(option.kind);
             return (
               <button
                 key={option.optionId}
+                ref={index === 0 ? firstOptionRef : undefined}
                 type="button"
                 onClick={() =>
                   respond({ outcome: { outcome: "selected", optionId: option.optionId } })

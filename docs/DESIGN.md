@@ -1,9 +1,10 @@
 # Minerva — Design Record
 
 Minerva is a cross-platform, model-agnostic code agent: a headless kernel with
-multiple frontends (CLI now, GUI later). It is a daily-driver tool first and the
-foundation for an enterprise product later. This document records the v0.1
-design decisions and the reasoning behind them.
+multiple frontends (Ink CLI and Tauri desktop GUI). It is a daily-driver tool
+first and the foundation for an enterprise product later. This document records
+the design decisions and the reasoning behind them, starting from v0.1; later
+milestones append to it (see M2 below).
 
 The central constraint that shaped the architecture: **Tauri 2's backend is
 Rust, so a TypeScript kernel can never run in-process in the GUI** — the kernel

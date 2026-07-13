@@ -23,15 +23,26 @@ const build = Bun.spawnSync(["bun", "run", "build:release"], {
 if (!build.success) process.exit(build.exitCode || 1);
 
 // The triple must match what the tauri CLI expects for this host, and rustc
-// is authoritative (and always present — tauri build needs it too).
-const rustc = Bun.spawnSync(["rustc", "-vV"]);
-const triple = rustc.stdout
-  .toString()
-  .split("\n")
-  .find((line) => line.startsWith("host: "))
-  ?.slice("host: ".length)
-  .trim();
-if (!rustc.success || !triple) {
+// is authoritative (and always present — tauri build needs it too). Guard
+// the whole probe: a missing rustc can throw from spawnSync or leave stdout
+// unset, and either must fail with the hint rather than a stack trace.
+const triple = (() => {
+  try {
+    const rustc = Bun.spawnSync(["rustc", "-vV"]);
+    if (!rustc.success || !rustc.stdout) return null;
+    return (
+      rustc.stdout
+        .toString()
+        .split("\n")
+        .find((line) => line.startsWith("host: "))
+        ?.slice("host: ".length)
+        .trim() ?? null
+    );
+  } catch {
+    return null;
+  }
+})();
+if (!triple) {
   console.error("cannot determine host target triple: is rustc installed?");
   process.exit(1);
 }
