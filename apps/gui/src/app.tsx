@@ -26,6 +26,7 @@ import { useSessionStore } from "./hooks/use-session-store";
 import { createKernelManager, type KernelManager } from "./lib/kernel-manager";
 import { notify, pickFolder } from "./lib/native";
 import { decideNotification } from "./lib/notify";
+import { createSessionSlots } from "./lib/session-slots";
 import { createTauriSidecarBridge, fetchDefaultCwd } from "./lib/sidecar-bridge";
 import { ensureTabSession, isStaleSessionError } from "./lib/tab-session";
 import { deserializeTabs, EMPTY_TABS, serializeTabs, type Tab, tabsReducer } from "./lib/tabs";
@@ -119,6 +120,37 @@ export function App() {
   const ensuring = useRef(new Set<string>());
   // Unsent composer drafts survive tab switches (Chat remounts per tab).
   const drafts = useRef(new Map<string, string>());
+  // Async install results commit only while their token is current — a newer
+  // switch, a closed tab, or a replaced client makes them stale (discarded
+  // AND closed, so no invisible client registration survives).
+  const slots = useRef(createSessionSlots());
+  // Authoritative sessions map, updated synchronously at commit time; React
+  // state mirrors it for rendering. Completion handlers must never read the
+  // render-closure `sessions` — it can lag behind a just-committed install.
+  const sessionsRef = useRef<ReadonlyMap<string, Session>>(new Map());
+
+  // Stable (touches only refs + the stable state setter) so effects can
+  // depend on it without re-running.
+  const commitSession = useCallback(
+    (tabId: string, session: Session, activeClient: MinervaClient) => {
+      const previous = sessionsRef.current.get(tabId);
+      if (previous && previous.id !== session.id) {
+        if (previous.store.snapshot.busy) activeClient.cancel(previous.id);
+        activeClient.closeSession(previous.id);
+      }
+      const next = new Map(sessionsRef.current).set(tabId, session);
+      sessionsRef.current = next;
+      setSessions(next);
+    },
+    [],
+  );
+
+  const removeSession = (tabId: string) => {
+    const next = new Map(sessionsRef.current);
+    next.delete(tabId);
+    sessionsRef.current = next;
+    setSessions(next);
+  };
 
   const client = kernel.phase === "ready" ? kernel.client : null;
   // Gate sessions on configuration: first run must store a key first.
@@ -126,11 +158,14 @@ export function App() {
   const activeTab = tabs.tabs.find((tab) => tab.id === tabs.activeTabId) ?? null;
   const activeSession = activeTab ? (sessions.get(activeTab.id) ?? null) : null;
 
-  // A restart hands out a FRESH client; every store from the old one is dead.
+  // A restart hands out a FRESH client; every store from the old one is dead,
+  // and any in-flight install against it must fail its token check.
   // biome-ignore lint/correctness/useExhaustiveDependencies: client identity IS the trigger
   useEffect(() => {
-    setSessions(new Map());
+    sessionsRef.current = new Map();
+    setSessions(sessionsRef.current);
     ensuring.current.clear();
+    slots.current.invalidateAll();
   }, [client]);
 
   useEffect(() => {
@@ -160,6 +195,7 @@ export function App() {
     if (sessions.has(activeTab.id) || ensuring.current.has(activeTab.id)) return;
     ensuring.current.add(activeTab.id);
     const tab = activeTab;
+    const token = slots.current.begin(tab.id);
     ensureTabSession(
       {
         load: (sessionId, cwd) => resumeSession(client, sessionId, cwd),
@@ -170,13 +206,20 @@ export function App() {
     ).then(
       ({ session }) => {
         ensuring.current.delete(tab.id);
-        setSessions((prev) => new Map(prev).set(tab.id, session));
+        // Superseded (tab closed, user switched, client replaced): the tab
+        // moved on — detach the orphan instead of installing it invisibly.
+        if (!slots.current.isCurrent(tab.id, token)) {
+          client.closeSession(session.id);
+          return;
+        }
+        commitSession(tab.id, session, client);
         if (session.id !== tab.sessionId) {
           dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
         }
       },
       (cause: unknown) => {
         ensuring.current.delete(tab.id);
+        if (!slots.current.isCurrent(tab.id, token)) return; // nobody's waiting
         const folder = tab.cwd.split("/").filter(Boolean).at(-1) ?? tab.cwd;
         const message = cause instanceof Error ? cause.message : String(cause);
         setNotice(
@@ -184,7 +227,7 @@ export function App() {
         );
       },
     );
-  }, [configReady, client, activeTab, sessions]);
+  }, [configReady, client, activeTab, sessions, commitSession]);
 
   const reportError = (cause: unknown) => {
     const message = cause instanceof Error ? cause.message : String(cause);
@@ -192,22 +235,25 @@ export function App() {
     else setNotice(message);
   };
 
-  /** Replace the active tab's session (browser pick / new session). */
+  /** Replace the active tab's session (browser pick / new session). Rapid
+   * switches resolve in USER order, not completion order: each begins a
+   * token, and a superseded result is closed instead of committed. */
   const switchWithinTab = (tab: Tab, next: Promise<Session>) => {
+    const activeClient = client;
+    const token = slots.current.begin(tab.id);
     next.then(
       (session) => {
-        const previous = sessions.get(tab.id);
-        if (previous && previous.id !== session.id && client) {
-          if (previous.store.snapshot.busy) client.cancel(previous.id);
-          client.closeSession(previous.id);
-        }
-        setSessions((prev) => new Map(prev).set(tab.id, session));
-        dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
         setBrowserOpen(false);
+        if (!slots.current.isCurrent(tab.id, token)) {
+          activeClient?.closeSession(session.id);
+          return;
+        }
+        if (activeClient) commitSession(tab.id, session, activeClient);
+        dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
       },
       (cause: unknown) => {
         setBrowserOpen(false);
-        reportError(cause);
+        if (slots.current.isCurrent(tab.id, token)) reportError(cause);
       },
     );
   };
@@ -219,16 +265,14 @@ export function App() {
   };
 
   const closeTab = (tabId: string) => {
-    const session = sessions.get(tabId);
+    // Outstanding installs for this tab are stale from here on.
+    slots.current.invalidate(tabId);
+    const session = sessionsRef.current.get(tabId);
     if (session && client) {
       if (session.store.snapshot.busy) client.cancel(session.id);
       client.closeSession(session.id);
     }
-    setSessions((prev) => {
-      const next = new Map(prev);
-      next.delete(tabId);
-      return next;
-    });
+    removeSession(tabId);
     dispatch({ type: "close", tabId });
   };
 

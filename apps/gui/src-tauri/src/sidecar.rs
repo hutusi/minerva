@@ -26,10 +26,25 @@ pub struct Running {
     generation: u64,
     child: Child,
     stdin: ChildStdin,
+    /// The stdout forwarder thread — joined during shutdown so no stray
+    /// line events can outlive an intentional kill.
+    reader: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Two locks with strictly separated roles (deadlock audit):
+/// - `slot` is fine-grained: taken briefly by send, the reader thread's EOF
+///   path, and start/kill state swaps. Never held across a wait.
+/// - `lifecycle` serializes whole start/kill operations: a start during a
+///   shutdown waits until the old process is reaped AND its forwarder is
+///   joined, so a replacement can never race a draining kernel (webview
+///   reloads invoke start at any time). The reader thread NEVER takes
+///   `lifecycle`, and shutdown never holds `slot` while joining the reader —
+///   so the join cannot deadlock, even for a crash racing a kill.
 #[derive(Default)]
-pub struct SidecarState(Mutex<Option<Running>>);
+pub struct SidecarState {
+    slot: Mutex<Option<Running>>,
+    lifecycle: tauri::async_runtime::Mutex<()>,
+}
 
 #[derive(Clone, Serialize)]
 struct ExitPayload {
@@ -40,7 +55,7 @@ struct ExitPayload {
 /// mid-update; the Option inside is still coherent enough to take/replace.
 fn lock(state: &SidecarState) -> std::sync::MutexGuard<'_, Option<Running>> {
     state
-        .0
+        .slot
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -74,7 +89,11 @@ fn kernel_command() -> Result<Command, String> {
 }
 
 #[tauri::command]
-pub fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<(), String> {
+pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<(), String> {
+    // Wait out any in-flight shutdown before touching the slot: without this,
+    // a webview-reload start could spawn a replacement while the old kernel
+    // is still draining and its forwarder still emitting into our events.
+    let _lifecycle = state.lifecycle.lock().await;
     let mut guard = lock(&state);
     if let Some(running) = guard.as_mut() {
         // Still alive → idempotent no-op (webview reloads call start again).
@@ -109,7 +128,7 @@ pub fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<(
 
     let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
     let handle = app.clone();
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         let mut reader = stdout;
         let mut buffer: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 64 * 1024];
@@ -155,6 +174,7 @@ pub fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<(
         generation,
         child,
         stdin,
+        reader: Some(reader),
     });
     Ok(())
 }
@@ -185,20 +205,35 @@ const SHUTDOWN_GRACE_MS: u64 = 7_000;
 fn shutdown_gracefully(mut running: Running) {
     drop(running.stdin);
     let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_GRACE_MS);
+    let mut reaped = false;
     while Instant::now() < deadline {
         if let Ok(Some(_)) = running.child.try_wait() {
             eprintln!("[minerva gui] kernel exited gracefully on stdin close");
-            return;
+            reaped = true;
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    eprintln!("[minerva gui] kernel shutdown grace expired; killing");
-    let _ = running.child.kill();
-    let _ = running.child.wait();
+    if !reaped {
+        eprintln!("[minerva gui] kernel shutdown grace expired; killing");
+        let _ = running.child.kill();
+        let _ = running.child.wait();
+    }
+    // Drain the forwarder before declaring the shutdown complete: it exits on
+    // pipe EOF (bounded — the process is dead), and joining it guarantees no
+    // stray line event from this kernel can reach a successor's listeners.
+    // The EOF path finds the slot empty (we hold the Running) and returns
+    // without taking any long-held lock, so this join cannot deadlock.
+    if let Some(reader) = running.reader.take() {
+        let _ = reader.join();
+    }
 }
 
 #[tauri::command]
 pub async fn sidecar_kill(state: State<'_, SidecarState>) -> Result<(), String> {
+    // Hold the lifecycle lock for the whole shutdown: a concurrent start
+    // queues behind it instead of spawning a replacement mid-drain.
+    let _lifecycle = state.lifecycle.lock().await;
     let taken = lock(&state).take();
     if let Some(running) = taken {
         // Off the command thread: the grace wait can block for seconds, and
@@ -210,9 +245,11 @@ pub async fn sidecar_kill(state: State<'_, SidecarState>) -> Result<(), String> 
     Ok(())
 }
 
-/// Exit-time cleanup, called from the RunEvent::Exit hook.
+/// Exit-time cleanup, called from the RunEvent::Exit hook. Blocking the main
+/// thread is the point here — quit must not complete before the drain does.
 pub fn kill_sidecar(app: &AppHandle) {
     let state = app.state::<SidecarState>();
+    let _lifecycle = tauri::async_runtime::block_on(state.lifecycle.lock());
     let taken = lock(&state).take();
     if let Some(running) = taken {
         shutdown_gracefully(running);
