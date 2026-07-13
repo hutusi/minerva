@@ -8,20 +8,24 @@ export interface TabSessionOps<S> {
 
 /**
  * Materialize the session a tab should show: resume its persisted session,
- * falling back to a fresh one when the resume fails (deleted log, session id
- * from another data dir, kernel restarted mid-life). The fallback is what
- * makes crash recovery and stale persistence self-healing — a tab can always
- * open, worst case as a new session in the same project.
+ * falling back to a fresh one ONLY when `isStale` says the id itself is dead
+ * (deleted log, session from another data dir). Any other load failure —
+ * a prompt still running in the session, pending writes that failed to
+ * flush, transient I/O — rethrows: the kernel throws those loudly precisely
+ * so the previous conversation is never silently replaced by a blank one.
+ * The caller surfaces the error, and re-activating the tab retries.
  */
 export async function ensureTabSession<S>(
   ops: TabSessionOps<S>,
   tab: Tab,
+  isStale: (error: unknown) => boolean,
 ): Promise<{ session: S; resumed: boolean }> {
   if (tab.sessionId) {
     try {
       return { session: await ops.load(tab.sessionId, tab.cwd), resumed: true };
-    } catch {
-      // Fall through to a fresh session in the tab's project.
+    } catch (error) {
+      if (!isStale(error)) throw error;
+      // Dead id — fall through to a fresh session in the tab's project.
     }
   }
   return { session: await ops.create(tab.cwd), resumed: false };

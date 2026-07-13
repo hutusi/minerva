@@ -1,10 +1,11 @@
 import type { MinervaClient, SessionStore } from "@minerva/client";
-import type {
-  ConfigSetModelParams,
-  ConfigStateResult,
-  SessionModeState,
-  SessionSummary,
-  SkillInfo,
+import {
+  type ConfigSetModelParams,
+  type ConfigStateResult,
+  RpcError,
+  type SessionModeState,
+  type SessionSummary,
+  type SkillInfo,
 } from "@minerva/protocol";
 import {
   useCallback,
@@ -32,6 +33,12 @@ import { deserializeTabs, EMPTY_TABS, serializeTabs, type Tab, tabsReducer } fro
 
 const TABS_KEY = "minerva.tabs.v1";
 const NOTIFY_MUTED_KEY = "minerva.notifyMuted.v1";
+
+/** Only a dead session id may silently fall back to a fresh session; every
+ * other load failure (prompt still running, failed flush, transient I/O)
+ * must surface — the kernel throws those loudly by design. */
+const isStaleSession = (error: unknown): boolean =>
+  error instanceof RpcError && error.message.startsWith("unknown session");
 
 interface Session {
   id: string;
@@ -164,6 +171,7 @@ export function App() {
         create: (cwd) => createSession(client, cwd),
       },
       tab,
+      isStaleSession,
     ).then(
       ({ session }) => {
         ensuring.current.delete(tab.id);
@@ -174,7 +182,11 @@ export function App() {
       },
       (cause: unknown) => {
         ensuring.current.delete(tab.id);
-        setNotice(cause instanceof Error ? cause.message : String(cause));
+        const folder = tab.cwd.split("/").filter(Boolean).at(-1) ?? tab.cwd;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setNotice(
+          `Couldn't open the session in ${folder}: ${message} — switch away and back to retry.`,
+        );
       },
     );
   }, [configReady, client, activeTab, sessions]);

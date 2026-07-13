@@ -4,6 +4,7 @@ import type {
   ConfigStateResult,
 } from "@minerva/protocol";
 import { useMemo, useState } from "react";
+import { buildSetModelParams, splitModelRef } from "../lib/config-form";
 
 const CUSTOM = "custom…";
 
@@ -36,10 +37,12 @@ export function ConfigDialog({
   /** Absent on first run: there is nothing to fall back to yet. */
   onClose?: (() => void) | undefined;
 }) {
-  const currentProvider = state.model.includes("/") ? state.model.split("/")[0] : "anthropic";
+  // Provider = before the FIRST slash; the model may itself contain slashes.
+  const current = splitModelRef(state.model);
+  const currentProvider = current.provider ?? "anthropic";
   const names = state.providers.map((p) => p.name);
   const [providerName, setProviderName] = useState(
-    currentProvider && names.includes(currentProvider) ? currentProvider : (names[0] ?? CUSTOM),
+    names.includes(currentProvider) ? currentProvider : (names[0] ?? CUSTOM),
   );
   const [customName, setCustomName] = useState("");
   const [customBaseUrl, setCustomBaseUrl] = useState("");
@@ -48,9 +51,7 @@ export function ConfigDialog({
     () => state.providers.find((p) => p.name === providerName),
     [state.providers, providerName],
   );
-  const [model, setModel] = useState(() =>
-    currentProvider === providerName ? (state.model.split("/")[1] ?? "") : "",
-  );
+  const [model, setModel] = useState(() => (currentProvider === providerName ? current.model : ""));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,15 +66,13 @@ export function ConfigDialog({
 
   const submit = () => {
     if (!canSubmit) return;
-    const modelRef = effectiveModel.includes("/")
-      ? effectiveModel
-      : `${effectiveName}/${effectiveModel}`;
-    const key = apiKey.trim();
-    const params: ConfigSetModelParams = {
-      modelRef,
-      ...(isCustom ? { provider: { name: effectiveName, baseUrl: customBaseUrl.trim() } } : {}),
-      ...(key ? { apiKey: key } : {}),
-    };
+    const params = buildSetModelParams({
+      providerName: effectiveName,
+      isCustom,
+      baseUrl: customBaseUrl.trim(),
+      apiKey: apiKey.trim(),
+      model: effectiveModel,
+    });
     setBusy(true);
     setError(null);
     onSubmit(params)

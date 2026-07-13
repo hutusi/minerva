@@ -24,8 +24,8 @@ export function SessionBrowser({
     let cancelled = false;
     client.listSessions(cwd).then(
       (list) => {
-        // Newest first — the index appends per use.
-        if (!cancelled) setSessions([...list].reverse());
+        // The kernel already returns newest-first (capped at 20).
+        if (!cancelled) setSessions(list);
       },
       (cause: unknown) => {
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));

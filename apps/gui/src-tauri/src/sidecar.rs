@@ -11,6 +11,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -153,12 +154,35 @@ pub fn sidecar_send(line: String, state: State<'_, SidecarState>) -> Result<(), 
         .map_err(|e| format!("write to kernel failed: {e}"))
 }
 
+/// The kernel drains in-flight work for up to 5s (kernel shutdownDrainMs)
+/// and then flushes session logs; give it that plus margin before killing.
+const SHUTDOWN_GRACE_MS: u64 = 7_000;
+
+/// Durability-preserving shutdown: closing stdin is the kernel's shutdown
+/// signal — the acp host runs kernel.close() (cancel, drain, flush session
+/// logs) on EOF and exits on its own. SIGKILL is the fallback, not the plan;
+/// killing first would lose pending session events and in-progress turns.
+/// Callers must NOT hold the state lock — this can block for the full grace.
+fn shutdown_gracefully(mut running: Running) {
+    drop(running.stdin);
+    let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_GRACE_MS);
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = running.child.try_wait() {
+            eprintln!("[minerva gui] kernel exited gracefully on stdin close");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    eprintln!("[minerva gui] kernel shutdown grace expired; killing");
+    let _ = running.child.kill();
+    let _ = running.child.wait();
+}
+
 #[tauri::command]
 pub fn sidecar_kill(state: State<'_, SidecarState>) -> Result<(), String> {
-    let mut guard = lock(&state);
-    if let Some(mut running) = guard.take() {
-        let _ = running.child.kill();
-        let _ = running.child.wait();
+    let taken = lock(&state).take();
+    if let Some(running) = taken {
+        shutdown_gracefully(running);
     }
     Ok(())
 }
@@ -166,10 +190,9 @@ pub fn sidecar_kill(state: State<'_, SidecarState>) -> Result<(), String> {
 /// Exit-time cleanup, called from the RunEvent::Exit hook.
 pub fn kill_sidecar(app: &AppHandle) {
     let state = app.state::<SidecarState>();
-    let mut guard = lock(&state);
-    if let Some(mut running) = guard.take() {
-        let _ = running.child.kill();
-        let _ = running.child.wait();
+    let taken = lock(&state).take();
+    if let Some(running) = taken {
+        shutdown_gracefully(running);
     }
 }
 

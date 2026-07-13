@@ -1,6 +1,5 @@
 import {
   clipDiff,
-  clipLines,
   type DiffLine,
   diffLines,
   firstLines,
