@@ -98,3 +98,23 @@ D1–D15), [docs/adr/](docs/adr/) (decisions since), [CONTEXT.md](CONTEXT.md)
 [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol) before
 changing kernel or protocol behavior. The protocol version is pinned; breaking
 wire changes need a version bump and a documented migration.
+
+Coding agents get the same rules in condensed form from
+[AGENTS.md](AGENTS.md) (which Minerva itself also loads when self-hosted
+here) — keep the two consistent when conventions change.
+
+## Docs update with the change
+
+Documentation lands in the same branch as the behavior it describes — a PR
+that changes behavior and touches no doc is incomplete (the PR template asks
+for the docs impact explicitly). The mapping:
+
+- Wire surface / protocol behavior → `docs/PROTOCOL.md`
+- New boundary, lifecycle policy, or decision with rejected alternatives →
+  a new `docs/adr/` entry (plus `docs/ARCHITECTURE.md` if the map changed)
+- Invariant changes → the owning code comment AND the
+  `docs/ARCHITECTURE.md` invariants index, in the same commit
+- New or shifted domain vocabulary → `CONTEXT.md`
+- User-facing behavior → `README.md` (CHANGELOG at release time, as today)
+- Gates, workflow, test layout → this file (and `AGENTS.md` when
+  agent-relevant)
