@@ -11,7 +11,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -25,7 +25,11 @@ static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 pub struct Running {
     generation: u64,
     child: Child,
-    stdin: ChildStdin,
+    /// Shared so sends can write without holding the slot lock; the inner
+    /// mutex keeps whole frames atomic. Shutdown drops the slot's clone to
+    /// signal EOF — an in-flight blocked writer holds the pipe open a little
+    /// longer, until the grace-expiry kill breaks its write.
+    stdin: Arc<Mutex<ChildStdin>>,
     /// The stdout forwarder thread — joined during shutdown so no stray
     /// line events can outlive an intentional kill.
     reader: Option<std::thread::JoinHandle<()>>,
@@ -44,6 +48,9 @@ pub struct Running {
 pub struct SidecarState {
     slot: Mutex<Option<Running>>,
     lifecycle: tauri::async_runtime::Mutex<()>,
+    /// Serializes stdin writes in invoke-arrival order (tokio mutexes are
+    /// fair) now that sends run off the slot lock and off the main thread.
+    writes: tauri::async_runtime::Mutex<()>,
 }
 
 #[derive(Clone, Serialize)]
@@ -169,41 +176,57 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
         // replaced): shutdown_gracefully owns the reaping, and emitting an
         // exit event would make the frontend run crash recovery against a
         // kill it asked for (or worse, against the replacement child).
-        let code = {
+        // Take under the lock, but WAIT outside it — stdout can close while
+        // the process lives on, and the slot must never be hostage to that
+        // wait (the file's lock discipline: `slot` is never held across one).
+        let taken = {
             let state = handle.state::<SidecarState>();
             let mut guard = lock(&state);
             match guard.as_ref() {
-                Some(running) if running.generation == generation => {
-                    let mut running = guard.take().expect("checked Some above");
-                    running.child.wait().ok().and_then(|s| s.code())
-                }
-                _ => return,
+                Some(running) if running.generation == generation => guard.take(),
+                _ => None,
             }
         };
+        let Some(mut running) = taken else { return };
+        let code = running.child.wait().ok().and_then(|s| s.code());
         let _ = handle.emit("minerva://exit", ExitPayload { generation, code });
     });
 
     *guard = Some(Running {
         generation,
         child,
-        stdin,
+        stdin: Arc::new(Mutex::new(stdin)),
         reader: Some(reader),
     });
     Ok(generation)
 }
 
 #[tauri::command]
-pub fn sidecar_send(line: String, state: State<'_, SidecarState>) -> Result<(), String> {
-    // Holding the lock across the write serializes whole frames — two invokes
-    // can never interleave bytes on the kernel's stdin.
-    let mut guard = lock(&state);
-    let running = guard.as_mut().ok_or("kernel is not running")?;
-    running
-        .stdin
-        .write_all(line.as_bytes())
-        .and_then(|()| running.stdin.write_all(b"\n"))
-        .and_then(|()| running.stdin.flush())
-        .map_err(|e| format!("write to kernel failed: {e}"))
+pub async fn sidecar_send(line: String, state: State<'_, SidecarState>) -> Result<(), String> {
+    // Clone the stdin handle under a BRIEF slot lock; never hold `slot`
+    // across the write. A kernel that stops draining stdin fills the OS pipe
+    // buffer and blocks write_all — with the old slot-held write, that
+    // wedged kill and app exit behind it forever.
+    let stdin = {
+        let guard = lock(&state);
+        guard.as_ref().ok_or("kernel is not running")?.stdin.clone()
+    };
+    // The writes mutex is fair (FIFO), so concurrent invokes keep frame
+    // ORDER; the per-stdin mutex inside keeps frames ATOMIC; and the
+    // blocking pool keeps a stalled write off the main thread.
+    let _order = state.writes.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut stdin = stdin
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|()| stdin.write_all(b"\n"))
+            .and_then(|()| stdin.flush())
+            .map_err(|e| format!("write to kernel failed: {e}"))
+    })
+    .await
+    .map_err(|e| format!("write task failed: {e}"))?
 }
 
 /// The kernel drains in-flight work for up to 5s (kernel shutdownDrainMs)
@@ -243,11 +266,24 @@ fn shutdown_gracefully(mut running: Running) {
 }
 
 #[tauri::command]
-pub async fn sidecar_kill(state: State<'_, SidecarState>) -> Result<(), String> {
+pub async fn sidecar_kill(
+    generation: Option<u64>,
+    state: State<'_, SidecarState>,
+) -> Result<(), String> {
     // Hold the lifecycle lock for the whole shutdown: a concurrent start
     // queues behind it instead of spawning a replacement mid-drain.
     let _lifecycle = state.lifecycle.lock().await;
-    let taken = lock(&state).take();
+    let taken = {
+        let mut guard = lock(&state);
+        match (guard.as_ref(), generation) {
+            // A targeted kill for a superseded generation is a no-op: crash
+            // recovery may already have spawned a replacement, and a stale
+            // kill must not murder it (the caller's world is gone either way).
+            (Some(running), Some(gen)) if running.generation != gen => None,
+            (Some(_), _) => guard.take(),
+            (None, _) => None,
+        }
+    };
     if let Some(running) = taken {
         // Off the command thread: the grace wait can block for seconds, and
         // the caller awaits so it knows when the old kernel is really gone.

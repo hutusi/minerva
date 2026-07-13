@@ -16,6 +16,7 @@ import {
   DEFAULT_ANTHROPIC_MODEL,
   type ModelProvider,
   parseModelRef,
+  providerKeyStatuses,
   resolveApiKey,
 } from "@minerva/providers";
 import { render } from "ink";
@@ -171,23 +172,13 @@ if (parsed.args.print) {
   process.exit(code);
 }
 
-// Rows for the /config panel: every registry provider plus where (if
-// anywhere) a usable key was found for it.
-const providerChoices: ProviderChoice[] = Object.entries(registry).map(([name, def]) => ({
-  name,
-  defaultModel: def.defaultModel,
-  keyVar: def.apiKeyEnv,
-  // Blank-aware, matching resolveApiKey — an exported-but-empty env var
-  // must not display as a usable key.
-  keySource: process.env[def.apiKeyEnv]?.trim()
-    ? ("env" as const)
-    : settings.providers[name]?.apiKey?.trim()
-      ? ("settings" as const)
-      : ("none" as const),
-  baseUrl: def.baseURL,
-  models: def.models,
-  requiresApiKey: def.requiresApiKey,
-}));
+// Rows for the /config panel — providerKeyStatuses is the shared policy
+// home, also consumed by the kernel's minerva/config/state for the GUI.
+const providerChoices: ProviderChoice[] = providerKeyStatuses(
+  registry,
+  process.env,
+  storedKeys(settings),
+);
 
 // Input history is frontend-local state (like Ink itself), so it lives here
 // rather than behind the protocol: one JSONL file per data dir, best-effort,

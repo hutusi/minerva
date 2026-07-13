@@ -1,4 +1,5 @@
 import type { ViewItem } from "@minerva/client";
+import { memo } from "react";
 import { Markdown } from "./Markdown";
 import { PlanItem } from "./PlanItem";
 import { ThoughtItem } from "./ThoughtItem";
@@ -22,7 +23,10 @@ function itemKey(item: ViewItem, index: number): string {
   return `${item.kind}-${index}`;
 }
 
-function TranscriptItem({ item }: { item: ViewItem }) {
+// Memoized: the store rebuilds the items ARRAY per update but reuses the
+// untouched item objects, so identity lets streaming skip re-rendering (and
+// re-diffing) everything except the item actually changing.
+const TranscriptItem = memo(function TranscriptItem({ item }: { item: ViewItem }) {
   switch (item.kind) {
     case "user":
       return (
@@ -43,4 +47,4 @@ function TranscriptItem({ item }: { item: ViewItem }) {
     case "error":
       return <div className="text-sm text-destructive">✖ {item.text}</div>;
   }
-}
+});

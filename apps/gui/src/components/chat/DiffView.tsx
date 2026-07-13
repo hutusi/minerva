@@ -1,5 +1,5 @@
 import { clipDiff, type DiffLine, diffLines } from "@minerva/client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { alignDiffRows, type SplitCell } from "../../lib/diff-rows";
 
 /** Cap on rendered diff lines — same budget as the TUI transcript. */
@@ -14,7 +14,12 @@ function loadPreference(): "unified" | "split" {
 
 export function DiffView({ diff }: { diff: { oldText: string | null; newText: string } }) {
   const [view, setView] = useState(loadPreference);
-  const lines = clipDiff(diffLines(diff.oldText, diff.newText), DIFF_LINE_CAP);
+  // The LCS diff is quadratic in the changed region — memoize it, or every
+  // streaming token re-renders re-diff every edit in the transcript.
+  const lines = useMemo(
+    () => clipDiff(diffLines(diff.oldText, diff.newText), DIFF_LINE_CAP),
+    [diff.oldText, diff.newText],
+  );
 
   const toggle = (next: "unified" | "split") => {
     localStorage.setItem(VIEW_KEY, next);
@@ -90,7 +95,7 @@ const CELL_STYLE: Record<SplitCell["kind"], string> = {
 };
 
 function SplitDiff({ lines }: { lines: DiffLine[] }) {
-  const rows = alignDiffRows(lines);
+  const rows = useMemo(() => alignDiffRows(lines), [lines]);
   let offset = 0;
   return (
     <div className="grid grid-cols-2">

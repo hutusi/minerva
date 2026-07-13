@@ -1,10 +1,11 @@
+import { splitModelRef } from "@minerva/client";
 import type {
   ConfigProviderState,
   ConfigSetModelParams,
   ConfigStateResult,
 } from "@minerva/protocol";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildSetModelParams, splitModelRef } from "../lib/config-form";
+import { buildSetModelParams } from "../lib/config-form";
 
 const CUSTOM = "custom…";
 

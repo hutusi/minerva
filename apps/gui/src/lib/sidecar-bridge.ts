@@ -35,17 +35,24 @@ export function createTauriSidecarBridge(): SidecarBridge {
     }),
   ]);
 
+  // The generation this bridge last started/attached to — kills are targeted
+  // at it, so a stale kill can never take down a replacement kernel that
+  // crash recovery spawned in the meantime (Rust no-ops on a mismatch).
+  let owned: number | null = null;
+
   return {
     async start() {
       await subscribed;
       const generation = await invoke<number>("sidecar_start");
+      owned = generation;
       generations.activate(generation);
     },
     async send(line: string) {
       await invoke("sidecar_send", { line });
     },
     async kill() {
-      await invoke("sidecar_kill");
+      await invoke("sidecar_kill", { generation: owned });
+      owned = null;
       generations.clear();
     },
     onLine(handler) {

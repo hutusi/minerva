@@ -237,6 +237,11 @@ export function App() {
       (cause: unknown) => {
         ensuring.current.delete(tab.id);
         if (!slots.current.isCurrent(tab.id, token)) return; // nobody's waiting
+        // A rejection caused by the kernel dying mid-load beats the [client]
+        // effect that would invalidate this token (microtask vs render). The
+        // crash banner + auto-restart own that story — a "couldn't open"
+        // notice here would be both wrong and permanent.
+        if (manager.snapshot.client !== client) return;
         const folder = tab.cwd.split("/").filter(Boolean).at(-1) ?? tab.cwd;
         const message = cause instanceof Error ? cause.message : String(cause);
         setNotice(
@@ -244,7 +249,7 @@ export function App() {
         );
       },
     );
-  }, [configReady, client, activeTab, sessions, commitSession]);
+  }, [configReady, client, activeTab, sessions, commitSession, manager]);
 
   const reportError = (cause: unknown) => {
     const message = cause instanceof Error ? cause.message : String(cause);
@@ -252,27 +257,41 @@ export function App() {
     else setNotice(message);
   };
 
+  /** Same-target dedup for switches: a double-click on a session row must
+   * not fire a second loadSession while the first replays — the client
+   * rejects duplicate registrations ("already open in this client"). */
+  const switching = useRef(new Map<string, string>());
+
   /** Replace the active tab's session (browser pick / new session). Rapid
    * switches resolve in USER order, not completion order: each begins a
-   * token, and a superseded result is closed instead of committed. */
-  const switchWithinTab = (tab: Tab, next: Promise<Session>) => {
+   * token, and a superseded result is closed instead of committed. The
+   * `next` work is deferred behind the dedup check so a deduped click never
+   * even starts a load. */
+  const switchWithinTab = (tab: Tab, target: string, next: () => Promise<Session>) => {
+    if (switching.current.get(tab.id) === target) return;
+    switching.current.set(tab.id, target);
+    const settle = () => {
+      if (switching.current.get(tab.id) === target) switching.current.delete(tab.id);
+    };
     const activeClient = client;
     const token = slots.current.begin(tab.id);
-    next.then(
-      (session) => {
-        setBrowserOpen(false);
-        if (!slots.current.isCurrent(tab.id, token)) {
-          activeClient?.closeSession(session.id);
-          return;
-        }
-        if (activeClient) commitSession(tab.id, session, activeClient);
-        dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
-      },
-      (cause: unknown) => {
-        setBrowserOpen(false);
-        if (slots.current.isCurrent(tab.id, token)) reportError(cause);
-      },
-    );
+    next()
+      .finally(settle)
+      .then(
+        (session) => {
+          setBrowserOpen(false);
+          if (!slots.current.isCurrent(tab.id, token)) {
+            activeClient?.closeSession(session.id);
+            return;
+          }
+          if (activeClient) commitSession(tab.id, session, activeClient);
+          dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
+        },
+        (cause: unknown) => {
+          setBrowserOpen(false);
+          if (slots.current.isCurrent(tab.id, token)) reportError(cause);
+        },
+      );
   };
 
   const addTab = () => {
@@ -334,7 +353,10 @@ export function App() {
       />
       {activeSession && activeTab && client ? (
         <Chat
-          key={activeTab.id}
+          // Keyed by SESSION: a within-tab switch must also remount (fresh
+          // initial-scroll, fresh per-session UI state). Drafts stay per-TAB
+          // via the drafts map, so they survive the remount.
+          key={activeSession.id}
           client={client}
           session={activeSession}
           initialDraft={drafts.current.get(activeTab.id) ?? ""}
@@ -344,8 +366,9 @@ export function App() {
           onOpenSessions={() => setBrowserOpen(true)}
           onNewSession={() => {
             if (activeTab) {
-              switchWithinTab(
-                activeTab,
+              // Unique target per click: two "New"s are two sessions (the
+              // second supersedes via its token), never a dedup.
+              switchWithinTab(activeTab, `new:${crypto.randomUUID()}`, () =>
                 createSession(client, activeTab.cwd, activeSession.profile ?? undefined),
               );
             }
@@ -391,7 +414,9 @@ export function App() {
               setBrowserOpen(false);
               return;
             }
-            switchWithinTab(activeTab, resumeSession(client, summary.sessionId, summary.cwd));
+            switchWithinTab(activeTab, `resume:${summary.sessionId}`, () =>
+              resumeSession(client, summary.sessionId, summary.cwd),
+            );
           }}
           onClose={() => setBrowserOpen(false)}
         />

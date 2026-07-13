@@ -1,19 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildSetModelParams, splitModelRef } from "../src/lib/config-form";
+import { buildSetModelParams } from "../src/lib/config-form";
 
-describe("splitModelRef", () => {
-  test("splits on the FIRST slash — model ids may contain slashes", () => {
-    expect(splitModelRef("openrouter/meta-llama/llama-3")).toEqual({
-      provider: "openrouter",
-      model: "meta-llama/llama-3",
-    });
-    expect(splitModelRef("bailian/qwen-plus")).toEqual({ provider: "bailian", model: "qwen-plus" });
-  });
-
-  test("a bare id has no provider", () => {
-    expect(splitModelRef("claude-opus-4-8")).toEqual({ provider: null, model: "claude-opus-4-8" });
-  });
-});
+// splitModelRef moved to @minerva/client (shared frontend grammar); its
+// tests live in packages/client/test/model-ref.test.ts.
 
 describe("buildSetModelParams", () => {
   test("always qualifies with the selected provider — slashes in the model survive", () => {

@@ -33,6 +33,7 @@ import {
   buildProviderRegistry,
   type ModelProvider,
   parseModelRef,
+  providerKeyStatuses,
   resolveApiKey,
 } from "@minerva/providers";
 import { type LoopContext, runPrompt } from "./agent-loop";
@@ -806,9 +807,10 @@ export class MinervaKernel {
 
   /**
    * Current model + selectable providers with key status — the read half of
-   * config/set_model, a direct port of the TUI's host-side providerChoices
-   * computation for frontends on the far side of a pipe. Settings are
-   * re-read per call so a key stored moments ago is reflected.
+   * config/set_model, for frontends on the far side of a pipe. The rows come
+   * from providerKeyStatuses, the same helper the TUI's /config panel uses,
+   * so the two frontends can never disagree about whether a key exists.
+   * Settings are re-read per call so a key stored moments ago is reflected.
    */
   async #configState(): Promise<ConfigStateResult> {
     const settings = await loadSettings(this.#runtime, this.#dataDir, process.cwd());
@@ -816,21 +818,7 @@ export class MinervaKernel {
     const storedKeys = Object.fromEntries(
       Object.entries(settings.providers).map(([name, entry]) => [name, entry.apiKey]),
     );
-    const providers: ConfigProviderState[] = Object.entries(registry).map(([name, def]) => ({
-      name,
-      ...(def.defaultModel !== undefined ? { defaultModel: def.defaultModel } : {}),
-      keyVar: def.apiKeyEnv,
-      // Blank-aware, matching resolveApiKey — an exported-but-empty env var
-      // must not display as a usable key.
-      keySource: process.env[def.apiKeyEnv]?.trim()
-        ? ("env" as const)
-        : settings.providers[name]?.apiKey?.trim()
-          ? ("settings" as const)
-          : ("none" as const),
-      ...(def.baseURL !== undefined ? { baseUrl: def.baseURL } : {}),
-      ...(def.models !== undefined ? { models: def.models } : {}),
-      ...(def.requiresApiKey !== undefined ? { requiresApiKey: def.requiresApiKey } : {}),
-    }));
+    const providers: ConfigProviderState[] = providerKeyStatuses(registry, process.env, storedKeys);
 
     let needsApiKey = false;
     try {
