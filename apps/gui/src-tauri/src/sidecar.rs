@@ -102,7 +102,19 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
             Ok(None) => return Ok(()),
             _ => {
                 let mut dead = guard.take().expect("guard checked Some above");
+                // Same discipline as the kill path: the dead child's reader
+                // must finish before a successor exists, or its last buffered
+                // frames could reach the successor's connection. Release the
+                // slot lock first — the reader's EOF path takes it (finds the
+                // slot empty and returns without emitting), so joining while
+                // holding it would deadlock. The lifecycle lock (held for all
+                // of start) keeps anything else out of the empty slot.
+                drop(guard);
                 let _ = dead.child.wait();
+                if let Some(reader) = dead.reader.take() {
+                    let _ = reader.join();
+                }
+                guard = lock(&state);
             }
         }
     }

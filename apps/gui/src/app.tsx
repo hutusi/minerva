@@ -152,6 +152,23 @@ export function App() {
     setSessions(next);
   };
 
+  /** The single write path for in-place session patches (profile switches,
+   * future metadata edits): applies only while the SAME session is still
+   * installed in the tab — a delayed response after a switch must not
+   * reinstall a detached store — and keeps sessionsRef and React state in
+   * lockstep so later commits can't rebuild from a stale reference. */
+  const updateSession = useCallback(
+    (tabId: string, sessionId: string, patch: Partial<Session>): boolean => {
+      const current = sessionsRef.current.get(tabId);
+      if (!current || current.id !== sessionId) return false;
+      const next = new Map(sessionsRef.current).set(tabId, { ...current, ...patch });
+      sessionsRef.current = next;
+      setSessions(next);
+      return true;
+    },
+    [],
+  );
+
   const client = kernel.phase === "ready" ? kernel.client : null;
   // Gate sessions on configuration: first run must store a key first.
   const configReady = client !== null && (!kernel.config?.needsApiKey || configDone);
@@ -334,14 +351,20 @@ export function App() {
             }
           }}
           onSetProfile={(profile) => {
-            client.setProfile(activeSession.id, profile).then(() => {
-              setSessions((prev) => {
-                const next = new Map(prev);
-                if (activeTab) next.set(activeTab.id, { ...activeSession, profile });
-                return next;
-              });
-              activeSession.store.addInfo(`profile → ${profile ?? "(none)"}`);
-            }, reportError);
+            const tabId = activeTab.id;
+            const sessionId = activeSession.id;
+            client.setProfile(sessionId, profile).then(
+              () => {
+                // Only lands while this exact session is still installed; a
+                // superseded response must not resurrect a detached store.
+                if (updateSession(tabId, sessionId, { profile })) {
+                  sessionsRef.current.get(tabId)?.store.addInfo(`profile → ${profile ?? "(none)"}`);
+                }
+              },
+              (cause: unknown) => {
+                if (sessionsRef.current.get(tabId)?.id === sessionId) reportError(cause);
+              },
+            );
           }}
         />
       ) : (

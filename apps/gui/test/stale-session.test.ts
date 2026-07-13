@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MinervaClient } from "@minerva/client";
-import { createKernel } from "@minerva/kernel";
+import { createKernel, type MinervaKernel } from "@minerva/kernel";
 import { createInProcTransportPair } from "@minerva/protocol";
 import { createScriptedProvider } from "@minerva/providers";
 import { ensureTabSession, isStaleSessionError } from "../src/lib/tab-session";
@@ -15,12 +15,20 @@ import { ensureTabSession, isStaleSessionError } from "../src/lib/tab-session";
  * kernel so the predicate can't drift from the wire again.
  */
 describe("isStaleSessionError against the real kernel", () => {
+  const kernels: MinervaKernel[] = [];
+  const clients: MinervaClient[] = [];
+  afterEach(async () => {
+    for (const client of clients.splice(0)) client.close();
+    await Promise.all(kernels.splice(0).map((kernel) => kernel.close()));
+  });
+
   async function setup() {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-gui-stale-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-gui-stale-data-"));
     const [clientTransport, kernelTransport] = createInProcTransportPair();
-    createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    kernels.push(createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) }));
     const client = new MinervaClient(clientTransport);
+    clients.push(client);
     await client.initialize();
     return { client, cwd };
   }
