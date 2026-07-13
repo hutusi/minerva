@@ -27,6 +27,7 @@ import { createKernelManager, type KernelManager } from "./lib/kernel-manager";
 import { notify, pickFolder } from "./lib/native";
 import { decideNotification } from "./lib/notify";
 import { createSessionSlots } from "./lib/session-slots";
+import { createSessionSwitches } from "./lib/session-switches";
 import { createTauriSidecarBridge, fetchDefaultCwd } from "./lib/sidecar-bridge";
 import { ensureTabSession, isStaleSessionError } from "./lib/tab-session";
 import { deserializeTabs, EMPTY_TABS, serializeTabs, type Tab, tabsReducer } from "./lib/tabs";
@@ -124,6 +125,9 @@ export function App() {
   // switch, a closed tab, or a replaced client makes them stale (discarded
   // AND closed, so no invisible client registration survives).
   const slots = useRef(createSessionSlots());
+  // A target has at most one underlying load per tab, even when the user's
+  // latest intent cycles A → B → A while all three selections are pending.
+  const switches = useRef(createSessionSwitches<Session>());
   // Authoritative sessions map, updated synchronously at commit time; React
   // state mirrors it for rendering. Completion handlers must never read the
   // render-closure `sessions` — it can lag behind a just-committed install.
@@ -183,6 +187,7 @@ export function App() {
     setSessions(sessionsRef.current);
     ensuring.current.clear();
     slots.current.invalidateAll();
+    switches.current.invalidateAll();
   }, [client]);
 
   useEffect(() => {
@@ -257,41 +262,36 @@ export function App() {
     else setNotice(message);
   };
 
-  /** Same-target dedup for switches: a double-click on a session row must
-   * not fire a second loadSession while the first replays — the client
-   * rejects duplicate registrations ("already open in this client"). */
-  const switching = useRef(new Map<string, string>());
-
   /** Replace the active tab's session (browser pick / new session). Rapid
    * switches resolve in USER order, not completion order: each begins a
-   * token, and a superseded result is closed instead of committed. The
-   * `next` work is deferred behind the dedup check so a deduped click never
-   * even starts a load. */
+   * token, and a superseded result is closed instead of committed. Repeating
+   * any still-in-flight target reuses its promise but gets a fresh token, so
+   * A → B → A honors the final A without duplicate client registration. */
   const switchWithinTab = (tab: Tab, target: string, next: () => Promise<Session>) => {
-    if (switching.current.get(tab.id) === target) return;
-    switching.current.set(tab.id, target);
-    const settle = () => {
-      if (switching.current.get(tab.id) === target) switching.current.delete(tab.id);
-    };
     const activeClient = client;
     const token = slots.current.begin(tab.id);
-    next()
-      .finally(settle)
-      .then(
-        (session) => {
-          setBrowserOpen(false);
-          if (!slots.current.isCurrent(tab.id, token)) {
+    switches.current.begin(tab.id, target, next).then(
+      (session) => {
+        if (!slots.current.isCurrent(tab.id, token)) {
+          // A stale handler for a reused promise must leave the store attached
+          // for the newer handler targeting that same session.
+          if (!switches.current.isDesired(tab.id, target)) {
             activeClient?.closeSession(session.id);
-            return;
           }
-          if (activeClient) commitSession(tab.id, session, activeClient);
-          dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
-        },
-        (cause: unknown) => {
-          setBrowserOpen(false);
-          if (slots.current.isCurrent(tab.id, token)) reportError(cause);
-        },
-      );
+          return;
+        }
+        switches.current.finish(tab.id, target);
+        setBrowserOpen(false);
+        if (activeClient) commitSession(tab.id, session, activeClient);
+        dispatch({ type: "attach-session", tabId: tab.id, sessionId: session.id });
+      },
+      (cause: unknown) => {
+        if (!slots.current.isCurrent(tab.id, token)) return;
+        switches.current.finish(tab.id, target);
+        setBrowserOpen(false);
+        reportError(cause);
+      },
+    );
   };
 
   const addTab = () => {
@@ -303,6 +303,7 @@ export function App() {
   const closeTab = (tabId: string) => {
     // Outstanding installs for this tab are stale from here on.
     slots.current.invalidate(tabId);
+    switches.current.invalidate(tabId);
     const session = sessionsRef.current.get(tabId);
     if (session && client) {
       if (session.store.snapshot.busy) client.cancel(session.id);

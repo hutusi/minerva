@@ -11,7 +11,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -24,7 +24,11 @@ static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub struct Running {
     generation: u64,
-    child: Child,
+    /// Shared with the stdout reader so EOF can terminate an otherwise-live
+    /// child without first removing it from the slot. Keeping the slot
+    /// occupied until the process is dead prevents a retry from spawning a
+    /// replacement beside an unreachable orphan.
+    child: Arc<Mutex<Child>>,
     /// Shared so sends can write without holding the slot lock; the inner
     /// mutex keeps whole frames atomic. Shutdown drops the slot's clone to
     /// signal EOF — an in-flight blocked writer holds the pipe open a little
@@ -68,6 +72,26 @@ fn lock(state: &SidecarState) -> std::sync::MutexGuard<'_, Option<Running>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn lock_child(child: &Mutex<Child>) -> std::sync::MutexGuard<'_, Child> {
+    child
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Stdout is the response half of the protocol. Once it closes, a live child
+/// is unusable and must be terminated before its slot is released; otherwise
+/// start/kill can lose the only handle and leave an orphan beside a retry.
+fn reap_after_stdout_close(child: &Mutex<Child>) -> Option<i32> {
+    let mut child = lock_child(child);
+    match child.try_wait() {
+        Ok(Some(status)) => status.code(),
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            child.wait().ok().and_then(|status| status.code())
+        }
+    }
+}
+
 /// Dev runs the kernel from source via Bun; release runs the compiled
 /// `minerva` binary bundled next to the app executable (externalBin).
 fn kernel_command() -> Result<Command, String> {
@@ -102,30 +126,44 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
     // a webview-reload start could spawn a replacement while the old kernel
     // is still draining and its forwarder still emitting into our events.
     let _lifecycle = state.lifecycle.lock().await;
-    let mut guard = lock(&state);
-    if let Some(running) = guard.as_mut() {
+    let existing = {
+        let guard = lock(&state);
+        guard
+            .as_ref()
+            .map(|running| (running.generation, Arc::clone(&running.child)))
+    };
+    if let Some((generation, child)) = existing {
         // Still alive → idempotent no-op (webview reloads call start again).
         // Exited but never taken (e.g. no listener saw the exit) → reap and respawn.
-        match running.child.try_wait() {
-            Ok(None) => return Ok(running.generation),
+        let status = lock_child(&child).try_wait();
+        match status {
+            Ok(None) => return Ok(generation),
             _ => {
-                let mut dead = guard.take().expect("guard checked Some above");
-                // Same discipline as the kill path: the dead child's reader
-                // must finish before a successor exists, or its last buffered
-                // frames could reach the successor's connection. Release the
-                // slot lock first — the reader's EOF path takes it (finds the
-                // slot empty and returns without emitting), so joining while
-                // holding it would deadlock. The lifecycle lock (held for all
-                // of start) keeps anything else out of the empty slot.
-                drop(guard);
-                let _ = dead.child.wait();
-                if let Some(reader) = dead.reader.take() {
-                    let _ = reader.join();
+                let dead = {
+                    let mut guard = lock(&state);
+                    match guard.as_ref() {
+                        Some(running) if running.generation == generation => guard.take(),
+                        _ => None,
+                    }
+                };
+                if let Some(mut dead) = dead {
+                    // Same discipline as the kill path: the dead child's reader
+                    // must finish before a successor exists, or its last buffered
+                    // frames could reach the successor's connection. The lifecycle
+                    // lock (held for all of start) keeps anything else out of the
+                    // empty slot while the reader finishes.
+                    let _ = lock_child(&dead.child).wait();
+                    if let Some(reader) = dead.reader.take() {
+                        let _ = reader.join();
+                    }
                 }
-                guard = lock(&state);
+                // If `dead` was None, the EOF reader already reaped and removed
+                // this generation. Either way, spawning below is now safe.
             }
         }
     }
+
+    let mut guard = lock(&state);
 
     let mut child = kernel_command()?
         .stdin(Stdio::piped())
@@ -146,9 +184,16 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
         }
     });
 
+    let child = Arc::new(Mutex::new(child));
+    let reader_child = Arc::clone(&child);
     let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
     let handle = app.clone();
+    // The child may exit immediately. Do not let the reader inspect the slot
+    // until Running (including its JoinHandle) has been installed.
+    let installed = Arc::new(Barrier::new(2));
+    let reader_installed = Arc::clone(&installed);
     let reader = std::thread::spawn(move || {
+        reader_installed.wait();
         let mut reader = stdout;
         let mut buffer: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 64 * 1024];
@@ -176,9 +221,19 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
         // replaced): shutdown_gracefully owns the reaping, and emitting an
         // exit event would make the frontend run crash recovery against a
         // kill it asked for (or worse, against the replacement child).
-        // Take under the lock, but WAIT outside it — stdout can close while
-        // the process lives on, and the slot must never be hostage to that
-        // wait (the file's lock discipline: `slot` is never held across one).
+        let is_current = {
+            let state = handle.state::<SidecarState>();
+            let guard = lock(&state);
+            matches!(guard.as_ref(), Some(running) if running.generation == generation)
+        };
+        if !is_current {
+            return;
+        }
+
+        // Keep Running discoverable while reaping. A concurrent targeted kill
+        // can still take the slot and operate on this same shared child; if it
+        // does, the generation check below suppresses the intentional exit.
+        let code = reap_after_stdout_close(&reader_child);
         let taken = {
             let state = handle.state::<SidecarState>();
             let mut guard = lock(&state);
@@ -187,8 +242,7 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
                 _ => None,
             }
         };
-        let Some(mut running) = taken else { return };
-        let code = running.child.wait().ok().and_then(|s| s.code());
+        let Some(_running) = taken else { return };
         let _ = handle.emit("minerva://exit", ExitPayload { generation, code });
     });
 
@@ -198,6 +252,8 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
         stdin: Arc::new(Mutex::new(stdin)),
         reader: Some(reader),
     });
+    drop(guard);
+    installed.wait();
     Ok(generation)
 }
 
@@ -243,7 +299,7 @@ fn shutdown_gracefully(mut running: Running) {
     let deadline = Instant::now() + Duration::from_millis(SHUTDOWN_GRACE_MS);
     let mut reaped = false;
     while Instant::now() < deadline {
-        if let Ok(Some(_)) = running.child.try_wait() {
+        if let Ok(Some(_)) = lock_child(&running.child).try_wait() {
             eprintln!("[minerva gui] kernel exited gracefully on stdin close");
             reaped = true;
             break;
@@ -252,8 +308,9 @@ fn shutdown_gracefully(mut running: Running) {
     }
     if !reaped {
         eprintln!("[minerva gui] kernel shutdown grace expired; killing");
-        let _ = running.child.kill();
-        let _ = running.child.wait();
+        let mut child = lock_child(&running.child);
+        let _ = child.kill();
+        let _ = child.wait();
     }
     // Drain the forwarder before declaring the shutdown complete: it exits on
     // pipe EOF (bounded — the process is dead), and joining it guarantees no
@@ -312,4 +369,47 @@ pub fn default_cwd() -> String {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn stdout_close_force_reaps_a_still_live_child() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exec 1>&-; exec sleep 30")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn fixture child");
+        let mut stdout = child.stdout.take().expect("fixture stdout");
+        let mut byte = [0_u8; 1];
+        assert_eq!(stdout.read(&mut byte).expect("read fixture stdout"), 0);
+
+        let child = Mutex::new(child);
+        assert_eq!(reap_after_stdout_close(&child), None);
+        assert!(lock_child(&child)
+            .try_wait()
+            .expect("query fixture status")
+            .is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stdout_close_preserves_an_already_exited_status() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 7")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn fixture child");
+        let mut stdout = child.stdout.take().expect("fixture stdout");
+        let mut byte = [0_u8; 1];
+        assert_eq!(stdout.read(&mut byte).expect("read fixture stdout"), 0);
+
+        let child = Mutex::new(child);
+        assert_eq!(reap_after_stdout_close(&child), Some(7));
+    }
 }
