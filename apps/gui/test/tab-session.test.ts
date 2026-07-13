@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RpcError } from "@minerva/protocol";
-import { ensureTabSession } from "../src/lib/tab-session";
-
-/** The predicate the app uses: only a dead session id triggers fallback. */
-const isStale = (error: unknown) =>
-  error instanceof RpcError && error.message.startsWith("unknown session");
+import { ensureTabSession, isStaleSessionError as isStale } from "../src/lib/tab-session";
 
 describe("ensureTabSession", () => {
   test("resumes the tab's persisted session", async () => {
@@ -28,10 +24,12 @@ describe("ensureTabSession", () => {
   });
 
   test("falls back to a fresh session only for a stale id", async () => {
+    // The real message family for a missing log; the full round-trip against
+    // an actual kernel lives in stale-session.test.ts.
     const result = await ensureTabSession(
       {
         load: async () => {
-          throw new RpcError(-32602, "unknown session: ses_gone");
+          throw new RpcError(-32602, "no persisted session ses_gone for /proj");
         },
         create: async (cwd) => `created:${cwd}`,
       },

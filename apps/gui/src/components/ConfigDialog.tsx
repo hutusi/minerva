@@ -59,7 +59,11 @@ export function ConfigDialog({
   // when there is something to fall back to (never on first run).
   const providerSelectRef = useRef<HTMLSelectElement>(null);
   useEffect(() => {
+    const previous = document.activeElement;
     providerSelectRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
   }, []);
   useEffect(() => {
     if (!onClose) return;

@@ -42,7 +42,15 @@ export function PermissionDialog({ queue }: { queue: PermissionQueue }) {
   // focused textarea AND resolve the request at once).
   const firstOptionRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (current) firstOptionRef.current?.focus();
+    if (!current) return;
+    // Give focus back where it came from (usually the composer) once this
+    // request resolves — cleanup runs per request, so a stacked queue hands
+    // focus along correctly and the last resolve restores the original.
+    const previous = document.activeElement;
+    firstOptionRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
   }, [current]);
 
   useEffect(() => {

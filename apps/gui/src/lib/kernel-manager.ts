@@ -101,13 +101,18 @@ export function createKernelManager(
     } catch (cause) {
       if (gen !== generation) return; // the exit path already took over
       // The half-connected state is unusable: drop the client and make sure
-      // no wedged process lingers behind the "down" banner.
+      // no wedged process lingers behind the "down" banner. AWAIT the kill —
+      // it resolves only once the old kernel is fully gone (drain + reap),
+      // so the restart button can never spawn a successor that races the
+      // dying process. Intentional shutdowns emit no exit event (the Rust
+      // side is generation-guarded), so this cannot trigger crash recovery.
       try {
         client?.close();
       } catch {
         // Transport already closed.
       }
-      bridge.kill().catch(() => {});
+      await bridge.kill().catch(() => {});
+      if (gen !== generation) return;
       update({
         phase: "down",
         client: null,

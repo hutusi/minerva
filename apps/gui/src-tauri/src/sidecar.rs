@@ -10,13 +10,20 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// Monotonic child generation: every spawn gets a fresh id so a lingering
+/// stdout thread from an earlier child can never mistake a newer child for
+/// its own (take it out of state, reap it, or report its death).
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 pub struct Running {
+    generation: u64,
     child: Child,
     stdin: ChildStdin,
 }
@@ -100,6 +107,7 @@ pub fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<(
         }
     });
 
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
     let handle = app.clone();
     std::thread::spawn(move || {
         let mut reader = stdout;
@@ -123,20 +131,31 @@ pub fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<(
                 }
             }
         }
-        // EOF: the kernel exited (or was killed). Whoever still holds the
-        // child reaps it; emit exactly one exit event from this thread.
+        // EOF. Only an UNEXPECTED death — our own generation still sitting in
+        // state — is reaped and reported here. If state holds nothing or a
+        // newer generation, this child was intentionally shut down (or
+        // replaced): shutdown_gracefully owns the reaping, and emitting an
+        // exit event would make the frontend run crash recovery against a
+        // kill it asked for (or worse, against the replacement child).
         let code = {
             let state = handle.state::<SidecarState>();
             let mut guard = lock(&state);
-            match guard.take() {
-                Some(mut running) => running.child.wait().ok().and_then(|s| s.code()),
-                None => None,
+            match guard.as_ref() {
+                Some(running) if running.generation == generation => {
+                    let mut running = guard.take().expect("checked Some above");
+                    running.child.wait().ok().and_then(|s| s.code())
+                }
+                _ => return,
             }
         };
         let _ = handle.emit("minerva://exit", ExitPayload { code });
     });
 
-    *guard = Some(Running { child, stdin });
+    *guard = Some(Running {
+        generation,
+        child,
+        stdin,
+    });
     Ok(())
 }
 
@@ -179,10 +198,14 @@ fn shutdown_gracefully(mut running: Running) {
 }
 
 #[tauri::command]
-pub fn sidecar_kill(state: State<'_, SidecarState>) -> Result<(), String> {
+pub async fn sidecar_kill(state: State<'_, SidecarState>) -> Result<(), String> {
     let taken = lock(&state).take();
     if let Some(running) = taken {
-        shutdown_gracefully(running);
+        // Off the command thread: the grace wait can block for seconds, and
+        // the caller awaits so it knows when the old kernel is really gone.
+        tauri::async_runtime::spawn_blocking(move || shutdown_gracefully(running))
+            .await
+            .map_err(|e| format!("shutdown task failed: {e}"))?;
     }
     Ok(())
 }

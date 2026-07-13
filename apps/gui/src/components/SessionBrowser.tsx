@@ -21,9 +21,14 @@ export function SessionBrowser({
   const [error, setError] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Modal ownership: focus moves into the dialog on open (no trap).
+  // Modal ownership: focus moves into the dialog on open (no trap) and
+  // returns to wherever it came from on close.
   useEffect(() => {
+    const previous = document.activeElement;
     panelRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
   }, []);
 
   useEffect(() => {

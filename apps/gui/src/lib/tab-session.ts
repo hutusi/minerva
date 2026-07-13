@@ -1,9 +1,28 @@
+import { RpcError } from "@minerva/protocol";
 import type { Tab } from "./tabs";
 
 /** The two session operations tab attachment needs, injected for testability. */
 export interface TabSessionOps<S> {
   load(sessionId: string, cwd: string): Promise<S>;
   create(cwd: string): Promise<S>;
+}
+
+/**
+ * Whether a load failure means the persisted id itself is dead — the only
+ * class allowed to silently fall back to a fresh session. Matched against
+ * the kernel's REAL failure messages (session/load wraps Session.load
+ * errors verbatim into an RpcError): "no persisted session …" for a
+ * missing/deleted log and "invalid session id: …" for a corrupt persisted
+ * id; "unknown session: …" is the live-session-lookup family used by other
+ * methods, kept for completeness. Covered by a real-kernel round-trip test.
+ */
+export function isStaleSessionError(error: unknown): boolean {
+  if (!(error instanceof RpcError)) return false;
+  return (
+    error.message.startsWith("no persisted session") ||
+    error.message.startsWith("invalid session id") ||
+    error.message.startsWith("unknown session")
+  );
 }
 
 /**

@@ -1,11 +1,10 @@
 import type { MinervaClient, SessionStore } from "@minerva/client";
-import {
-  type ConfigSetModelParams,
-  type ConfigStateResult,
-  RpcError,
-  type SessionModeState,
-  type SessionSummary,
-  type SkillInfo,
+import type {
+  ConfigSetModelParams,
+  ConfigStateResult,
+  SessionModeState,
+  SessionSummary,
+  SkillInfo,
 } from "@minerva/protocol";
 import {
   useCallback,
@@ -28,17 +27,11 @@ import { createKernelManager, type KernelManager } from "./lib/kernel-manager";
 import { notify, pickFolder } from "./lib/native";
 import { decideNotification } from "./lib/notify";
 import { createTauriSidecarBridge, fetchDefaultCwd } from "./lib/sidecar-bridge";
-import { ensureTabSession } from "./lib/tab-session";
+import { ensureTabSession, isStaleSessionError } from "./lib/tab-session";
 import { deserializeTabs, EMPTY_TABS, serializeTabs, type Tab, tabsReducer } from "./lib/tabs";
 
 const TABS_KEY = "minerva.tabs.v1";
 const NOTIFY_MUTED_KEY = "minerva.notifyMuted.v1";
-
-/** Only a dead session id may silently fall back to a fresh session; every
- * other load failure (prompt still running, failed flush, transient I/O)
- * must surface — the kernel throws those loudly by design. */
-const isStaleSession = (error: unknown): boolean =>
-  error instanceof RpcError && error.message.startsWith("unknown session");
 
 interface Session {
   id: string;
@@ -173,7 +166,7 @@ export function App() {
         create: (cwd) => createSession(client, cwd),
       },
       tab,
-      isStaleSession,
+      isStaleSessionError,
     ).then(
       ({ session }) => {
         ensuring.current.delete(tab.id);

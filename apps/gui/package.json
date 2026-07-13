@@ -23,6 +23,8 @@
     "react-dom": "^19"
   },
   "devDependencies": {
+    "@minerva/kernel": "workspace:*",
+    "@minerva/providers": "workspace:*",
     "@tailwindcss/vite": "^4.1.11",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19",

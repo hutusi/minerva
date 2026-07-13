@@ -47,6 +47,9 @@ function createFakeKernelBridge() {
       }
     },
     async kill() {
+      // Contract with the real bridge: an intentional kill resolves once the
+      // child is gone and emits NO exit event (the Rust side is
+      // generation-guarded), so crash recovery never fires for it.
       bridge.kills++;
     },
     onLine(handler: (line: string) => void) {
