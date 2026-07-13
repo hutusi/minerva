@@ -8,6 +8,7 @@ import type { SidecarBridge } from "../src/lib/sidecar-bridge";
 function createFakeKernelBridge() {
   const lineHandlers = new Set<(line: string) => void>();
   const exitHandlers = new Set<(code: number | null) => void>();
+  let nextStartGate: Promise<void> | null = null;
   const respond = (message: unknown) => {
     queueMicrotask(() => {
       for (const handler of lineHandlers) handler(JSON.stringify(message));
@@ -22,6 +23,9 @@ function createFakeKernelBridge() {
     async start() {
       bridge.starts++;
       if (!bridge.alive) throw new Error("spawn failed");
+      const gate = nextStartGate;
+      nextStartGate = null;
+      if (gate) await gate;
     },
     async send(line: string) {
       if (!bridge.alive) throw new Error("kernel is not running");
@@ -62,6 +66,12 @@ function createFakeKernelBridge() {
     },
     crash(code: number) {
       for (const handler of [...exitHandlers]) handler(code);
+    },
+    blockNextStart(gate: Promise<void>) {
+      nextStartGate = gate;
+    },
+    lineHandlerCount() {
+      return lineHandlers.size;
     },
   } satisfies SidecarBridge & Record<string, unknown>;
   return bridge;
@@ -110,6 +120,28 @@ describe("createKernelManager", () => {
     expect(bridge.starts).toBe(2);
     // Recovery must build a fresh client — the old Connection is dead.
     expect(manager.snapshot.client).not.toBe(firstClient);
+  });
+
+  test("an exit during start supersedes the attempt before it creates a client", async () => {
+    const bridge = createFakeKernelBridge();
+    let releaseStart: (() => void) | undefined;
+    bridge.blockNextStart(
+      new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      }),
+    );
+    const manager = createKernelManager(bridge);
+    manager.start();
+    await until(() => bridge.starts === 1, "blocked first start");
+
+    bridge.crash(1);
+    await until(() => manager.snapshot.phase === "ready", "replacement ready");
+    releaseStart?.();
+    await Bun.sleep(0);
+
+    // Only the replacement attempt owns a transport. Without the post-start
+    // generation check, the superseded attempt attaches a leaked second one.
+    expect(bridge.lineHandlerCount()).toBe(1);
   });
 
   test("a second crash stays down until a manual start", async () => {

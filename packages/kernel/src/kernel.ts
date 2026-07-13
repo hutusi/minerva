@@ -135,6 +135,9 @@ export class MinervaKernel {
   #dataDir: string;
   #tools: KernelTool[];
   #systemPrompt: (cwd: string) => string;
+  /** Profile mutations can await settings I/O. Queue them per session so two
+   * rapid selections still apply in request-arrival order (last choice wins). */
+  #profileMutations = new Map<string, Promise<void>>();
   /** Operations running now; drained on shutdown so their trailing events are
    * flushed before the process exits. */
   #inFlight = new Set<Promise<unknown>>();
@@ -420,6 +423,27 @@ export class MinervaKernel {
         "profile must be a string or null (to clear)",
       );
     }
+    const previous = this.#profileMutations.get(session.id) ?? Promise.resolve();
+    const operation = previous
+      // A rejected selection must not prevent later user choices from running.
+      .catch(() => {})
+      .then(() => this.#applySessionProfile(session, profile));
+    const tail = operation.then(
+      () => {},
+      () => {},
+    );
+    this.#profileMutations.set(session.id, tail);
+    try {
+      await operation;
+      return null;
+    } finally {
+      if (this.#profileMutations.get(session.id) === tail) {
+        this.#profileMutations.delete(session.id);
+      }
+    }
+  }
+
+  async #applySessionProfile(session: Session, profile: string | null): Promise<void> {
     // Resolve BEFORE the promptActive guard: loadSettings awaits, and a
     // prompt claiming the lease during that await would otherwise see the
     // session mutated despite the guard (same no-await-between-guard-and-
@@ -454,7 +478,6 @@ export class MinervaKernel {
     // Settle the write before acknowledging, like set_mode: a persona switch
     // that vanishes on restart is a policy surprise.
     await session.flush();
-    return null;
   }
 
   async #sessionSetMode(params: unknown): Promise<SessionSetModeResult> {

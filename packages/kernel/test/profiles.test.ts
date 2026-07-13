@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,7 +12,7 @@ import {
   type SessionNewResult,
 } from "@minerva/protocol";
 import type { ModelProvider, TurnRequest } from "@minerva/providers";
-import { createKernel, type MinervaKernel } from "../src";
+import { createKernel, defaultRuntime, type MinervaKernel, projectDir, type Runtime } from "../src";
 
 const tmp = (prefix: string) => mkdtempSync(join(tmpdir(), prefix));
 
@@ -166,6 +166,68 @@ describe("named profiles through the kernel", () => {
     await client.request(MINERVA_METHODS.sessionSetProfile, { sessionId, profile: null });
     await prompt(client, sessionId, "three");
     expect(captured[2]).toContain("You are Minerva");
+  }, 15_000);
+
+  test("concurrent profile changes apply in request order", async () => {
+    const cwd = tmp("minerva-prof-proj-");
+    writeProjectSettings(cwd, PROFILE_SETTINGS);
+    let releaseSettings: (() => void) | undefined;
+    let settingsReadStarted: (() => void) | undefined;
+    const settingsGate = new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+    const enteredSettingsRead = new Promise<void>((resolve) => {
+      settingsReadStarted = resolve;
+    });
+    let delayNextSettingsRead = false;
+    const runtime: Runtime = {
+      ...defaultRuntime,
+      async readTextFile(path) {
+        if (delayNextSettingsRead && path.endsWith("/.minerva/settings.json")) {
+          delayNextSettingsRead = false;
+          settingsReadStarted?.();
+          await settingsGate;
+        }
+        return defaultRuntime.readTextFile(path);
+      },
+    };
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const dataDir = tmp("minerva-prof-data-");
+    const kernel = createKernel(kernelTransport, {
+      dataDir,
+      provider: capturingProvider([]),
+      runtime,
+    });
+    kernels.push(kernel);
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: 1 });
+    const { sessionId } = await client.request<SessionNewResult>(AGENT_METHODS.sessionNew, { cwd });
+
+    delayNextSettingsRead = true;
+    const chooseWriter = client.request(MINERVA_METHODS.sessionSetProfile, {
+      sessionId,
+      profile: "writer",
+    });
+    await enteredSettingsRead;
+    const clearProfile = client.request(MINERVA_METHODS.sessionSetProfile, {
+      sessionId,
+      profile: null,
+    });
+    // Let the second request reach the kernel while the first is blocked. The
+    // pre-fix implementation applies this clear immediately, then lets the
+    // older writer request overwrite it when the gate opens.
+    await Bun.sleep(0);
+    releaseSettings?.();
+    await Promise.all([chooseWriter, clearProfile]);
+
+    expect(kernel.getSession(sessionId)?.profile).toBeUndefined();
+    const events = readFileSync(join(projectDir(dataDir, cwd), `${sessionId}.jsonl`), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type?: string; profile?: string | null })
+      .filter((event) => event.type === "session.profile_changed")
+      .map((event) => event.profile);
+    expect(events).toEqual(["writer", null]);
   }, 15_000);
 
   test("resume restores the profile by re-resolving its name against settings", async () => {

@@ -79,6 +79,10 @@ export function createKernelManager(
     let client: MinervaClient | null = null;
     try {
       await bridge.start();
+      // An exit can arrive while start() is waiting (including one buffered by
+      // the generation-aware Tauri bridge). If it already launched recovery,
+      // this attempt must not attach a second client to the replacement.
+      if (gen !== generation) return;
       const fresh = new MinervaClient(createSidecarTransport(bridge), {
         onPermissionRequest: permissions.handler,
       });

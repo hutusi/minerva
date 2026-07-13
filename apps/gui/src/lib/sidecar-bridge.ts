@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { createSidecarGenerationGate, type SidecarExitEvent } from "./sidecar-generation";
 
 /**
  * The webview's only doorway to the kernel process. The Tauri implementation
@@ -19,6 +20,9 @@ export interface SidecarBridge {
 export function createTauriSidecarBridge(): SidecarBridge {
   const lineHandlers = new Set<(line: string) => void>();
   const exitHandlers = new Set<(code: number | null) => void>();
+  const generations = createSidecarGenerationGate((code) => {
+    for (const handler of exitHandlers) handler(code);
+  });
 
   // Subscribe immediately so no frame can slip between spawn and listen;
   // start() awaits this before invoking the spawn command.
@@ -26,21 +30,23 @@ export function createTauriSidecarBridge(): SidecarBridge {
     listen<string>("minerva://line", (event) => {
       for (const handler of lineHandlers) handler(event.payload);
     }),
-    listen<{ code: number | null }>("minerva://exit", (event) => {
-      for (const handler of exitHandlers) handler(event.payload.code);
+    listen<SidecarExitEvent>("minerva://exit", (event) => {
+      generations.exit(event.payload);
     }),
   ]);
 
   return {
     async start() {
       await subscribed;
-      await invoke("sidecar_start");
+      const generation = await invoke<number>("sidecar_start");
+      generations.activate(generation);
     },
     async send(line: string) {
       await invoke("sidecar_send", { line });
     },
     async kill() {
       await invoke("sidecar_kill");
+      generations.clear();
     },
     onLine(handler) {
       lineHandlers.add(handler);

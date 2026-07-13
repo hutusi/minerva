@@ -48,6 +48,7 @@ pub struct SidecarState {
 
 #[derive(Clone, Serialize)]
 struct ExitPayload {
+    generation: u64,
     code: Option<i32>,
 }
 
@@ -89,7 +90,7 @@ fn kernel_command() -> Result<Command, String> {
 }
 
 #[tauri::command]
-pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<(), String> {
+pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Result<u64, String> {
     // Wait out any in-flight shutdown before touching the slot: without this,
     // a webview-reload start could spawn a replacement while the old kernel
     // is still draining and its forwarder still emitting into our events.
@@ -99,7 +100,7 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
         // Still alive → idempotent no-op (webview reloads call start again).
         // Exited but never taken (e.g. no listener saw the exit) → reap and respawn.
         match running.child.try_wait() {
-            Ok(None) => return Ok(()),
+            Ok(None) => return Ok(running.generation),
             _ => {
                 let mut dead = guard.take().expect("guard checked Some above");
                 // Same discipline as the kill path: the dead child's reader
@@ -179,7 +180,7 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
                 _ => return,
             }
         };
-        let _ = handle.emit("minerva://exit", ExitPayload { code });
+        let _ = handle.emit("minerva://exit", ExitPayload { generation, code });
     });
 
     *guard = Some(Running {
@@ -188,7 +189,7 @@ pub async fn sidecar_start(app: AppHandle, state: State<'_, SidecarState>) -> Re
         stdin,
         reader: Some(reader),
     });
-    Ok(())
+    Ok(generation)
 }
 
 #[tauri::command]
