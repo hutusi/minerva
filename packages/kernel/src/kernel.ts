@@ -2,8 +2,10 @@ import { join } from "node:path";
 import {
   AGENT_METHODS,
   CLIENT_METHODS,
+  type ConfigProviderState,
   type ConfigSetModelParams,
   type ConfigSetModelResult,
+  type ConfigStateResult,
   Connection,
   type InitializeParams,
   type InitializeResult,
@@ -27,7 +29,13 @@ import {
   type SkillsListResult,
   type Transport,
 } from "@minerva/protocol";
-import { buildProviderRegistry, type ModelProvider } from "@minerva/providers";
+import {
+  buildProviderRegistry,
+  type ModelProvider,
+  parseModelRef,
+  providerKeyStatuses,
+  resolveApiKey,
+} from "@minerva/providers";
 import { type LoopContext, runPrompt } from "./agent-loop";
 import { runCompact } from "./compact";
 import { now } from "./events";
@@ -128,6 +136,9 @@ export class MinervaKernel {
   #dataDir: string;
   #tools: KernelTool[];
   #systemPrompt: (cwd: string) => string;
+  /** Profile mutations can await settings I/O. Queue them per session so two
+   * rapid selections still apply in request-arrival order (last choice wins). */
+  #profileMutations = new Map<string, Promise<void>>();
   /** Operations running now; drained on shutdown so their trailing events are
    * flushed before the process exits. */
   #inFlight = new Set<Promise<unknown>>();
@@ -158,6 +169,7 @@ export class MinervaKernel {
     this.#register(MINERVA_METHODS.sessionsList, (params) => this.#sessionsList(params));
     this.#register(MINERVA_METHODS.sessionCompact, (params) => this.#sessionCompact(params));
     this.#register(MINERVA_METHODS.configSetModel, (params) => this.#configSetModel(params));
+    this.#register(MINERVA_METHODS.configState, () => this.#configState());
     this.#register(MINERVA_METHODS.skillsList, (params) => this.#skillsList(params));
     this.#register(MINERVA_METHODS.profilesList, (params) => this.#profilesList(params));
     this.#register(MINERVA_METHODS.sessionSetProfile, (params) => this.#sessionSetProfile(params));
@@ -412,6 +424,27 @@ export class MinervaKernel {
         "profile must be a string or null (to clear)",
       );
     }
+    const previous = this.#profileMutations.get(session.id) ?? Promise.resolve();
+    const operation = previous
+      // A rejected selection must not prevent later user choices from running.
+      .catch(() => {})
+      .then(() => this.#applySessionProfile(session, profile));
+    const tail = operation.then(
+      () => {},
+      () => {},
+    );
+    this.#profileMutations.set(session.id, tail);
+    try {
+      await operation;
+      return null;
+    } finally {
+      if (this.#profileMutations.get(session.id) === tail) {
+        this.#profileMutations.delete(session.id);
+      }
+    }
+  }
+
+  async #applySessionProfile(session: Session, profile: string | null): Promise<void> {
     // Resolve BEFORE the promptActive guard: loadSettings awaits, and a
     // prompt claiming the lease during that await would otherwise see the
     // session mutated despite the guard (same no-await-between-guard-and-
@@ -446,7 +479,6 @@ export class MinervaKernel {
     // Settle the write before acknowledging, like set_mode: a persona switch
     // that vanishes on restart is a policy surprise.
     await session.flush();
-    return null;
   }
 
   async #sessionSetMode(params: unknown): Promise<SessionSetModeResult> {
@@ -771,6 +803,34 @@ export class MinervaKernel {
         }\n`,
       );
     }
+  }
+
+  /**
+   * Current model + selectable providers with key status — the read half of
+   * config/set_model, for frontends on the far side of a pipe. The rows come
+   * from providerKeyStatuses, the same helper the TUI's /config panel uses,
+   * so the two frontends can never disagree about whether a key exists.
+   * Settings are re-read per call so a key stored moments ago is reflected.
+   */
+  async #configState(): Promise<ConfigStateResult> {
+    const settings = await loadSettings(this.#runtime, this.#dataDir, process.cwd());
+    const registry = buildProviderRegistry(settings.providers);
+    const storedKeys = Object.fromEntries(
+      Object.entries(settings.providers).map(([name, entry]) => [name, entry.apiKey]),
+    );
+    const providers: ConfigProviderState[] = providerKeyStatuses(registry, process.env, storedKeys);
+
+    let needsApiKey = false;
+    try {
+      const { provider } = parseModelRef(this.#provider.id, registry);
+      needsApiKey =
+        registry[provider]?.requiresApiKey !== false &&
+        !resolveApiKey(provider, registry, { env: process.env, storedKeys });
+    } catch {
+      // Live provider outside the registry (tests, exotic hosts): nothing a
+      // config dialog could usefully demand a key for.
+    }
+    return { model: this.#provider.id, needsApiKey, providers };
   }
 
   async #configSetModel(params: unknown): Promise<ConfigSetModelResult> {

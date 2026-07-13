@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -175,5 +175,89 @@ describe("minerva/config/set_model", () => {
     await expect(h.client.request(MINERVA_METHODS.configSetModel, {})).rejects.toThrow(
       "requires modelRef",
     );
+  });
+});
+
+describe("minerva/config/state", () => {
+  /** Like setup(), but with global settings seeded before the kernel exists. */
+  async function setupWithSettings(providerId: string, settings: Partial<MinervaSettings>) {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-cfgstate-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-cfgstate-data-"));
+    writeFileSync(globalSettingsPath(dataDir), JSON.stringify(settings), { mode: 0o600 });
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    const kernel = createKernel(kernelTransport, {
+      provider: scripted(providerId, [textTurn("unused")]),
+      dataDir,
+    });
+    const client = new Connection(clientTransport);
+    await client.request(AGENT_METHODS.initialize, { protocolVersion: PROTOCOL_VERSION });
+    return { client, cwd, dataDir, kernel };
+  }
+
+  const ACME = {
+    baseUrl: "https://acme.test/v1",
+    apiKeyEnv: "MINERVA_TEST_ACME_KEY",
+    defaultModel: "acme-1",
+  };
+
+  test("reports the live model, provider rows, and stored-key sources", async () => {
+    const h = await setupWithSettings("acme/acme-1", {
+      providers: { acme: { ...ACME, apiKey: "sk-stored" } },
+    });
+    const state = await h.client.request<{
+      model: string;
+      needsApiKey: boolean;
+      providers: Array<{ name: string; keyVar: string; keySource: string; baseUrl?: string }>;
+    }>(MINERVA_METHODS.configState, {});
+
+    expect(state.model).toBe("acme/acme-1");
+    // The stored key satisfies the live provider.
+    expect(state.needsApiKey).toBe(false);
+    const acme = state.providers.find((p) => p.name === "acme");
+    expect(acme).toMatchObject({
+      keyVar: "MINERVA_TEST_ACME_KEY",
+      keySource: "settings",
+      baseUrl: "https://acme.test/v1",
+    });
+    // Builtins are always selectable alongside custom providers.
+    for (const name of ["anthropic", "openai", "bailian", "ollama"]) {
+      expect(state.providers.some((p) => p.name === name)).toBe(true);
+    }
+  });
+
+  test("needsApiKey flags a keyless required provider; env keys count (blank-aware)", async () => {
+    const h = await setupWithSettings("acme/acme-1", { providers: { acme: ACME } });
+    const read = () =>
+      h.client.request<{
+        needsApiKey: boolean;
+        providers: Array<{ name: string; keySource: string }>;
+      }>(MINERVA_METHODS.configState, {});
+
+    process.env.MINERVA_TEST_ACME_KEY = "  ";
+    try {
+      // Blank env value counts as absent — the first-run signal fires.
+      let state = await read();
+      expect(state.needsApiKey).toBe(true);
+      expect(state.providers.find((p) => p.name === "acme")?.keySource).toBe("none");
+
+      process.env.MINERVA_TEST_ACME_KEY = "sk-env";
+      state = await read();
+      expect(state.needsApiKey).toBe(false);
+      expect(state.providers.find((p) => p.name === "acme")?.keySource).toBe("env");
+    } finally {
+      delete process.env.MINERVA_TEST_ACME_KEY;
+    }
+  });
+
+  test("a live provider outside the registry never demands a key", async () => {
+    // A namespaced ref whose provider isn't in the registry (bare ids like
+    // "scripted" instead default to anthropic, whose key state is env-truth).
+    const h = await setupWithSettings("not-in-registry/model-x", {});
+    const state = await h.client.request<{ model: string; needsApiKey: boolean }>(
+      MINERVA_METHODS.configState,
+      {},
+    );
+    expect(state.model).toBe("not-in-registry/model-x");
+    expect(state.needsApiKey).toBe(false);
   });
 });

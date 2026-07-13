@@ -1,4 +1,3 @@
-import { StringDecoder } from "node:string_decoder";
 import type { JsonRpcMessage, Transport } from "./jsonrpc";
 
 /** Drop the connection if a single frame grows past this — a peer that sends a
@@ -30,8 +29,11 @@ export function createStreamTransport(
   const messageHandlers: Array<(message: JsonRpcMessage) => void> = [];
   const closeHandlers: Array<() => void> = [];
   // Decode across chunk boundaries: a multibyte UTF-8 char split between two
-  // reads would otherwise be corrupted by a per-chunk toString.
-  const decoder = new StringDecoder("utf8");
+  // reads would otherwise be corrupted by a per-chunk toString. TextDecoder
+  // (not node:string_decoder) because this module also loads in the GUI
+  // webview, where node: builtins don't exist — Vite externalizes them and
+  // the import throws at module eval.
+  const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let closed = false;
 
@@ -53,7 +55,7 @@ export function createStreamTransport(
 
   const onData = (chunk: Buffer | string) => {
     if (closed) return; // stop processing once the transport is torn down
-    buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
+    buffer += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
     // A single frame (framed OR not-yet-framed) larger than the cap is a
     // runaway/hostile peer — enforce the byte limit before parsing so a valid
     // 20 MB JSON line can't slip through.

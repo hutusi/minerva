@@ -1,0 +1,36 @@
+{
+  "name": "@minerva/gui",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "dev:web": "vite",
+    "build": "tauri build",
+    "build:web": "vite build",
+    "prepare-sidecar": "bun run scripts/prepare-sidecar.ts",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@minerva/client": "workspace:*",
+    "@minerva/protocol": "workspace:*",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-notification": "^2",
+    "dompurify": "^3",
+    "marked": "^16",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@minerva/kernel": "workspace:*",
+    "@minerva/providers": "workspace:*",
+    "@tailwindcss/vite": "^4.1.11",
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^5",
+    "tailwindcss": "^4.1.11",
+    "vite": "^7"
+  }
+}

@@ -83,6 +83,20 @@ describe("MinervaClient against a real kernel", () => {
     ]);
   });
 
+  test("newSession surfaces the kernel's mode state for picker UIs", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));
+    const [clientTransport, kernelTransport] = createInProcTransportPair();
+    createKernel(kernelTransport, { dataDir, provider: createScriptedProvider([]) });
+    const client = new MinervaClient(clientTransport);
+    await client.initialize();
+    const { modes, store } = await client.newSession(cwd);
+    expect(modes?.currentModeId).toBe("default");
+    // The available list is what a picker renders — it must survive the trip.
+    expect(modes?.availableModes.map((mode) => mode.id)).toContain("plan");
+    expect(store.snapshot.currentModeId).toBe("default");
+  });
+
   test("newSession surfaces AGENTS.md instructions from the kernel result", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "minerva-cli-proj-"));
     const dataDir = mkdtempSync(join(tmpdir(), "minerva-cli-data-"));

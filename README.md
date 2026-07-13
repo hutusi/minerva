@@ -3,12 +3,12 @@
 [![CI](https://github.com/hutusi/minerva/actions/workflows/ci.yml/badge.svg)](https://github.com/hutusi/minerva/actions/workflows/ci.yml)
 
 A cross-platform, model-agnostic code agent — a headless kernel with multiple
-frontends (CLI now, GUI later).
+frontends (Ink CLI and Tauri desktop GUI).
 
 - **Architecture**: protocol everywhere ([ACP](https://agentclientprotocol.com)
   core + `minerva/*` extensions), one kernel, swappable transports (in-process,
   stdio; WebSocket planned).
-- **Stack**: TypeScript, Bun, Vercel AI SDK, Ink (CLI), Tauri 2 (GUI, planned).
+- **Stack**: TypeScript, Bun, Vercel AI SDK, Ink (CLI), Tauri 2 (GUI).
 
 Docs: [design record](docs/DESIGN.md) · [wire protocol](docs/PROTOCOL.md) ·
 [contributing](CONTRIBUTING.md) · [changelog](CHANGELOG.md)
@@ -342,7 +342,26 @@ bun test packages/kernel
 The repo is a Bun workspace: `packages/protocol` (JSON-RPC + ACP types +
 transports), `packages/kernel` (agent loop, sessions, tools, permissions,
 MCP), `packages/providers` (model adapters), `packages/client` (shared
-frontend core), `packages/cli` (Ink UI + acp host), `apps/gui` (planned).
+frontend core), `packages/cli` (Ink UI + acp host), `apps/gui` (Tauri 2
+desktop app).
+
+## Desktop GUI
+
+The GUI spawns the kernel as a stdio sidecar (`minerva acp
+--allow-unconfigured`) and reuses `@minerva/client` for everything the TUI
+renders, plus GUI-native extras: multi-project tabs over one kernel, a
+side-by-side diff viewer, and native notifications when a long turn finishes
+in the background. Sessions are shared with the TUI — resume either's
+sessions from the other.
+
+```sh
+# prerequisites: the Rust toolchain (rustup) — plus, on Linux, webkit2gtk
+bun run --cwd apps/gui dev        # tauri dev: kernel runs from source
+
+# packaged app (unsigned, local): bundles the compiled minerva + rg pair
+bun run --cwd apps/gui prepare-sidecar
+bun run --cwd apps/gui build      # .app/.dmg under apps/gui/src-tauri/target
+```
 
 ## Release build
 

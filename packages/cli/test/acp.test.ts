@@ -101,4 +101,37 @@ describe("minerva acp over a real process boundary", () => {
 
     connection.close();
   }, 20_000);
+
+  // Every provider key scrubbed: blank env values count as absent.
+  const NO_KEYS = { ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", DASHSCOPE_API_KEY: "" };
+
+  test("real entrypoint: keyless `acp --allow-unconfigured` still hosts the protocol", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-acp3-data-"));
+    const transport = spawnHost("src/index.tsx", ["acp", "--allow-unconfigured"], {
+      MINERVA_DATA_DIR: dataDir,
+      ...NO_KEYS,
+    });
+    const connection = new Connection(transport);
+
+    // The GUI host's first-run flow: the kernel must be reachable before any
+    // key exists so the config dialog can drive minerva/config/set_model.
+    const init = await connection.request<{ protocolVersion: number }>(AGENT_METHODS.initialize, {
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    expect(init.protocolVersion).toBe(PROTOCOL_VERSION);
+
+    connection.close();
+  }, 20_000);
+
+  test("real entrypoint: keyless `acp` without the flag exits nonzero", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "minerva-acp4-data-"));
+    const child = spawn("bun", ["run", "src/index.tsx", "acp"], {
+      cwd: CLI_DIR,
+      env: { ...process.env, MINERVA_DATA_DIR: dataDir, ...NO_KEYS },
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    children.push(child);
+    const code = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+    expect(code).toBe(1);
+  }, 20_000);
 });

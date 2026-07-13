@@ -246,6 +246,46 @@ export function apiKeyEnvVar(
   return providerDef(provider, providers).apiKeyEnv;
 }
 
+export interface ProviderKeyStatus {
+  name: string;
+  defaultModel?: string | undefined;
+  /** Env var the provider reads (e.g. DASHSCOPE_API_KEY). */
+  keyVar: string;
+  /** Where a usable key was found, if anywhere. */
+  keySource: "env" | "settings" | "none";
+  baseUrl?: string | undefined;
+  models?: string[] | undefined;
+  requiresApiKey?: boolean | undefined;
+}
+
+/**
+ * Rows for config UIs: every registry provider plus where (if anywhere) a
+ * usable key was found. Blank-aware, matching resolveApiKey — an
+ * exported-but-empty env var must not display as a usable key. This is the
+ * single home of that policy: the kernel's minerva/config/state handler and
+ * the TUI's /config panel both consume it, so they can never disagree about
+ * whether a key exists.
+ */
+export function providerKeyStatuses(
+  registry: ProviderRegistry,
+  env: Record<string, string | undefined>,
+  storedKeys: Record<string, string | undefined>,
+): ProviderKeyStatus[] {
+  return Object.entries(registry).map(([name, def]) => ({
+    name,
+    ...(def.defaultModel !== undefined ? { defaultModel: def.defaultModel } : {}),
+    keyVar: def.apiKeyEnv,
+    keySource: env[def.apiKeyEnv]?.trim()
+      ? ("env" as const)
+      : storedKeys[name]?.trim()
+        ? ("settings" as const)
+        : ("none" as const),
+    ...(def.baseURL !== undefined ? { baseUrl: def.baseURL } : {}),
+    ...(def.models !== undefined ? { models: def.models } : {}),
+    ...(def.requiresApiKey !== undefined ? { requiresApiKey: def.requiresApiKey } : {}),
+  }));
+}
+
 export interface ResolveApiKeyOptions {
   /** Key passed programmatically (e.g. just entered in the config panel). */
   explicit?: string | undefined;

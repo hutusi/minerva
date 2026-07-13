@@ -1,3 +1,4 @@
+import { splitModelRef } from "@minerva/client";
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { useRef, useState } from "react";
@@ -88,10 +89,9 @@ export function ConfigPanel({
     if (!choice) return;
     // Re-configuring the current provider keeps its model; otherwise prefill
     // the provider's default.
-    const slash = currentModel.indexOf("/");
-    const currentProvider = slash === -1 ? "anthropic" : currentModel.slice(0, slash);
-    const currentModelId = slash === -1 ? currentModel : currentModel.slice(slash + 1);
-    const prefill = currentProvider === choice.name ? currentModelId : (choice.defaultModel ?? "");
+    const current = splitModelRef(currentModel);
+    const currentProvider = current.provider ?? "anthropic";
+    const prefill = currentProvider === choice.name ? current.model : (choice.defaultModel ?? "");
     setModel(prefill);
     const known = (choice.models ?? []).indexOf(prefill);
     modelIndexRef.current = known === -1 ? 0 : known;
