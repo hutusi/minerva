@@ -48,8 +48,9 @@ on every PR (ubuntu + macos), plus:
 | `packages/cli/test/app.test.tsx` | Ink UI via ink-testing-library, real kernel underneath |
 | `packages/kernel/test/mcp.test.ts` | Real spawned MCP server from project settings |
 | `packages/cli/test/acp.test.ts` (keyless cases) | `acp --allow-unconfigured` hosting contract |
-| `apps/gui/test/` | GUI pure modules: transport framing, kernel manager (fake JSON-RPC bridge), tabs, permission queue, diff alignment, notification matrix |
+| `apps/gui/test/` | GUI pure modules: transport framing, kernel manager (fake JSON-RPC bridge), sidecar generation gate, session install tokens + switches (incl. A-B-A reuse), stale-session self-heal against a real kernel, tabs, permission queue, config form, diff alignment, notification matrix |
 | `scripts/*.exp` | The TUI under a genuine pseudo-terminal |
+| `scripts/acp-smoke.ts` | Live ACP smoke: spawns `minerva acp`, drives JSON-RPC by hand |
 
 GUI tests deliberately import only pure modules — never React components or
 the one file touching `@tauri-apps/api` — so the per-file coverage threshold
@@ -90,7 +91,30 @@ bun run --cwd apps/gui prepare-sidecar && bun run --cwd apps/gui build  # packag
 
 ## Design context
 
-Read [docs/DESIGN.md](docs/DESIGN.md) (architecture decisions and their
-rationale) and [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol) before
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (the package/process map and
+the invariants index), [docs/DESIGN.md](docs/DESIGN.md) (founding decisions
+D1–D15), [docs/adr/](docs/adr/) (decisions since), [CONTEXT.md](CONTEXT.md)
+(the domain vocabulary — use its terms, not synonyms) and
+[docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol) before
 changing kernel or protocol behavior. The protocol version is pinned; breaking
 wire changes need a version bump and a documented migration.
+
+Coding agents get the same rules in condensed form from
+[AGENTS.md](AGENTS.md) (which Minerva itself also loads when self-hosted
+here) — keep the two consistent when conventions change.
+
+## Docs update with the change
+
+Documentation lands in the same branch as the behavior it describes — a PR
+that changes behavior and touches no doc is incomplete (the PR template asks
+for the docs impact explicitly). The mapping:
+
+- Wire surface / protocol behavior → `docs/PROTOCOL.md`
+- New boundary, lifecycle policy, or decision with rejected alternatives →
+  a new `docs/adr/` entry (plus `docs/ARCHITECTURE.md` if the map changed)
+- Invariant changes → the owning code comment AND the
+  `docs/ARCHITECTURE.md` invariants index, in the same commit
+- New or shifted domain vocabulary → `CONTEXT.md`
+- User-facing behavior → `README.md` (CHANGELOG at release time, as today)
+- Gates, workflow, test layout → this file (and `AGENTS.md` when
+  agent-relevant)
