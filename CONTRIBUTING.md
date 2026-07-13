@@ -91,7 +91,10 @@ bun run --cwd apps/gui prepare-sidecar && bun run --cwd apps/gui build  # packag
 
 ## Design context
 
-Read [docs/DESIGN.md](docs/DESIGN.md) (architecture decisions and their
-rationale) and [docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol) before
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (the package/process map and
+the invariants index), [docs/DESIGN.md](docs/DESIGN.md) (founding decisions
+D1–D15), [docs/adr/](docs/adr/) (decisions since), [CONTEXT.md](CONTEXT.md)
+(the domain vocabulary — use its terms, not synonyms) and
+[docs/PROTOCOL.md](docs/PROTOCOL.md) (the wire protocol) before
 changing kernel or protocol behavior. The protocol version is pinned; breaking
 wire changes need a version bump and a documented migration.

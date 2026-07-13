@@ -10,8 +10,10 @@ frontends (Ink CLI and Tauri desktop GUI).
   stdio; WebSocket planned).
 - **Stack**: TypeScript, Bun, Vercel AI SDK, Ink (CLI), Tauri 2 (GUI).
 
-Docs: [design record](docs/DESIGN.md) · [wire protocol](docs/PROTOCOL.md) ·
-[contributing](CONTRIBUTING.md) · [changelog](CHANGELOG.md)
+Docs: [architecture](docs/ARCHITECTURE.md) · [design record](docs/DESIGN.md) ·
+[ADRs](docs/adr/) · [wire protocol](docs/PROTOCOL.md) ·
+[domain context](CONTEXT.md) · [contributing](CONTRIBUTING.md) ·
+[changelog](CHANGELOG.md)
 
 ## Quick start
 
