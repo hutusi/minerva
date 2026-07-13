@@ -48,8 +48,9 @@ on every PR (ubuntu + macos), plus:
 | `packages/cli/test/app.test.tsx` | Ink UI via ink-testing-library, real kernel underneath |
 | `packages/kernel/test/mcp.test.ts` | Real spawned MCP server from project settings |
 | `packages/cli/test/acp.test.ts` (keyless cases) | `acp --allow-unconfigured` hosting contract |
-| `apps/gui/test/` | GUI pure modules: transport framing, kernel manager (fake JSON-RPC bridge), tabs, permission queue, diff alignment, notification matrix |
+| `apps/gui/test/` | GUI pure modules: transport framing, kernel manager (fake JSON-RPC bridge), sidecar generation gate, session install tokens + switches (incl. A-B-A reuse), stale-session self-heal against a real kernel, tabs, permission queue, config form, diff alignment, notification matrix |
 | `scripts/*.exp` | The TUI under a genuine pseudo-terminal |
+| `scripts/acp-smoke.ts` | Live ACP smoke: spawns `minerva acp`, drives JSON-RPC by hand |
 
 GUI tests deliberately import only pure modules — never React components or
 the one file touching `@tauri-apps/api` — so the per-file coverage threshold

@@ -21,10 +21,10 @@ must be protocol-fronted and out-of-process from day one.
 | 5 | Permissions | **Kernel-enforced rule engine + session modes** (plan / default / accept-edits / auto). Allow/deny/ask patterns like `Bash(git *)`, `Edit(src/**)`. Unmatched → ACP permission request to the frontend. Every decision appended to the audit log. "Always allow" persists as a rule |
 | 6 | Tools | Built-ins: ReadFile, WriteFile, EditFile (string-replace), Glob, Grep, Bash (`spawn` pipes by default; **opt-in `pty: true`** runs under a script(1) pseudo-terminal — no native module, so `bun build --compile` stays one binary; stderr merges into stdout and ANSI is normalized, hence opt-in; POSIX only, pipes fallback flagged in the result; interactive stdin stays out of scope), Todo, WebFetch (bounded HTTP GET; never auto-allowed — network egress always prompts/matches rules against the URL; private/loopback hosts refused by default — checked post-DNS-resolution and on every redirect hop, `webFetch.allowPrivate` settings escape hatch, DNS-rebinding race between check and connect accepted — same "friction, not a cage" posture as bash rules). Plus **MCP client in v1** (stdio and Streamable HTTP with SSE fallback); MCP tools flow through the same permission engine |
 | 7 | Sessions | **Append-only JSONL event logs** per session under `~/.minerva/projects/<project-slug>/`; the event stream is the source of truth (replay → model context or UI view). Index file for fast session lists. Resume = replay. Manual `/compact` plus **auto-compaction**: when the provider declares a `contextWindow` (built-in defaults, settings-overridable), a prompt whose predecessor crossed 80% of it compacts first (announced via `minerva/session/compacted`). The trigger is the LAST model call's input tokens (which already include cache reads/writes), persisted per turn and cleared by compaction — a tool loop's summed billing usage would trigger at a fraction of the threshold, and a running total would re-trigger on every prompt after (the compaction turn's own input ≈ the over-threshold context) |
-| 8 | Frontends | **CLI first** (Ink). `@minerva/client` shared package: protocol client + session state reducer (events in → renderable view-model out, zero UI imports). Tauri 2 GUI is M2, reusing `@minerva/client`; webview = React + Vite |
+| 8 | Frontends | **CLI first** (Ink). `@minerva/client` shared package: protocol client + session state reducer (events in → renderable view-model out, zero UI imports). Tauri 2 GUI shipped as M2 (`apps/gui`), reusing `@minerva/client`; webview = React + Vite |
 | 9 | Runtime & dist | **Bun-first, Node-tolerant**: Bun is the blessed runtime; kernel core accesses spawn/fs through a thin runtime-adapter seam so a Node build stays cheap. CLI ships as `bun build --compile` single binaries; Tauri bundles the same binary as sidecar |
 | 10 | v0.1 scope | **Full CLI feature set as the single public milestone.** No intermediate releases; integration risk managed via internal vertical slices |
-| 11 | License | **v0.2.0: repo stays private, no LICENSE — license deferred.** Apache-2.0 + CLA remains the default candidate if/when opened |
+| 11 | License | **Repo stays private, no LICENSE — license deferred** (decided at v0.2.0, still true as of 0.3.x). Apache-2.0 + CLA remains the default candidate if/when opened |
 | 12 | Project instructions | **AGENTS.md open standard**: `<dataDir>/AGENTS.md` (global) + project-root `AGENTS.md` only — nested per-directory files deferred (re-affirmed 2026-07: a full-tree walk is unbounded prompt cost; lazy per-touched-dir loading would vary the system prompt mid-session in a way the event log doesn't record, breaking replay fidelity; and each project file needs its own symlink-confinement pass — a design slice, not an increment). Appended to the base system prompt (host override stays the base), loaded at session establish, never persisted (the system prompt isn't in the event log). Repo-controlled text entering the prompt matches the existing trust posture — project settings already inject allow rules |
 | 13 | Skills | **`skills/<name>/SKILL.md` dirs** (global under dataDir, project under `.minerva/`; project wins collisions like `mcpServers`). Frontmatter is `key: value` lines only — hand-rolled parser, no YAML dep. Model-invoked via one **`skill` tool** (progressive disclosure: names+descriptions in the tool description, body read at invoke; read-only but deniable, audited like any tool). User-invoked `/name` expands **kernel-side** (transcript keeps the literal text, the provider sees the body) so skills work identically from ACP hosts; the CLI's built-in slash commands stay client-side and win name collisions. `/name` honors deny rules, skips ask (typing it is consent), audited via `providerText`. Project-layer files (AGENTS.md and skills) are symlink-confined to the workspace with an invoke-time recheck; global files are user-owned and unconfined |
 | 14 | Profiles | **Named personas in settings**: `profiles: { <name>: { systemPrompt?, model?, defaultMode? } }` + a `profile` default scalar; per-name merge project-over-global like `providers`. A profile's `systemPrompt` **replaces** the base coding-agent prompt (AGENTS.md still appends), so the kernel serves non-coding agents without forking hosts. Sessions record only the profile NAME (`session.created` / `session.profile_changed` events); load re-resolves it against current settings — prompt edits apply on resume, a vanished profile degrades to the base persona. Mid-session switching is free because the system prompt is rebuilt per prompt. Surface: `--profile`, `/profile`, `minerva/profiles/list`, `minerva/session/set_profile` |
@@ -86,9 +86,9 @@ lines); every side effect traceable in the audit log ✅.
 consuming `@minerva/client` view-models; session browser reads the JSONL
 index. Decisions recorded from the build:
 
-- **Rust owns the kernel child** (~200 lines in `src-tauri/src/sidecar.rs`),
-  not the webview: a webview-held child would be orphaned on every HMR
-  reload. Rust does its own byte-level line framing and forwards one frame
+- **Rust owns the kernel child** (`apps/gui/src-tauri/src/sidecar.rs` — read
+  its lock-discipline audit comment before touching it), not the webview: a
+  webview-held child would be orphaned on every HMR reload. Rust does its own byte-level line framing and forwards one frame
   per event; all restart/reconnect policy lives in TS
   (`apps/gui/src/lib/kernel-manager.ts` — one auto-respawn per death, then a
   manual restart button). No `shell:*` capability is granted to the webview.
@@ -106,15 +106,10 @@ index. Decisions recorded from the build:
 
 ## Development workflow
 
-All of v0.1 is developed on a single branch (`feat/v0.1`); `main` stays
-untouched until v0.1 lands via one final, non-squashed PR.
-
-- One Conventional Commit per logical unit, each with a why-body. The branch's
-  `git log` is the development narrative.
-- Review happens at slice boundaries (code review on the working tree when each
-  slice completes), not only at the final PR.
-- Verify gate — `bun run verify` (typecheck + lint + tests) — must be green at
-  every slice boundary.
+The single-branch v0.1 era ended when v0.1 merged; the live workflow
+(branch-per-topic, one Conventional Commit per slice with a why-body,
+verify-green at every slice boundary, merge without squashing) is documented
+in [CONTRIBUTING.md](../CONTRIBUTING.md) — that file is the source of truth.
 
 ## Risks / watchlist
 

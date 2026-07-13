@@ -31,7 +31,12 @@ stream transport is skipped (it carries no id to answer).
 ## Frontend → kernel (ACP core)
 
 ### `initialize`
-Params `{ protocolVersion }` → `{ protocolVersion, agentCapabilities: { loadSession: true } }`.
+Params `{ protocolVersion, clientCapabilities? }` →
+`{ protocolVersion, agentCapabilities: { loadSession: true } }`.
+`clientCapabilities.batchReplay: true` (minerva/* extension) opts into
+batched `session/load` replay via `minerva/session/update_batch`; without it
+the kernel replays as standard `session/update` notifications, so generic
+ACP clients need to advertise nothing.
 
 ### `session/new`
 Params `{ cwd, profile? }` → `{ sessionId, modes, instructions?, profile? }`
@@ -108,6 +113,17 @@ file contents, `oldText: null` = new file). File-mutating tools (`edit_file`,
 `tool_call_update`, live and on `session/load` replay; when either side exceeds
 48 000 characters the diff entry is omitted (text-only fallback). Frontends
 compute their own line diffs from the two sides.
+
+### `minerva/session/update_batch` *(notification)*
+Params `{ sessionId, updates: SessionUpdate[] }`. Batched form of
+`session/update`, sent only during `session/load` replay and only to clients
+that advertised `clientCapabilities.batchReplay` at `initialize`. Batches are
+additive — N batches rebuild the same transcript as one — and are sized to
+stay well under the 16 MB stdio frame cap: at most 4 MB of serialized
+updates or 1000 updates per batch, whichever is hit first (a single
+oversized update still ships alone). Consumers should apply a whole batch as
+one view transition (the client package's `SessionStore.applyBatch` exists
+for exactly this).
 
 ### `minerva/session/usage` *(notification)*
 Params `{ sessionId, lastTurn?, cumulative }`, where both usage shapes are
