@@ -15,6 +15,12 @@ Touching `apps/gui/src-tauri/`? Also: `cargo fmt` and
 re-run the lifecycle drills (kill -9 → one auto-respawn; packaged quit →
 "kernel exited gracefully" log; see CONTRIBUTING's GUI smoke list).
 
+Agent evals (`evals/harbor/`, Harbor + SWE-bench) are a separate Python island —
+**not** part of `bun run verify` or `bun run knip`. They need Docker + a
+`DASHSCOPE_API_KEY` and run on demand (`cd evals/harbor && uv run harbor run …`);
+see [CONTRIBUTING.md](CONTRIBUTING.md) and
+[docs/adr/0003-harbor-swebench-eval.md](docs/adr/0003-harbor-swebench-eval.md).
+
 ## Conventions
 
 - Conventional Commits, one commit per logical slice, body explains WHY.

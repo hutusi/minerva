@@ -1,0 +1,40 @@
+# Optional: a Minerva-ready image.
+#
+# Not required for a Harbor run — the adapter's install() clones + builds
+# Minerva inside whatever container the task provides. This image is useful for
+# (a) smoke-testing the launcher/install logic locally without Harbor, and
+# (b) as a starting point if you later pre-bake Minerva into task base images
+# to skip per-container install (the slow part of a large run).
+#
+# Build:  docker build -f evals/harbor/Dockerfile.minerva \
+#           --build-arg MINERVA_REF=main -t minerva-agent .
+# Try:    docker run --rm -e DASHSCOPE_API_KEY=... minerva-agent \
+#           bash -lc 'echo "say hi" | minerva -p --mode auto --model bailian/glm-5.2'
+
+FROM debian:bookworm-slim
+
+ARG MINERVA_REPO=https://github.com/hutusi/minerva.git
+ARG MINERVA_REF=main
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    BUN_INSTALL=/root/.bun \
+    PATH=/root/.bun/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin \
+    MINERVA_DATA_DIR=/tmp/minerva-data
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl git unzip ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://bun.sh/install | bash \
+ && git init -q /root/minerva \
+ && git -C /root/minerva remote add origin "${MINERVA_REPO}" \
+ && git -C /root/minerva fetch --depth 1 origin "${MINERVA_REF}" \
+ && git -C /root/minerva -c advice.detachedHead=false checkout -q FETCH_HEAD \
+ && cd /root/minerva && bun install \
+ && mkdir -p /root/.local/bin \
+ && printf '#!/usr/bin/env bash\nexport BUN_INSTALL=/root/.bun\nexport PATH="$BUN_INSTALL/bin:$PATH"\nexec bun /root/minerva/packages/cli/src/index.tsx "$@"\n' \
+      > /root/.local/bin/minerva \
+ && chmod +x /root/.local/bin/minerva \
+ && minerva --version
+
+CMD ["bash"]

@@ -347,6 +347,11 @@ MCP), `packages/providers` (model adapters), `packages/client` (shared
 frontend core), `packages/cli` (Ink UI + acp host), `apps/gui` (Tauri 2
 desktop app).
 
+End-to-end agent evals — running Minerva on SWE-bench via
+[Harbor](https://www.harborframework.com) with a fixed control model — live in
+[`evals/harbor/`](evals/harbor/README.md): a separate Python island (needs
+Docker + `DASHSCOPE_API_KEY`), not part of `bun run verify`.
+
 ## Desktop GUI
 
 The GUI spawns the kernel as a stdio sidecar (`minerva acp

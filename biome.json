@@ -1,7 +1,14 @@
 {
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/node_modules", "!**/dist", "!**/src-tauri/target", "!**/src-tauri/gen"]
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/src-tauri/target",
+      "!**/src-tauri/gen",
+      "!**/.venv"
+    ]
   },
   "formatter": {
     "enabled": true,

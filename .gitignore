@@ -12,3 +12,8 @@ coverage/
 apps/gui/src-tauri/target/
 apps/gui/src-tauri/binaries/
 apps/gui/src-tauri/gen/schemas/
+# Harbor eval adapter (Python island): venv, build, and local run artifacts.
+evals/harbor/.venv/
+evals/harbor/**/__pycache__/
+evals/harbor/*.egg-info/
+evals/harbor/results/

@@ -1,0 +1,7 @@
+{
+  "providers": {
+    "bailian": {
+      "thinking": { "glm-5.2": true }
+    }
+  }
+}
