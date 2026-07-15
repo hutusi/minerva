@@ -27,6 +27,25 @@ on every PR (ubuntu + macos), plus:
 - `bun run smoke:tui` and `bun run e2e:tui` — the Ink UI under a real PTY
   (requires `expect`; preinstalled on macOS, `apt install expect` on Linux).
 
+## Agent evals (Harbor + SWE-bench)
+
+End-to-end evals of **Minerva the harness** live in `evals/harbor/` — a
+self-contained Python island that plugs Minerva into
+[Harbor](https://www.harborframework.com) as an installed agent and runs it on
+SWE-bench with a fixed control model (`bailian/glm-5.2`). It is **not** part of
+`bun run verify` / `bun run knip`; it needs Docker + a `DASHSCOPE_API_KEY` and
+runs on demand:
+
+```sh
+cd evals/harbor && uv sync
+DASHSCOPE_API_KEY=... uv run harbor run \
+  -d swe-bench@lite --agent minerva_harbor.agent:MinervaAgent \
+  --model bailian/glm-5.2 -n-concurrent 1     # smoke: one instance first
+```
+
+Full details, knobs, and scale-up/cost guidance: `evals/harbor/README.md`. The
+decision and rejected alternatives: `docs/adr/0003-harbor-swebench-eval.md`.
+
 ## Workflow
 
 - **Branch for substantial work** (`<type>/<topic>`, e.g. `feat/mcp-http`,
