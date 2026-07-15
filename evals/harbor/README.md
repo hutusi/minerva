@@ -1,0 +1,100 @@
+# Minerva agent evals (Harbor + SWE-bench)
+
+Evaluate **Minerva the harness** — its system prompt, tool set, agent loop,
+tool-feedback, compaction, permissions — end-to-end, by running the real agent
+on real tasks and checking whether it actually resolved them.
+
+We don't build a bench of our own. [Harbor](https://www.harborframework.com)
+(the Docker-container agent-eval harness from the Terminal-Bench team) brings
+the dataset, container sandboxing, verification, scoring, and parallelism.
+Minerva plugs in as a Harbor **installed agent** (`minerva_harbor.agent:MinervaAgent`).
+
+The model is held **fixed as a control** (default `bailian/glm-5.2` — GLM 5.2 on
+Alibaba DashScope). With the model constant, the resolved-instance rate reads
+Minerva's *scaffolding*, not model IQ — and is directly comparable to
+`mini-swe-agent` / `claude-code` run on the same tasks with the same model.
+
+> This is a self-contained Python island. It is **not** a Bun workspace package
+> and is **not** part of `bun run verify` / `bun run knip`. It needs Docker and
+> a `DASHSCOPE_API_KEY`; without them it simply doesn't run.
+
+## Prerequisites
+
+- Docker (Harbor spins up one container per task attempt)
+- [`uv`](https://docs.astral.sh/uv/)
+- `DASHSCOPE_API_KEY` for `bailian/glm-5.2`
+
+## Install
+
+```sh
+cd evals/harbor
+uv sync            # installs harbor + this adapter (editable)
+```
+
+## Run
+
+Smoke first — a single instance, one at a time, locally:
+
+```sh
+DASHSCOPE_API_KEY=... \
+uv run harbor run \
+  -d swe-bench@lite \
+  --agent minerva_harbor.agent:MinervaAgent \
+  --model bailian/glm-5.2 \
+  -n-concurrent 1
+```
+
+`--model` is passed straight through to `minerva -p --model …`; the adapter
+forwards `DASHSCOPE_API_KEY` into the container. To pass the key explicitly
+instead of via the host env, use Harbor's extra-env flag: `--ae DASHSCOPE_API_KEY=…`.
+
+Scale up only after the smoke is green (each step is a real cost decision —
+GLM tokens × instances × trials): a ~10–20 instance slice → full `swe-bench@lite`
+(300) → `swe-bench@verified` (500), and add `--env daytona|modal` for cloud
+parallelism. See `uv run harbor run --help` for instance/task filters and
+retry policy.
+
+### Knobs
+
+| Setting | How | Default |
+|---|---|---|
+| Control model | `--model <provider/model>` | `bailian/glm-5.2` |
+| Minerva source repo | `MINERVA_REPO` env or `repo=` agent kwarg | `github.com/hutusi/minerva` |
+| Minerva ref (branch/tag) | `MINERVA_REF` env or `ref=` agent kwarg | `main` |
+| Session mode | `minerva_mode=` agent kwarg | `auto` |
+| GLM thinking / bailian endpoint | edit `minerva_harbor/settings.json` | thinking on for `glm-5.2` |
+
+`ref` must be a branch or tag (the adapter shallow-clones); a bare commit SHA
+won't work.
+
+## How a trial runs
+
+1. **install()** — installs Bun + system deps, clones Minerva at `MINERVA_REF`,
+   `bun install`, and drops a `minerva` launcher on PATH (runs the CLI entry
+   the way `scripts/acp-smoke.ts` does).
+2. **run()** — writes `settings.json` (GLM thinking on), then pipes the task
+   instruction into `minerva -p --mode auto --model bailian/glm-5.2` (stdin, so
+   large SWE-bench statements aren't argv-limited). A non-`end_turn` stop (turn
+   cap) is tolerated so Harbor still scores the container diff; genuine API
+   errors propagate for retry classification.
+3. **scoring** — Harbor runs the SWE-bench `FAIL_TO_PASS` / `PASS_TO_PASS`
+   tests against the container diff → reward at `/logs/verifier/reward.txt`.
+4. **populate_context_post_run()** — copies Minerva's session JSONL out and
+   emits a best-effort ATIF `trajectory.json` + token totals (logging only;
+   not used for scoring).
+
+## Open items / caveats
+
+- **Key forwarding** and **`--model` threading** follow Harbor's built-in
+  `qwen-code` / `mini-swe-agent` installed agents; confirm on the first real run.
+- **Install cost**: cloning + `bun install` per container is slow. Once stable,
+  pre-bake Minerva into a base image (`Dockerfile.minerva` is a starting point)
+  to skip per-container install.
+- **Uncommitted code**: the adapter evaluates a pushed branch/tag, not your
+  dirty working tree. Push a ref (or bake an image) to eval local changes.
+- This measures end-to-end capability, not Minerva's internal facets (the
+  compaction trigger, the permission gate) — Harbor runs with permissions
+  skipped (`--mode auto`). Those belong in in-repo scripted-provider tests.
+
+See `docs/adr/0003-harbor-swebench-eval.md` for the decision and rejected
+alternatives.
