@@ -75,8 +75,9 @@ For cloud parallelism, install the extra (above) and pass `--env daytona`. See
 | GLM thinking / bailian endpoint | edit `minerva_harbor/settings.json` | thinking on for `glm-5.2` |
 
 `MINERVA_REF` accepts a branch, tag, **or commit SHA** (the adapter fetches the
-ref shallowly) — so the SHA the trajectory records can be passed back to
-reproduce that exact run.
+ref shallowly) — so the full-length SHA the trajectory records can be passed
+back to reproduce that exact run. A SHA must be the full 40-char id; git's
+fetch-by-SHA can't resolve an abbreviated one.
 
 The control model is a scorecard **invariant**: leave it at `bailian/glm-5.2`
 for comparable numbers. `--model` overrides are supported but produce a

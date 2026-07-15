@@ -90,8 +90,10 @@ class MinervaAgent(BaseInstalledAgent):
     def get_version_command(self) -> str | None:
         # Record the exact Minerva commit under eval. Base setup() runs this
         # after install() and stores stdout in self._version, which the
-        # trajectory reports — so a rerun on a moving `main` is still traceable.
-        return 'cd "$HOME/minerva" && git rev-parse --short HEAD'
+        # trajectory reports. Must be the FULL 40-char SHA, not --short: git's
+        # fetch-by-SHA (how install() replays a ref) only resolves full object
+        # ids, so an abbreviated SHA couldn't be passed back as MINERVA_REF.
+        return 'cd "$HOME/minerva" && git rev-parse HEAD'
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
