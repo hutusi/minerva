@@ -21,6 +21,7 @@ Minerva's *scaffolding*, not model IQ — and is directly comparable to
 ## Prerequisites
 
 - Docker (Harbor spins up one container per task attempt)
+- Python **3.12+** (Harbor 0.18 requires it)
 - [`uv`](https://docs.astral.sh/uv/)
 - `DASHSCOPE_API_KEY` for `bailian/glm-5.2`
 
@@ -28,20 +29,24 @@ Minerva's *scaffolding*, not model IQ — and is directly comparable to
 
 ```sh
 cd evals/harbor
-uv sync            # installs harbor + this adapter (editable)
+uv sync                     # installs harbor + this adapter (editable)
+uv sync --extra daytona     # + the Daytona cloud backend (or --extra modal)
 ```
+
+Commit the generated `uv.lock` so reruns resolve the same Harbor build (the
+`harbor` dep is pinned to make the lock deterministic).
 
 ## Run
 
-Smoke first — a single instance, one at a time, locally:
+Smoke first — a single instance, locally (`--n-tasks 1` caps it to one):
 
 ```sh
 DASHSCOPE_API_KEY=... \
 uv run harbor run \
-  -d swe-bench@lite \
+  -d swe-bench/swe-bench-verified \
   --agent minerva_harbor.agent:MinervaAgent \
   --model bailian/glm-5.2 \
-  -n-concurrent 1
+  --n-tasks 1
 ```
 
 `--model` is passed straight through to `minerva -p --model …`; the adapter
@@ -49,10 +54,11 @@ forwards `DASHSCOPE_API_KEY` into the container. To pass the key explicitly
 instead of via the host env, use Harbor's extra-env flag: `--ae DASHSCOPE_API_KEY=…`.
 
 Scale up only after the smoke is green (each step is a real cost decision —
-GLM tokens × instances × trials): a ~10–20 instance slice → full `swe-bench@lite`
-(300) → `swe-bench@verified` (500), and add `--env daytona|modal` for cloud
-parallelism. See `uv run harbor run --help` for instance/task filters and
-retry policy.
+GLM tokens × instances × trials): raise `--n-tasks` (a ~10–20 slice, or
+`swe-bench/swe-smith`, 100, as a smaller/cheaper set) → full
+`swe-bench/swe-bench-verified` (500). Concurrency is `--n-concurrent N` (`-n`).
+For cloud parallelism, install the extra (above) and pass `--env daytona`. See
+`uv run harbor run --help` for instance/task filters and retry policy.
 
 ### Knobs
 
@@ -79,9 +85,10 @@ won't work.
    errors propagate for retry classification.
 3. **scoring** — Harbor runs the SWE-bench `FAIL_TO_PASS` / `PASS_TO_PASS`
    tests against the container diff → reward at `/logs/verifier/reward.txt`.
-4. **populate_context_post_run()** — copies Minerva's session JSONL out and
-   emits a best-effort ATIF `trajectory.json` + token totals (logging only;
-   not used for scoring).
+4. **populate_context_post_run()** — copies Minerva's `ses_*.jsonl` out, picks
+   the root session (subagent logs are siblings), and emits a best-effort ATIF
+   `trajectory.json` + token totals summed over the root log's turn / task /
+   compaction usage (logging only; not used for scoring).
 
 ## Open items / caveats
 

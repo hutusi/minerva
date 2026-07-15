@@ -39,8 +39,8 @@ runs on demand:
 ```sh
 cd evals/harbor && uv sync
 DASHSCOPE_API_KEY=... uv run harbor run \
-  -d swe-bench@lite --agent minerva_harbor.agent:MinervaAgent \
-  --model bailian/glm-5.2 -n-concurrent 1     # smoke: one instance first
+  -d swe-bench/swe-bench-verified --agent minerva_harbor.agent:MinervaAgent \
+  --model bailian/glm-5.2 --n-tasks 1         # smoke: one instance first
 ```
 
 Full details, knobs, and scale-up/cost guidance: `evals/harbor/README.md`. The
