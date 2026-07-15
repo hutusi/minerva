@@ -12,7 +12,6 @@ island (Harbor is a `uv`/pip tool), kept out of the JS gates. See
 evals/harbor/README.md and docs/adr/0003-harbor-swebench-eval.md.
 """
 
-import json
 import os
 import shlex
 from pathlib import Path
@@ -25,6 +24,8 @@ from harbor.agents.installed.base import (
 )
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+from minerva_harbor.session_log import read_root_events, sum_usage
 
 # Fixed control model. Bailian (Alibaba DashScope) serves Zhipu's GLM, so the
 # provider-prefixed ref is `bailian/glm-5.2` and the key is DASHSCOPE_API_KEY.
@@ -84,6 +85,13 @@ class MinervaAgent(BaseInstalledAgent):
     @override
     def name() -> str:
         return "minerva"
+
+    @override
+    def get_version_command(self) -> str | None:
+        # Record the exact Minerva commit under eval. Base setup() runs this
+        # after install() and stores stdout in self._version, which the
+        # trajectory reports — so a rerun on a moving `main` is still traceable.
+        return 'cd "$HOME/minerva" && git rev-parse --short HEAD'
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
@@ -179,60 +187,39 @@ class MinervaAgent(BaseInstalledAgent):
         await self.exec_as_agent(environment, command=run_cmd, env=env)
 
         # Copy Minerva's append-only session log(s) out for the trajectory
-        # parser. Best-effort: never fail the trial on a missing log.
+        # parser. Only `ses_*.jsonl` (skip the shared `index.jsonl`); a subagent
+        # run leaves several — the parser picks the root by content, not mtime.
+        # Best-effort: never fail the trial on a missing log.
         await self.exec_as_agent(
             environment,
             command=(
                 f"mkdir -p /logs/agent/{SESSIONS_SUBDIR}; "
-                f"find {shlex.quote(DATA_DIR)} -name '*.jsonl' "
+                f"find {shlex.quote(DATA_DIR)} -name 'ses_*.jsonl' "
                 f"-exec cp {{}} /logs/agent/{SESSIONS_SUBDIR}/ \\; 2>/dev/null || true"
             ),
             env=env,
         )
 
-    def _read_session_events(self) -> list[dict[str, Any]]:
-        """Newest copied Minerva session JSONL → list of parsed events."""
-        sessions_dir = self.logs_dir / SESSIONS_SUBDIR
-        if not sessions_dir.is_dir():
-            return []
-        jsonl = list(sessions_dir.rglob("*.jsonl"))
-        if not jsonl:
-            return []
-        newest = max(jsonl, key=lambda p: p.stat().st_mtime)
-        events: list[dict[str, Any]] = []
-        for line in newest.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return events
-
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
-        events = self._read_session_events()
+        events = read_root_events(self.logs_dir / SESSIONS_SUBDIR)
         if not events:
             return
 
-        # Token accounting from turn.completed usage (whole-prompt billing).
-        n_in = 0
-        n_out = 0
-        for event in events:
-            if event.get("type") != "turn.completed":
-                continue
-            usage = event.get("usage") or {}
-            n_in += usage.get("inputTokens") or usage.get("input_tokens") or 0
-            n_out += usage.get("outputTokens") or usage.get("output_tokens") or 0
-        context.n_input_tokens = n_in
-        context.n_output_tokens = n_out
+        # Complete token totals from the root log (folds in subagent +
+        # compaction spend); report cache reads too, which Harbor tracks.
+        totals = sum_usage(events)
+        context.n_input_tokens = totals["input"]
+        context.n_output_tokens = totals["output"]
+        context.n_cache_tokens = totals["cache_read"]
 
         # Best-effort ATIF trajectory for Harbor's logs; a schema mismatch must
         # not fail the trial.
         try:
             from minerva_harbor.trajectory import write_trajectory
 
-            write_trajectory(events, self.model_name or DEFAULT_MODEL, self.logs_dir)
+            write_trajectory(
+                events, self.model_name or DEFAULT_MODEL, self._version, self.logs_dir
+            )
         except Exception:
             self.logger.debug("minerva: failed to build ATIF trajectory")
