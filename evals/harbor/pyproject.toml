@@ -2,12 +2,20 @@
 name = "minerva-harbor"
 version = "0.0.0"
 description = "Harbor installed-agent adapter that evaluates Minerva end-to-end (e.g. on SWE-bench) with a fixed control model."
-requires-python = ">=3.11"
-# Harbor is the eval harness (Terminal-Bench team). Pin a known-good version
-# when a run stabilizes; see README for the nightly channel.
+# Harbor 0.18 requires Python >=3.12 (its pyproject); a lower floor breaks uv sync.
+requires-python = ">=3.12"
+# Harbor is the eval harness (Terminal-Bench team). Pinned for reproducibility —
+# commit uv.lock alongside (see README) so reruns resolve identically.
 dependencies = [
-  "harbor>=0.18",
+  "harbor==0.18.0",
 ]
+
+# Cloud backends are Harbor optional extras; base install lacks their SDKs, so
+# `--env daytona|modal` needs the matching extra. Install with, e.g.,
+# `uv sync --extra daytona`.
+[project.optional-dependencies]
+daytona = ["harbor[daytona]==0.18.0"]
+modal = ["harbor[modal]==0.18.0"]
 
 [build-system]
 requires = ["hatchling"]
