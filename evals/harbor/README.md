@@ -21,7 +21,9 @@ Minerva's *scaffolding*, not model IQ — and is directly comparable to
 ## Prerequisites
 
 - Docker (Harbor spins up one container per task attempt)
-- Python **3.12+** (Harbor 0.18 requires it)
+- Python **3.12** — pinned via `.python-version`, which `uv` fetches
+  automatically (Harbor 0.18 requires ≥3.12; newer Pythons like 3.14 lack
+  prebuilt wheels for a native Harbor dep and fail to build)
 - [`uv`](https://docs.astral.sh/uv/)
 - `DASHSCOPE_API_KEY` for `bailian/glm-5.2`
 
