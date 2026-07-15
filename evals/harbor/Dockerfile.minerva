@@ -26,7 +26,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://bun.sh/install | bash \
- && git clone --depth 1 --branch "${MINERVA_REF}" "${MINERVA_REPO}" /root/minerva \
+ && git init -q /root/minerva \
+ && git -C /root/minerva remote add origin "${MINERVA_REPO}" \
+ && git -C /root/minerva fetch --depth 1 origin "${MINERVA_REF}" \
+ && git -C /root/minerva -c advice.detachedHead=false checkout -q FETCH_HEAD \
  && cd /root/minerva && bun install \
  && mkdir -p /root/.local/bin \
  && printf '#!/usr/bin/env bash\nexport BUN_INSTALL=/root/.bun\nexport PATH="$BUN_INSTALL/bin:$PATH"\nexec bun /root/minerva/packages/cli/src/index.tsx "$@"\n' \

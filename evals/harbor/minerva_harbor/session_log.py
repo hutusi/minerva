@@ -18,7 +18,7 @@ USAGE_EVENT_TYPES = ("turn.completed", "task.completed", "session.compacted")
 
 def parse_jsonl(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue

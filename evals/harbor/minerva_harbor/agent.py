@@ -131,8 +131,13 @@ class MinervaAgent(BaseInstalledAgent):
                 "fi; "
                 'mkdir -p "$HOME/.local/bin"; '
                 'rm -rf "$HOME/minerva"; '
-                f"git clone --depth 1 --branch {shlex.quote(self._ref)} "
-                f'{shlex.quote(self._repo)} "$HOME/minerva"; '
+                # init+fetch (not clone --branch) so MINERVA_REF may be a branch,
+                # tag, OR commit SHA — the SHA the trajectory records is then
+                # replayable to reproduce that exact run.
+                'git init -q "$HOME/minerva"; '
+                f'git -C "$HOME/minerva" remote add origin {shlex.quote(self._repo)}; '
+                f'git -C "$HOME/minerva" fetch --depth 1 origin {shlex.quote(self._ref)}; '
+                'git -C "$HOME/minerva" -c advice.detachedHead=false checkout -q FETCH_HEAD; '
                 'cd "$HOME/minerva" && bun install; '
                 f"printf '%s' {shlex.quote(launcher)} > \"$HOME/.local/bin/minerva\"; "
                 'chmod +x "$HOME/.local/bin/minerva"; '
@@ -154,7 +159,7 @@ class MinervaAgent(BaseInstalledAgent):
         # The built-in bailian provider sends no enable_thinking by default;
         # GLM wants it on. Ship a container-side Minerva settings.json that
         # turns thinking on for glm-5.2 (per-model map, resolveThinking).
-        settings = _SETTINGS_PATH.read_text()
+        settings = _SETTINGS_PATH.read_text(encoding="utf-8")
         await self.exec_as_agent(
             environment,
             command=(

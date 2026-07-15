@@ -71,4 +71,4 @@ def write_trajectory(
     if trajectory is None:
         return
     path = Path(logs_dir) / "trajectory.json"
-    path.write_text(format_trajectory_json(trajectory.to_json_dict()))
+    path.write_text(format_trajectory_json(trajectory.to_json_dict()), encoding="utf-8")
