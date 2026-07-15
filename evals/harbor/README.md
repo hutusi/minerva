@@ -35,8 +35,8 @@ uv sync                     # installs harbor + this adapter (editable)
 uv sync --extra daytona     # + the Daytona cloud backend (or --extra modal)
 ```
 
-Commit the generated `uv.lock` so reruns resolve the same Harbor build (the
-`harbor` dep is pinned to make the lock deterministic).
+`uv.lock` is committed (harbor pinned + all transitive deps locked) so reruns
+resolve identically; regenerate it with `uv lock` after bumping the dep.
 
 ## Run
 
@@ -52,8 +52,10 @@ uv run harbor run \
 ```
 
 `--model` is passed straight through to `minerva -p --model …`; the adapter
-forwards `DASHSCOPE_API_KEY` into the container. To pass the key explicitly
-instead of via the host env, use Harbor's extra-env flag: `--ae DASHSCOPE_API_KEY=…`.
+forwards `DASHSCOPE_API_KEY` into the container from your shell env. Prefer
+exporting the key (or the per-command prefix above) over Harbor's
+`--ae DASHSCOPE_API_KEY=…`, which lands the secret in the process argv (visible
+to `ps`) — reserve `--ae` for throwaway/CI shells.
 
 Scale up only after the smoke is green (each step is a real cost decision —
 GLM tokens × instances × trials): raise `--n-tasks` (a ~10–20 slice, or
@@ -66,14 +68,20 @@ For cloud parallelism, install the extra (above) and pass `--env daytona`. See
 
 | Setting | How | Default |
 |---|---|---|
-| Control model | `--model <provider/model>` | `bailian/glm-5.2` |
+| Control model | `--model <provider/model>` | `bailian/glm-5.2` (scorecard default; see below) |
 | Minerva source repo | `MINERVA_REPO` env or `repo=` agent kwarg | `github.com/hutusi/minerva` |
-| Minerva ref (branch/tag) | `MINERVA_REF` env or `ref=` agent kwarg | `main` |
+| Minerva ref (branch/tag/SHA) | `MINERVA_REF` env or `ref=` agent kwarg | `main` |
 | Session mode | `minerva_mode=` agent kwarg | `auto` |
 | GLM thinking / bailian endpoint | edit `minerva_harbor/settings.json` | thinking on for `glm-5.2` |
 
-`ref` must be a branch or tag (the adapter shallow-clones); a bare commit SHA
-won't work.
+`MINERVA_REF` accepts a branch, tag, **or commit SHA** (the adapter fetches the
+ref shallowly) — so the SHA the trajectory records can be passed back to
+reproduce that exact run.
+
+The control model is a scorecard **invariant**: leave it at `bailian/glm-5.2`
+for comparable numbers. `--model` overrides are supported but produce a
+different, non-comparable run (e.g. to A/B a model against another harness on
+the same tasks), not an entry in the same scorecard.
 
 ## How a trial runs
 

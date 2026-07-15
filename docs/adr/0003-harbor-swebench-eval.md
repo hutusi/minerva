@@ -24,18 +24,22 @@ model must be a **fixed control**, held constant while the harness varies.
   Docker-container agent-eval harness) with the **SWE-bench** dataset. Harbor
   brings the dataset, per-task container sandboxing, verification
   (`FAIL_TO_PASS`/`PASS_TO_PASS` → reward), scoring, and cloud parallelism.
-- **Minerva plugs in as a Harbor installed agent** — `MinervaAgent`
+- **Minerva plugs in as a Harbor installed-agent** — `MinervaAgent`
   (`BaseInstalledAgent`) in `evals/harbor/minerva_harbor/agent.py`. `install()`
-  clones + `bun install`s Minerva into the task container and drops a `minerva`
-  launcher; `run()` pipes the task instruction into `minerva -p --mode auto`;
-  `populate_context_post_run()` emits a best-effort ATIF trajectory. It mirrors
-  Harbor's built-in `qwen-code` / `mini-swe-agent` adapters (key forwarding via
-  `ENV_VARS`/`extra_env`, `--model` passthrough, `… 2>&1 | tee`).
+  fetches the pinned Minerva ref (branch/tag/SHA) + `bun install`s it into the
+  task container and drops a `minerva` launcher; `run()` pipes the task
+  instruction into `minerva -p --mode auto`, redirecting output to a log file it
+  then emits (redirect-then-`cat`, so the exit code is captured rather than
+  masked by a pipe); `populate_context_post_run()` emits a best-effort ATIF
+  trajectory. It mirrors Harbor's built-in `qwen-code` / `mini-swe-agent`
+  adapters (key forwarding via `ENV_VARS`/`extra_env`, `--model` passthrough).
 - **Fixed control model = `bailian/glm-5.2`** (GLM 5.2 on Alibaba DashScope),
   key `DASHSCOPE_API_KEY`. The adapter ships a container-side `settings.json`
   turning GLM thinking on (the built-in bailian provider sends none by default).
   With the model constant, the resolved-instance rate reads the harness, and is
-  comparable to `mini-swe-agent`/`claude-code` on the same tasks + model.
+  comparable to `mini-swe-agent`/`claude-code` on the same tasks + model. The
+  model is a scorecard **invariant**: `--model` may override it, but such runs
+  are non-comparable experiments, not entries in the same scorecard.
 - **A minimal Python island, not a package.** It lives in `evals/harbor/` with
   its own `pyproject.toml` (single dep: `harbor`) — deliberately **not** a
   `@minerva/*` Bun workspace and **not** part of `bun run verify` / `bun run
