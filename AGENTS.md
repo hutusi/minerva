@@ -25,7 +25,7 @@ see [CONTRIBUTING.md](CONTRIBUTING.md) and
 
 - Conventional Commits, one commit per logical slice, body explains WHY.
 - Branch `<type>/<topic>` for substantial work; PRs merge WITHOUT squashing;
-  branches are kept after merge.
+  merged branches are deleted (local + remote) once the PR lands.
 - Tests never touch `~/.minerva` — pass a temp `dataDir` or
   `MINERVA_DATA_DIR`. GUI tests import pure modules only (never React
   components or the one file importing @tauri-apps/api) — per-file coverage
