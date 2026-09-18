@@ -18,7 +18,7 @@
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-notification": "^2",
     "dompurify": "^3",
-    "marked": "^16",
+    "marked": "^18",
     "react": "^19",
     "react-dom": "^19"
   },
